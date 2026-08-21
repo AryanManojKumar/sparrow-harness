@@ -8,6 +8,7 @@ there is a UI to serve, not before.
 from __future__ import annotations
 
 import argparse
+import re
 import shutil
 import subprocess
 import sys
@@ -76,6 +77,105 @@ def cmd_audit(args) -> int:
     return 1 if findings else 0
 
 
+def cmd_build(args) -> int:
+    """Run the builder over every pending section. One call each, blind to the rest."""
+    from sparrow.agents.builder import Builder, write_section
+    from sparrow.blackboard.store import Store
+    from sparrow.blueprints import load_dir
+
+    store = Store(Path(args.blackboard))
+    bb = store.load()
+    if bb.design_system is None:
+        print("no design_system on the blackboard", file=sys.stderr)
+        return 1
+
+    blueprints = load_dir(Path(args.blueprints))
+    ws = _workspace(bb.project_id)
+    primitives = sorted(p.stem for p in (ws / "src/components/ui").glob("*.tsx"))
+    stack = (
+        "Next.js 16 App Router, static export. React 19. TypeScript. Tailwind v4. "
+        "Motion 13 — import from 'motion/react', NEVER 'framer-motion'. "
+        "Icons from 'lucide-react'. A section that animates must be a client "
+        'component ("use client").'
+    )
+
+    builder = Builder()
+    total = 0.0
+    print(f"provider {builder.provider.name} · tier {builder.tier.value}\n")
+
+    for section in sorted(bb.sections, key=lambda s: s.order):
+        bp = blueprints.get(section.blueprint_id)
+        if bp is None:
+            print(f"  {section.id}: no blueprint {section.blueprint_id!r}", file=sys.stderr)
+            return 1
+        out = builder.build(bb, section, bp, stack=stack, available_primitives=primitives)
+        path = write_section(ws, section, out.code)
+        cost = out.usage.cost(builder.provider.name, builder.tier)
+        total += cost
+        loc = len(out.code.splitlines())
+        print(f"  {section.order}. {section.id:14} {loc:>4} loc  "
+              f"{out.usage.input_tokens:>6,} in  {out.usage.output_tokens:>6,} out  ${cost:.4f}")
+        if out.extension_request:
+            print(f"     ↳ EXTENSION REQUEST: {out.extension_request}")
+
+    total += _repair_until_builds(bb, ws, builder.provider.name)
+    print(f"\n  total ${total:.4f}")
+    return 0
+
+
+_FAILED_FILE = re.compile(r"\./(src/components/sections/\w+\.tsx)")
+
+
+def _run_build(ws: Path) -> tuple[bool, str]:
+    r = subprocess.run(["pnpm", "build"], cwd=ws, capture_output=True, text=True)
+    return r.returncode == 0, (r.stdout + r.stderr)
+
+
+def _repair_until_builds(bb, ws: Path, provider_name: str, max_attempts: int = 3) -> float:
+    """Build, and if it fails, hand the error back to the repairer.
+
+    Capped at 3 — the same cap as every other loop in the harness. A build that
+    still fails after three attempts is an escalation, not a retry.
+    """
+    from sparrow.agents.builder import Repairer, write_section
+
+    spent = 0.0
+    repairer: Repairer | None = None
+
+    for attempt in range(1, max_attempts + 1):
+        ok, output = _run_build(ws)
+        if ok:
+            print(f"\n  build ok{'' if attempt == 1 else f' after {attempt - 1} repair(s)'}")
+            return spent
+
+        m = _FAILED_FILE.search(output)
+        if not m:
+            print(f"\n  build failed, and no section could be blamed:\n{output[-800:]}",
+                  file=sys.stderr)
+            return spent
+
+        rel = m.group(1)
+        section = next((s for s in bb.sections if s.target_path == rel), None)
+        if section is None:
+            print(f"\n  build failed in {rel}, which is not a known section", file=sys.stderr)
+            return spent
+
+        first = output.find("Export ")
+        err = output[max(0, first - 200):][:2500] if first > 0 else output[-2500:]
+        print(f"\n  build failed in {section.id} — repairing (attempt {attempt}/{max_attempts})")
+
+        repairer = repairer or Repairer()
+        out = repairer.repair(bb, section, (ws / rel).read_text(), err)
+        write_section(ws, section, out.code)
+        cost = out.usage.cost(provider_name, repairer.tier)
+        spent += cost
+        print(f"     repaired  {out.usage.input_tokens:,} in  "
+              f"{out.usage.output_tokens:,} out  ${cost:.4f}")
+
+    print(f"\n  still failing after {max_attempts} attempts — escalate", file=sys.stderr)
+    return spent
+
+
 def cmd_shoot(args) -> int:
     from sparrow.capture import capture, serve
 
@@ -108,6 +208,11 @@ def main() -> int:
     a.add_argument("blackboard")
     a.add_argument("--sections", default=None)
     a.set_defaults(fn=cmd_audit)
+
+    b = sub.add_parser("build", help="build every pending section, one call each")
+    b.add_argument("blackboard")
+    b.add_argument("--blueprints", required=True)
+    b.set_defaults(fn=cmd_build)
 
     s = sub.add_parser("shoot", help="scroll-then-capture a static export")
     s.add_argument("dir", help="directory of the static export (out/)")

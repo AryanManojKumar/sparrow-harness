@@ -13,15 +13,9 @@ are never summarised, compressed, or reworded on the way into a prompt.
 
 from __future__ import annotations
 
-import os
-from dataclasses import dataclass
-
-from anthropic import Anthropic
-
 from sparrow.blackboard.schema import Blackboard
+from sparrow.providers import Completion, Provider, Tier, get_provider
 from sparrow.render.tokens import FIDELITY, to_prompt
-
-MODEL = "claude-opus-5"
 
 
 def _tag(name: str, body: str) -> str:
@@ -59,38 +53,25 @@ def context_block(bb: Blackboard) -> str:
     return "\n\n".join(parts)
 
 
-@dataclass
-class Result:
-    text: str
-    input_tokens: int
-    output_tokens: int
-
-
 class Agent:
-    """Base for every model-backed agent."""
+    """Base for every model-backed agent.
+
+    An agent declares the capability `tier` it needs and never names a model.
+    Which model backs that tier is provider configuration — see
+    `sparrow.providers`.
+    """
 
     name: str = "agent"
+    tier: Tier = Tier.MID
     max_tokens: int = 8000
 
-    def __init__(self, client: Anthropic | None = None) -> None:
-        if client is None:
-            if not os.environ.get("ANTHROPIC_API_KEY"):
-                raise RuntimeError(
-                    "ANTHROPIC_API_KEY is not set. Put it in backend/.env "
-                    "(see .env.example) or export it."
-                )
-            client = Anthropic()
-        self.client = client
+    def __init__(self, provider: Provider | None = None) -> None:
+        self.provider = provider or get_provider()
 
-    def call(self, *, system: str, user: str) -> Result:
-        msg = self.client.messages.create(
-            model=MODEL,
-            max_tokens=self.max_tokens,
-            system=system,
-            messages=[{"role": "user", "content": user}],
+    def call(self, *, system: str, user: str) -> Completion:
+        return self.provider.complete(
+            tier=self.tier, system=system, user=user, max_tokens=self.max_tokens
         )
-        text = "".join(b.text for b in msg.content if b.type == "text")
-        return Result(text, msg.usage.input_tokens, msg.usage.output_tokens)
 
 
 FIDELITY_LINE = FIDELITY
