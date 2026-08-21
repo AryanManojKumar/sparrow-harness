@@ -163,7 +163,7 @@ inventories; sources are matched against the brief.
 **Purpose.** Decide the direction: which primary skeleton, the palette, type scale, spacing,
 imagery treatment, page count, section order. Owns **Gate 2**.
 **Model.** Frontier. This is the agent whose ceiling sets the product's ceiling.
-**Owns.** `design_system`, `sitemap`, `sections[].blueprint`
+**Owns.** `design_system`, `sitemap`, `sections[].blueprint`, `sections[].ground`
 **Reads.** `brief`, `constraints`, `sources`.
 
 | Tool | Kind | Notes |
@@ -177,6 +177,11 @@ imagery treatment, page count, section order. Owns **Gate 2**.
 **Never.** Specify composition. `design_system` carries **vocabulary** — palette, type scale,
 spacing scale, radii, shadows, imagery treatment, motion character. Section layout, density, and
 what-goes-where belong to `sitemap` and to the builder. (See `AGENT-RESEARCH.md` §12.)
+
+**One exception, learned the hard way.** Section **ground** (page vs. muted) is a page-level
+decision and belongs to `sitemap`. In `experiments/drift-test-01`, pricing and FAQ independently
+chose the muted ground, landed adjacent, and merged into one undifferentiated grey block a third
+of the page tall. Neither builder could have seen it. Alternation is not a section-local call.
 **Done when.** `design_system` + `sitemap` exist, contrast passes, and the user has approved the
 direction. **Gate 2.**
 
@@ -283,7 +288,7 @@ three sections is a signal the direction was wrong — surface it, don't absorb 
 
 | Tool | Kind | Notes |
 |---|---|---|
-| `screenshot(breakpoints[], scale=2)` | io | |
+| `screenshot(breakpoints[], scale=2)` | io | **Must scroll the full page first** — `whileInView` entrance animations start at `opacity: 0` and never fire under a non-scrolling `fullPage` capture, so every below-fold section reads as empty. Confirmed in `experiments/drift-test-01` |
 | `get_a11y_tree()` | io | |
 | `click`, `fill`, `scroll` | io | Interaction, not just static capture |
 | `read_console()`, `read_network()` | io | Lovable mandates debugging tools *before* reading code |
