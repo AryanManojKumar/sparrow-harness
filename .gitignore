@@ -1,0 +1,24 @@
+# deps
+node_modules/
+.pnpm-store/
+
+# next
+.next/
+out/
+dist/
+*.tsbuildinfo
+next-env.d.ts
+
+# per-project agent workdirs (never committed)
+projects/
+
+# env
+.env
+.env.local
+.env*.local
+
+# os / editor
+.DS_Store
+*.log
+.vscode/
+.idea/
