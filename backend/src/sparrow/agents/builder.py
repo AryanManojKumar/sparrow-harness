@@ -15,7 +15,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from sparrow.agents.base import FIDELITY_LINE, Agent, context_block
+from sparrow.agents.base import FIDELITY_LINE, Agent, context_block, stable_system
 from sparrow.blackboard.schema import Blackboard, Blueprint, Ground, Section
 from sparrow.providers import Completion, Tier
 
@@ -75,8 +75,17 @@ class Builder(Agent):
         # sections — see experiments/drift-test-02.
         ground_class = "bg-background" if section.ground is Ground.PAGE else "bg-muted"
 
+        system = stable_system(
+            SYSTEM.format(fidelity=FIDELITY_LINE),
+            bb,
+            f"<stack>\n{stack.strip()}\n"
+            f"shadcn primitives already present in src/components/ui/: "
+            f"{', '.join(sorted(available_primitives))}\n</stack>\n\n"
+            "<copy>\nWrite real copy for this specific product. No lorem ipsum, no "
+            "placeholder brackets, no bracketed TODOs.\n</copy>",
+        )
+
         user = "\n\n".join([
-            context_block(bb),
             f"<blueprint>\n"
             f"id: {blueprint.id}\n"
             f"purpose: {blueprint.purpose}\n"
@@ -91,14 +100,9 @@ class Builder(Agent):
             f"decided at page level — it is not yours to choose, and omitting it "
             f"flattens the page rhythm.\n"
             f"</section>",
-            f"<stack>\n{stack.strip()}\n"
-            f"shadcn primitives already present in src/components/ui/: "
-            f"{', '.join(sorted(available_primitives))}\n</stack>",
-            "<copy>\nWrite real copy for this specific product. No lorem ipsum, no "
-            "placeholder brackets, no bracketed TODOs.\n</copy>",
         ])
 
-        res = self.call(system=SYSTEM.format(fidelity=FIDELITY_LINE), user=user)
+        res = self.call(system=system, user=user)
 
         m = _CODE.search(res.text)
         if not m:
@@ -139,11 +143,13 @@ class Repairer(Agent):
 
     def repair(self, bb: Blackboard, section: Section, code: str, error: str) -> BuildOutput:
         user = "\n\n".join([
-            context_block(bb),
             f"<file path=\"{section.target_path}\">\n{code}\n</file>",
             f"<build_error>\n{error.strip()[:4000]}\n</build_error>",
         ])
-        res = self.call(system=REPAIR_SYSTEM.format(fidelity=FIDELITY_LINE), user=user)
+        res = self.call(
+            system=stable_system(REPAIR_SYSTEM.format(fidelity=FIDELITY_LINE), bb),
+            user=user,
+        )
         m = _CODE.search(res.text)
         if not m:
             raise ValueError(f"repairer returned no code block for {section.id}")

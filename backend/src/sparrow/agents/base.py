@@ -22,6 +22,27 @@ def _tag(name: str, body: str) -> str:
     return f"<{name}>\n{body.strip()}\n</{name}>"
 
 
+def stable_system(instructions: str, bb: Blackboard, extra: str = "") -> str:
+    """Assemble everything that is IDENTICAL across every call an agent makes.
+
+    Prompt caching is prefix-matched and has a floor — OpenAI will not cache a
+    prefix under 1024 tokens, and Anthropic needs an explicit breakpoint. So the
+    ordering rule is not stylistic:
+
+        SYSTEM  = instructions + stack + brief + constraints + design system
+        USER    = only what changes between calls (blueprint, section, images)
+
+    Measured: with the context block left in the user message, the builder's
+    identical prefix came to 995 tokens and cached nothing at all — 29 tokens
+    under the floor. Moved here, it caches.
+    """
+    parts = [instructions.strip()]
+    if extra.strip():
+        parts.append(extra.strip())
+    parts.append(context_block(bb))
+    return "\n\n".join(parts)
+
+
 def context_block(bb: Blackboard) -> str:
     """The part of every agent prompt that is identical for every agent."""
     if bb.brief is None:
@@ -68,9 +89,12 @@ class Agent:
     def __init__(self, provider: Provider | None = None) -> None:
         self.provider = provider or get_provider()
 
-    def call(self, *, system: str, user: str) -> Completion:
+    def call(
+        self, *, system: str, user: str, images: list[str] | None = None
+    ) -> Completion:
         return self.provider.complete(
-            tier=self.tier, system=system, user=user, max_tokens=self.max_tokens
+            tier=self.tier, system=system, user=user,
+            max_tokens=self.max_tokens, images=images,
         )
 
 

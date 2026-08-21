@@ -113,8 +113,12 @@ def cmd_build(args) -> int:
         cost = out.usage.cost(builder.provider.name, builder.tier)
         total += cost
         loc = len(out.code.splitlines())
+        saved = out.usage.uncached_cost(builder.provider.name, builder.tier) - cost
+        cache = (f"  cache {out.usage.cache_hit_rate:>4.0%} (-${saved:.4f})"
+                 if out.usage.cached_tokens else "  cache   0%")
         print(f"  {section.order}. {section.id:14} {loc:>4} loc  "
-              f"{out.usage.input_tokens:>6,} in  {out.usage.output_tokens:>6,} out  ${cost:.4f}")
+              f"{out.usage.total_input:>6,} in  {out.usage.output_tokens:>6,} out  "
+              f"${cost:.4f}{cache}")
         if out.extension_request:
             print(f"     ↳ EXTENSION REQUEST: {out.extension_request}")
 
@@ -176,6 +180,57 @@ def _repair_until_builds(bb, ws: Path, provider_name: str, max_attempts: int = 3
     return spent
 
 
+def cmd_inspect(args) -> int:
+    """Deterministic pass first, then one vision call per section."""
+    from sparrow.agents.inspector import Inspector, deterministic_defects
+    from sparrow.capture import inspect_page, serve
+
+    bb = Blackboard.model_validate_json(Path(args.blackboard).read_text())
+    ws = _workspace(bb.project_id)
+    shots_dir = ws.parent / "shots" / "sections"
+
+    with serve(ws / "out", port=args.port) as url:
+        reports = inspect_page(url, shots_dir)
+
+    page_level = deterministic_defects(reports)
+    print(f"deterministic pass — {len(page_level)} finding(s), 0 model calls")
+    for d in page_level:
+        print(f"  {d}")
+
+    # Group per-section shots across breakpoints by DOM order.
+    by_index: dict[int, list] = {}
+    for r in reports.values():
+        for s in r.sections:
+            by_index.setdefault(s.section_index, []).append(s)
+
+    ordered = sorted(bb.sections, key=lambda s: s.order)
+    inspector = Inspector()
+    total, found = 0.0, 0
+    print(f"\nvision pass — provider {inspector.provider.name} · "
+          f"tier {inspector.tier.value}")
+
+    for pos, idx in enumerate(sorted(by_index)):
+        shots = by_index[idx]
+        section = ordered[pos] if pos < len(ordered) else None
+        if section is None:
+            continue
+        defects, usage = inspector.inspect_section(bb, section, shots, page_level)
+        cost = usage.cost(inspector.provider.name, inspector.tier)
+        total += cost
+        found += len(defects)
+        imgs = sum(s.image_tokens for s in shots)
+        cached = f" ({usage.cache_hit_rate:.0%} cached)" if usage.cached_tokens else ""
+        print(f"\n  {section.id:14} {len(shots)} shot(s), ~{imgs:,} image tokens  "
+              f"{usage.total_input:,} in{cached}  ${cost:.4f}")
+        for d in defects:
+            print(f"      {d}")
+        if not defects:
+            print("      pass")
+
+    print(f"\n  {found} visual defect(s) · vision cost ${total:.4f}")
+    return 0
+
+
 def cmd_shoot(args) -> int:
     from sparrow.capture import capture, serve
 
@@ -213,6 +268,11 @@ def main() -> int:
     b.add_argument("blackboard")
     b.add_argument("--blueprints", required=True)
     b.set_defaults(fn=cmd_build)
+
+    i = sub.add_parser("inspect", help="deterministic checks, then one vision call per section")
+    i.add_argument("blackboard")
+    i.add_argument("--port", type=int, default=4402)
+    i.set_defaults(fn=cmd_inspect)
 
     s = sub.add_parser("shoot", help="scroll-then-capture a static export")
     s.add_argument("dir", help="directory of the static export (out/)")

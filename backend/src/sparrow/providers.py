@@ -49,22 +49,53 @@ PRICES: dict[str, dict[Tier, tuple[float, float]]] = {
 }
 
 
+# Cached input is discounted. OpenAI bills cache reads at 10% of input; Anthropic
+# bills reads at 10% and writes at 125%. Both are worth designing prompts around:
+# put everything stable first, everything variable last.
+CACHE_READ_RATE = 0.10
+CACHE_WRITE_RATE = {"openai": 1.00, "anthropic": 1.25}
+
+
 @dataclass
 class Completion:
     text: str
     model: str
-    input_tokens: int
+    input_tokens: int          # uncached input only
     output_tokens: int
+    cached_tokens: int = 0     # read from cache, billed at CACHE_READ_RATE
+    cache_written: int = 0     # written to cache this call (Anthropic only)
+
+    @property
+    def total_input(self) -> int:
+        return self.input_tokens + self.cached_tokens
+
+    @property
+    def cache_hit_rate(self) -> float:
+        t = self.total_input
+        return self.cached_tokens / t if t else 0.0
 
     def cost(self, provider: str, tier: Tier) -> float:
         pin, pout = PRICES[provider][tier]
-        return self.input_tokens / 1e6 * pin + self.output_tokens / 1e6 * pout
+        return (
+            self.input_tokens / 1e6 * pin
+            + self.cached_tokens / 1e6 * pin * CACHE_READ_RATE
+            + self.cache_written / 1e6 * pin * CACHE_WRITE_RATE.get(provider, 1.0)
+            + self.output_tokens / 1e6 * pout
+        )
+
+    def uncached_cost(self, provider: str, tier: Tier) -> float:
+        """What this call would have cost with no caching — for the ledger."""
+        pin, pout = PRICES[provider][tier]
+        return self.total_input / 1e6 * pin + self.output_tokens / 1e6 * pout
 
 
 class Provider(Protocol):
     name: str
 
-    def complete(self, *, tier: Tier, system: str, user: str, max_tokens: int) -> Completion: ...
+    def complete(
+        self, *, tier: Tier, system: str, user: str, max_tokens: int,
+        images: list[str] | None = None, cache: bool = True,
+    ) -> Completion: ...
 
 
 class AnthropicProvider:
@@ -77,16 +108,36 @@ class AnthropicProvider:
             raise RuntimeError("ANTHROPIC_API_KEY is not set")
         self.client = Anthropic()
 
-    def complete(self, *, tier: Tier, system: str, user: str, max_tokens: int) -> Completion:
+    def complete(
+        self, *, tier: Tier, system: str, user: str, max_tokens: int,
+        images: list[str] | None = None, cache: bool = True,
+    ) -> Completion:
         model = MODELS[self.name][tier]
+        # Anthropic caches explicitly. The system block is identical across every
+        # call an agent makes, so it is the natural breakpoint.
+        sys_block: list[dict] = [{"type": "text", "text": system}]
+        if cache:
+            sys_block[0]["cache_control"] = {"type": "ephemeral"}
+
+        content: list[dict] = []
+        for b64 in images or []:
+            content.append({
+                "type": "image",
+                "source": {"type": "base64", "media_type": "image/png", "data": b64},
+            })
+        content.append({"type": "text", "text": user})
+
         m = self.client.messages.create(
-            model=model,
-            max_tokens=max_tokens,
-            system=system,
-            messages=[{"role": "user", "content": user}],
+            model=model, max_tokens=max_tokens, system=sys_block,
+            messages=[{"role": "user", "content": content}],
         )
         text = "".join(b.text for b in m.content if b.type == "text")
-        return Completion(text, model, m.usage.input_tokens, m.usage.output_tokens)
+        u = m.usage
+        return Completion(
+            text, model, u.input_tokens, u.output_tokens,
+            cached_tokens=getattr(u, "cache_read_input_tokens", 0) or 0,
+            cache_written=getattr(u, "cache_creation_input_tokens", 0) or 0,
+        )
 
 
 class OpenAIProvider:
@@ -99,23 +150,39 @@ class OpenAIProvider:
             raise RuntimeError("OPENAI_API_KEY is not set")
         self.client = OpenAI()
 
-    def complete(self, *, tier: Tier, system: str, user: str, max_tokens: int) -> Completion:
+    def complete(
+        self, *, tier: Tier, system: str, user: str, max_tokens: int,
+        images: list[str] | None = None, cache: bool = True,
+    ) -> Completion:
         model = MODELS[self.name][tier]
+        # OpenAI caches automatically on exact prefix match above ~1024 tokens —
+        # there is nothing to opt into, but prompt ORDER decides whether it hits.
+        content: list[dict] = [{"type": "text", "text": user}]
+        for b64 in images or []:
+            content.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:image/png;base64,{b64}"},
+            })
+
         # The gpt-5.x line takes max_completion_tokens and rejects temperature.
         r = self.client.chat.completions.create(
             model=model,
             max_completion_tokens=max_tokens,
             messages=[
                 {"role": "system", "content": system},
-                {"role": "user", "content": user},
+                {"role": "user", "content": content},
             ],
         )
         u = r.usage
+        cached = 0
+        if u and getattr(u, "prompt_tokens_details", None):
+            cached = getattr(u.prompt_tokens_details, "cached_tokens", 0) or 0
         return Completion(
             r.choices[0].message.content or "",
             model,
-            u.prompt_tokens if u else 0,
+            (u.prompt_tokens - cached) if u else 0,
             u.completion_tokens if u else 0,
+            cached_tokens=cached,
         )
 
 
