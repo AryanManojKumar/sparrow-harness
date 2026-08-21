@@ -375,14 +375,16 @@ blueprint cleanliness over output quality, which is the wrong trade for this pro
 
 | Layer | Choice | Pin |
 |---|---|---|
-| Framework | **Next.js 16, App Router, static export** | SSG output — SEO works, which is non-negotiable for business sites |
-| Language | **TypeScript 5**, React 19 | |
-| CSS | **Tailwind v4**, CSS-first `@theme`, **OKLCH** tokens | Not v3. See below — this one matters more than it looks |
-| Components | **shadcn/ui** | Primitive layer, customized via tokens, never ad-hoc styles |
-| Animation | **Motion v12** | Package is `motion`, import from `motion/react` — **never `framer-motion`** |
-| Icons | **lucide-react** | Never emoji as icons |
-| Images | `next/image` + sharp | |
-| Package manager | **pnpm** | |
+| Framework | **Next.js 16.3.1**, App Router, `output: "export"` | SSG output — SEO works, which is non-negotiable for business sites |
+| Language | **TypeScript 5.9.3**, React 19.2.8 | |
+| CSS | **Tailwind 4.3.3**, CSS-first `@theme`, **OKLCH** tokens | Not v3. See below — this one matters more than it looks |
+| Components | **shadcn/ui** — radix base, nova preset | Radix over Base UI: the most-trodden path is the point. Nova ships Lucide + Geist |
+| Animation | **Motion 13.1.1** | Package is `motion`, import from `motion/react` — **never `framer-motion`** |
+| Icons | **lucide-react 1.33** | Never emoji as icons |
+| Images | pre-sized variants from `curator` | `images.unoptimized` — static export has no runtime optimizer |
+| Package manager | **pnpm 11.22** | Not for speed — see §15 |
+
+Built and verified in `scaffold/`. `pnpm build` reaches *prerendered as static content*.
 
 ### Why this, on evidence
 
@@ -447,6 +449,13 @@ selection against a fixed architecture.
 | **Foundation** | §14 table | Locked. Change requests refused as a capability boundary |
 | **Blessed** | shadcn, Motion, lucide, sharp | Pre-installed in the template. No gate |
 | **On-demand** | carousel, charts, maps, lottie, … | Must pass the gate, then registered |
+
+**Why pnpm, specifically.** Not speed — **hardlinking**. pnpm resolves into a global
+content-addressable store and hardlinks into each project's `node_modules`, so per-project
+isolation stops being expensive: the hundredth project costs seconds and near-zero disk, while
+the lockfile guarantees byte-identical versions. This is what makes the scaffold source-only.
+`node_modules` is never committed and **never copied per project** — copying it would cost
+~550MB per site. Copy the source (~200KB), then `pnpm install --frozen-lockfile`.
 
 **`dependencies` is a first-class blackboard object**, injected into every builder call, mutated
 only by diff — exactly like `design_system`, and for the same reason. Without it, the builder
