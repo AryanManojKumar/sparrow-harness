@@ -22,3 +22,9 @@ projects/
 *.log
 .vscode/
 .idea/
+
+# python
+.venv/
+__pycache__/
+*.py[cod]
+.uv/
