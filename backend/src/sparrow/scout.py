@@ -98,7 +98,16 @@ _SEGMENT = r"""
     const key = top + ':' + h;
     if (seen.has(key)) return;
     seen.add(key);
-    const text = (el.innerText || '').replace(/\s+/g, ' ').trim();
+    // innerText reports only RENDERED text, so a section still sitting at
+    // opacity:0 behind an animation gate comes back empty even though its copy
+    // is fully present in the DOM. On vercel.com that hid four real sections.
+    // Fall back to textContent, and record that we had to.
+    let text = (el.innerText || '').replace(/\s+/g, ' ').trim();
+    let hidden = false;
+    if (!text) {
+      const raw = (el.textContent || '').replace(/\s+/g, ' ').trim();
+      if (raw) { text = raw; hidden = true; }
+    }
     if (!text && !el.querySelector('img, svg, video')) return;
     out.push({
       index: out.length,
@@ -113,6 +122,7 @@ _SEGMENT = r"""
       buttons: el.querySelectorAll('button, a[class*=btn], a[class*=button]').length,
       listItems: el.querySelectorAll('li').length,
       words: text.split(' ').filter(Boolean).length,
+      unrendered: hidden,
       text: text.slice(0, 220),
     });
   });
@@ -135,6 +145,7 @@ class Band:
     buttons: int
     listItems: int
     words: int
+    unrendered: bool
     text: str
     shot: Path | None = None
 

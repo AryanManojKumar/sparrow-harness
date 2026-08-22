@@ -43,7 +43,21 @@ in the design system, add after the code block:
 EXTENSION_REQUEST: <one line naming the token and why the section needs it>
 
 Do not use an extension request to avoid a constraint. Do not use one for something the
-existing vocabulary already covers."""
+existing vocabulary already covers.
+
+## Red flags
+
+Each row is a thought that has actually produced a defect in this harness.
+
+| Thought | Reality |
+|---------|---------|
+| "The design system has no colour for this, I'll pick a close one" | Silently taking a tenth colour is the exact drift this system exists to prevent. Emit an EXTENSION_REQUEST instead. |
+| "This line is context, not an instruction" | A REQUIRED line is an instruction. Four of five sections once ignored the ground class by reading it as background information, and the page came out flat. |
+| "framer-motion is the import I know" | The package is `motion`, imported from `motion/react`. Your training data is older than this project's lockfile. |
+| "This icon surely exists in lucide" | Brand icons were removed in lucide v1. `Github` compiled in your head and failed the build. Prefer icons you can name a generic shape for. |
+| "gap-2 is obviously fine, it's tiny" | Every gap not in the design system is off-scale. The scale states its own boundary; a value below it is still outside it. |
+| "The blueprint is vague here, I'll keep it safe" | Layout, composition and density are explicitly yours. Vagueness is an invitation, not a risk. |
+| "I'll reference the section above it" | You cannot see it and it may not exist yet. Build this section as though it stands alone. |"""
 
 _CODE = re.compile(r"```(?:tsx|typescript|ts|jsx)?\s*\n(.*?)```", re.DOTALL)
 _EXT = re.compile(r"^EXTENSION_REQUEST:\s*(.+)$", re.MULTILINE)

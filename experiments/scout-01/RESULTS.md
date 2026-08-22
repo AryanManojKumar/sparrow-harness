@@ -53,6 +53,33 @@ Two behaviours worth keeping:
 Accuracy is roughly 85%, with low-confidence flags landing on the genuinely ambiguous
 cases.
 
+## Follow-up — the "empty sections" were never empty
+
+Vercel's four blank sections looked like a scraper-capability problem. They were not.
+
+Patient waiting changed nothing — 600ms dwell, two passes, `networkidle`, fonts loaded:
+identical output, 124 words, four blanks. So not a timing problem either.
+
+Inspecting them showed `textContent` holding 598, 582, 56 and 40 characters. The copy
+was in the DOM the whole time. **`innerText` reports only RENDERED text**, and those
+sections were sitting at `opacity: 0` behind an animation gate that never fired for a
+headless viewport.
+
+One-word fix — fall back to `textContent`, and flag that it was needed:
+
+| Site | Before | After |
+|---|---|---|
+| vercel.com | 6 bands, 4 empty | 6 bands, **0 empty** (3 recovered) |
+| linear.app | 9 bands, 0 empty | unchanged, 0 recovered |
+
+The `unrendered` flag is worth keeping rather than hiding: a band whose text exists but
+does not render is exactly the band whose screenshot will also be blank, so it should
+be ranked on structure rather than on pixels.
+
+**This settles the scraper question.** It was never a capability gap. A text-extraction
+API would have hit the same wall — most call `innerText` or serialise rendered output —
+and would additionally have given up computed styles and element geometry.
+
 ## What this means for the ranking design
 
 Segmentation and classification are both **viable and cheap**. The chain

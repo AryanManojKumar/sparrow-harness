@@ -67,7 +67,21 @@ Respond with JSON only, no prose, no code fence:
 {"defects": [{"severity": "high|medium|low", "what": "<what is wrong>",
               "where": "<which element or region, and at which breakpoint>"}]}
 
-Empty list means the section passes."""
+Empty list means the section passes.
+
+## Red flags
+
+Each row is a thought that has actually produced a false report from this agent.
+
+| Thought | Reality |
+|---------|---------|
+| "That heading looks like the hero display step" | You cannot tell text-4xl from text-5xl in a picture. You reported this once and were wrong — it was the h2 step. The source is checked separately. |
+| "That grey looks too light against the background" | Contrast was measured to four significant figures before you were called. Your eye is not an instrument. |
+| "I have looked at five sections and found nothing, I should find something" | Passing is the common case. An inspector that always finds something is one nobody reads. |
+| "The spacing here feels tight" | Feelings are not defects. If you cannot point at it, it is not yours to report. |
+| "This would look better as two columns" | You are not redesigning. Report what is broken, not what is different. |
+| "The deterministic pass missed this contrast issue, I should flag it" | If it is not in the findings, it passed. Do not relitigate arithmetic. |
+| "This element might be misaligned" | Might is not a report. Either it visibly is, or you say nothing. |"""
 
 _JSON = re.compile(r"\{.*\}", re.DOTALL)
 
