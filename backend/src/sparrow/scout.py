@@ -76,14 +76,32 @@ _SEGMENT = r"""
     }
   } else {
     strategy = 'spine';
-    let node = document.body, depth = 0;
-    while (depth++ < 12) {
+    // Descend RECURSIVELY. Stopping at the first node with several band-children
+    // is not enough: clerk.com yields two children of <body>, one of which is
+    // 7,059px of a 7,674px page — still a wrapper, not a section. Any child that
+    // dominates the page is a container, so recurse into it and keep the rest.
+    const pageH = document.body.scrollHeight;
+    const flatten = (node, depth) => {
+      if (depth > 14) return [node];
       const kids = [...node.children].filter(isBand);
-      if (kids.length > 1) { bands = kids; break; }
-      if (kids.length === 1) { node = kids[0]; continue; }
-      // No full-bleed child: take whatever tall children exist.
-      bands = [...node.children].filter(el => visible(el) && box(el).height >= opts.minHeight);
-      break;
+      if (!kids.length) {
+        const tall = [...node.children].filter(
+          el => visible(el) && box(el).height >= opts.minHeight);
+        return tall.length > 1 ? tall : [node];
+      }
+      const out = [];
+      for (const kid of kids) {
+        // A child taller than 55% of the page cannot itself be one section.
+        if (box(kid).height > pageH * 0.55) out.push(...flatten(kid, depth + 1));
+        else out.push(kid);
+      }
+      return out;
+    };
+    bands = flatten(document.body, 0);
+    // Sweep up header/footer the descent stepped over.
+    for (const sel of ['body header', 'body footer']) {
+      const el = document.querySelector(sel);
+      if (el && visible(el) && !bands.some(b => b === el || b.contains(el))) bands.push(el);
     }
   }
 

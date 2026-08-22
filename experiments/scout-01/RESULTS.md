@@ -80,6 +80,49 @@ be ranked on structure rather than on pixels.
 API would have hit the same wall — most call `innerText` or serialise rendered output —
 and would additionally have given up computed styles and element geometry.
 
+## Scraper evaluation — crawl4ai, and what the block rate actually is
+
+crawl4ai (79k stars, Apache-2.0, actively maintained) **depends on
+`playwright>=1.49`**, plus `patchright` and `playwright-stealth`. It is a Playwright
+wrapper, so there is no browser capability in it we do not already have.
+
+What it adds: stealth/anti-bot, markdown extraction, BM25 filtering, sqlite caching,
+LLM extraction strategies, session management.
+
+What it costs for this use case: `CrawlResult.screenshot` is **one page-level string**.
+There is no persistent page handle, so no per-element screenshots and no multi-breakpoint
+capture in a single session — which is exactly what per-section ranking and
+interview-by-screenshot need.
+
+Then the empirical question: are we actually being blocked? Nine live sites:
+
+**0 blocked. 0 empty sections.** Stealth solves a problem we do not have.
+
+The real failure was segmentation. Three of nine came back with 1–2 bands, and the
+diagnosis was that the spine descent stopped too early — clerk.com yields two children
+of `<body>`, one of which is 7,059px of a 7,674px page. Still a wrapper, not a section.
+
+Fixed by descending **recursively**: any child taller than 55% of the page is a
+container by definition, so recurse into it and keep its siblings.
+
+| Site | strategy | before | after |
+|---|---|---|---|
+| clerk.com | spine | 2 | **8** |
+| www.twilio.com | spine | 2 | **10** |
+| www.datadoghq.com | spine | 5 | 5 |
+| posthog.com | spine | 1 | 1 — still thin |
+
+**Usable: 3/9 → 8/9.**
+
+posthog.com remains the one honest failure, and it is a different class: its page is
+900px tall at load — an `h-dvh` app shell that renders on interaction. No scraper fixes
+that; it needs interaction scripting or exclusion.
+
+**Verdict: stay on Playwright.** The win came from a recursive descent and a
+`textContent` fallback — twelve lines of our own code. If blocking ever appears, adopt
+`patchright` directly: it is a drop-in Playwright replacement, one import, and it keeps
+the page handle.
+
 ## What this means for the ranking design
 
 Segmentation and classification are both **viable and cheap**. The chain
