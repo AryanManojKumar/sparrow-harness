@@ -35,6 +35,7 @@ import re
 from sparrow.agents.base import Agent, context_block
 from sparrow.blackboard.schema import Blackboard, DesignSystem
 from sparrow.providers import Tier
+from sparrow.render.tokens import validate_fonts
 
 SYSTEM = """You are the design lead at a small studio known for giving every client a
 visual identity that could not be mistaken for anyone else's. This client has already
@@ -172,4 +173,47 @@ class DesignDirector(Agent):
             raise ValueError(f"design director returned no JSON:\n{res.text[:400]}")
         payload = json.loads(m.group(0))
         revised = payload.pop("revised", "")
-        return DesignSystem.model_validate(payload), revised, res
+        ds = DesignSystem.model_validate(payload)
+        return self._resolve_fonts(ds), revised, res
+
+    SUBSTITUTE = """You picked a typeface that Google Fonts does not serve. Replace it.
+
+Pick the substitute that best preserves the design intent you already described. You may
+only choose from the alternatives offered — they are the closest families Google actually
+serves.
+
+JSON only: {"replacements": {"<unavailable family>": "<chosen alternative>"}}"""
+
+    def _resolve_fonts(self, ds: DesignSystem, attempts: int = 2) -> DesignSystem:
+        """Swap any family Google does not serve for one it does.
+
+        A design system naming an unavailable face fails at build time inside
+        layout.tsx — a file no section owns, so the repairer cannot reach it. It
+        is cheaper and far clearer to catch it here.
+        """
+        for _ in range(attempts):
+            bad = validate_fonts(ds)
+            if not bad:
+                return ds
+            offer = "\n".join(
+                f"- {name!r} is unavailable. Alternatives: "
+                + (", ".join(near) if near else "(no close match — pick any suitable family)")
+                for name, near in bad.items()
+            )
+            res = self.call(
+                system=self.SUBSTITUTE,
+                user=(f"<intent>\n{ds.atmosphere}\n\nSignature: {ds.signature}\n</intent>\n\n"
+                      f"<unavailable>\n{offer}\n</unavailable>"),
+            )
+            m = _JSON.search(res.text)
+            if not m:
+                break
+            repl = json.loads(m.group(0)).get("replacements", {})
+            for field in ("font_display", "font_body", "font_mono"):
+                cur = getattr(ds, field)
+                if cur in repl:
+                    setattr(ds, field, repl[cur])
+        # Last resort: drop an unavailable mono rather than fail the build.
+        if validate_fonts(ds) and ds.font_mono and ds.font_mono in validate_fonts(ds):
+            ds.font_mono = None
+        return ds

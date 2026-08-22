@@ -10,6 +10,7 @@ and tailwind.config.ts), one layer up.
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 from sparrow.blackboard.schema import DesignSystem
 
@@ -165,3 +166,54 @@ def font_imports(ds: DesignSystem) -> tuple[str, str, str]:
     )
     cls = " ".join(f"${{{slug}.variable}}" for _, slug in uniq.values())
     return imp, consts, f"{cls}|||{theme}"
+
+
+# --- font validation --------------------------------------------------------
+
+_CATALOG: set[str] | None = None
+_CATALOG_PATH = Path.home() / ".cache" / "sparrow" / "google-fonts.txt"
+
+
+def google_families(refresh: bool = False) -> set[str]:
+    """Every family Google Fonts actually serves, cached on disk.
+
+    `design_director` picks fonts by name and cannot be handed a 1,500-entry
+    list in its prompt, so the names it invents have to be checked. An unknown
+    family fails as `Can't resolve 'next/font/google/target.css'` with
+    "Unknown font" — in layout.tsx, which no section owns, so the repairer
+    cannot reach it. Catch it at the point of choice instead.
+    """
+    global _CATALOG
+    if _CATALOG is not None and not refresh:
+        return _CATALOG
+    if _CATALOG_PATH.exists() and not refresh:
+        _CATALOG = set(_CATALOG_PATH.read_text().splitlines())
+        return _CATALOG
+
+    import json
+    import urllib.request
+
+    req = urllib.request.Request(
+        "https://fonts.google.com/metadata/fonts",
+        headers={"User-Agent": "Mozilla/5.0"},
+    )
+    with urllib.request.urlopen(req, timeout=20) as r:
+        raw = r.read().decode("utf-8")
+    raw = raw[raw.index("{"):]                       # strip the XSSI prefix
+    fams = {f["family"] for f in json.loads(raw)["familyMetadataList"]}
+    _CATALOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _CATALOG_PATH.write_text("\n".join(sorted(fams)))
+    _CATALOG = fams
+    return fams
+
+
+def validate_fonts(ds: DesignSystem) -> dict[str, list[str]]:
+    """Return {bad_family: [near misses]}. Empty dict means all resolve."""
+    import difflib
+
+    fams = google_families()
+    bad: dict[str, list[str]] = {}
+    for name in {ds.font_display, ds.font_body, ds.font_mono}:
+        if name and name not in fams:
+            bad[name] = difflib.get_close_matches(name, fams, n=4, cutoff=0.5)
+    return bad

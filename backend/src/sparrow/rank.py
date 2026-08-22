@@ -34,7 +34,13 @@ from sparrow.providers import Provider, Tier
 
 _JSON = re.compile(r"\{.*\}", re.DOTALL)
 
-# Types worth ranking. Nav and footer are conventions, not design decisions.
+# Page chrome, not sitemap sections. Every site has a nav and a footer; counting
+# them says nothing, and letting them into the order put `nav` second on a real
+# run. `other` is the classifier's "I could not tell" bucket — treating it as a
+# section type makes an extraction failure look like a category convention.
+NOT_SECTIONS = {"nav", "footer", "other"}
+
+# Types worth ranking.
 RANKABLE = {
     "hero", "logo-wall", "feature-grid", "feature-detail", "product-showcase",
     "testimonial", "pricing", "faq", "comparison", "integration-grid", "stats", "cta",
@@ -76,15 +82,22 @@ class Commonality:
     typical_order: list[str] = field(default_factory=list)
 
     def conventional(self, threshold: float = 0.6) -> list[str]:
-        """Types present on at least `threshold` of the sources."""
+        """Section types present on at least `threshold` of the sources."""
         need = max(2, round(self.sites * threshold))
-        return [t for t, n in self.counts.most_common() if n >= need]
+        return [t for t, n in self.counts.most_common()
+                if n >= need and t not in NOT_SECTIONS]
 
     def report(self) -> str:
         lines = [f"{self.sites} sources examined.", "", "Section types by prevalence:"]
         for t, n in self.counts.most_common():
+            if t in NOT_SECTIONS:
+                continue
             bar = "#" * n
             lines.append(f"  {t:<20} {n}/{self.sites} {bar}")
+        skipped = {t: n for t, n in self.counts.items() if t in NOT_SECTIONS}
+        if skipped:
+            lines.append("  (chrome and unclassified, excluded: "
+                         + ", ".join(f"{t} {n}/{self.sites}" for t, n in skipped.items()) + ")")
         lines.append("")
         lines.append(f"Conventional for this category: {', '.join(self.conventional())}")
         lines.append(f"Typical order: {' -> '.join(self.typical_order)}")
@@ -107,7 +120,7 @@ def commonality(labelled: dict[str, list[tuple[str, int]]]) -> Commonality:
         n = max((p for _, p in types), default=1)
         for t, p in types:
             positions.setdefault(t, []).append(p / n)
-    conv = set(c.conventional())
+    conv = set(c.conventional())          # already excludes chrome and `other`
     c.typical_order = [
         t for t, _ in sorted(
             ((t, sum(v) / len(v)) for t, v in positions.items() if t in conv),
