@@ -58,6 +58,7 @@ class Rounds:
     cap: int
     spent: int = 0
     reserved: bool = False
+    closed: bool = False
     history: list[tuple[int, Outcome, str]] = field(default_factory=list)
 
     @property
@@ -66,7 +67,7 @@ class Rounds:
 
     @property
     def exhausted(self) -> bool:
-        return self.spent >= self.cap
+        return self.closed or self.spent >= self.cap
 
     def reserve(self) -> int | Blocked:
         """Take the next round number before the attempt starts."""
@@ -101,9 +102,12 @@ class Rounds:
             )
         if self.reserved:
             self.settle(Outcome.ATTEMPTED, f"complete: {evidence}")
-        self.spent = self.cap  # closed; no further rounds
+        # Closing is not the same as spending. Overwriting `spent` with `cap`
+        # made a first-try success report "3/3 attempts".
+        self.closed = True
 
     def summary(self) -> str:
         free = sum(1 for _, o, _ in self.history if o is not Outcome.ATTEMPTED)
         tail = f", {free} not charged" if free else ""
-        return f"{self.subject}: {self.spent}/{self.cap} attempts{tail}"
+        state = "done" if self.closed else "open"
+        return f"{self.subject}: {self.spent}/{self.cap} attempts, {state}{tail}"

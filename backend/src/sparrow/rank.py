@@ -1,0 +1,229 @@
+"""Source ranking — turning extracted sites into evidence the design agent reads.
+
+Three steps, in increasing cost:
+
+1. COMMONALITY. Pure counting, no model. What section types does this category's
+   pages actually contain, and in what order? Convention is information — but
+   convention is not a requirement, so this informs the sitemap, never dictates it.
+
+2. PRIMARY REFERENCE. One cheap call. Which single site's SKELETON best fits this
+   brief? CLAUDE.md §5: blending six sites yields the mean of six sites. One site
+   owns the rhythm; the rest are a checklist.
+
+3. PER-SECTION STRUCTURE. One cheap call per section type, all candidates in it.
+   Which site's version of this section is best STRUCTURED for this brief — not
+   which looks nicest.
+
+What is ranked is structure. Visual direction stays with `design_director` and
+comes from one place, or the result is six good sections that do not belong on the
+same page.
+
+The rubric is concrete on purpose. "Which is best" produces the same failure as a
+taste-judging observer: it approves anything on turn one and nitpicks on turn three.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+from collections import Counter
+from dataclasses import dataclass, field
+
+from sparrow.blackboard.schema import Brief
+from sparrow.providers import Provider, Tier
+
+_JSON = re.compile(r"\{.*\}", re.DOTALL)
+
+# Types worth ranking. Nav and footer are conventions, not design decisions.
+RANKABLE = {
+    "hero", "logo-wall", "feature-grid", "feature-detail", "product-showcase",
+    "testimonial", "pricing", "faq", "comparison", "integration-grid", "stats", "cta",
+}
+
+
+@dataclass
+class Candidate:
+    """One site's version of one section type."""
+
+    site: str
+    section_type: str
+    position: int          # 1-based order on its own page
+    height: int
+    words: int
+    images: int
+    buttons: int
+    list_items: int
+    headings: list[str]
+    text: str
+    unrendered: bool = False
+
+    def line(self) -> str:
+        return (
+            f"[{self.site}] pos {self.position} · {self.height}px · {self.words}w · "
+            f"{self.images} img · {self.buttons} btn · {self.list_items} li"
+            f"{' · TEXT NOT RENDERED' if self.unrendered else ''}\n"
+            f"    heading: {'; '.join(self.headings[:2]) or '—'}\n"
+            f"    copy: {self.text[:150]}"
+        )
+
+
+@dataclass
+class Commonality:
+    """What this category's pages contain, counted rather than guessed."""
+
+    sites: int
+    counts: Counter = field(default_factory=Counter)
+    typical_order: list[str] = field(default_factory=list)
+
+    def conventional(self, threshold: float = 0.6) -> list[str]:
+        """Types present on at least `threshold` of the sources."""
+        need = max(2, round(self.sites * threshold))
+        return [t for t, n in self.counts.most_common() if n >= need]
+
+    def report(self) -> str:
+        lines = [f"{self.sites} sources examined.", "", "Section types by prevalence:"]
+        for t, n in self.counts.most_common():
+            bar = "#" * n
+            lines.append(f"  {t:<20} {n}/{self.sites} {bar}")
+        lines.append("")
+        lines.append(f"Conventional for this category: {', '.join(self.conventional())}")
+        lines.append(f"Typical order: {' -> '.join(self.typical_order)}")
+        return "\n".join(lines)
+
+
+def commonality(labelled: dict[str, list[tuple[str, int]]]) -> Commonality:
+    """Count section types across sources. Deterministic; costs nothing.
+
+    `labelled` maps site -> [(section_type, position), ...].
+    """
+    c = Commonality(sites=len(labelled))
+    for types in labelled.values():
+        for t, _ in {(t, 0) for t, _ in types}:  # count each type once per site
+            c.counts[t] += 1
+
+    # Typical order: mean position of each conventional type across sources.
+    positions: dict[str, list[float]] = {}
+    for types in labelled.values():
+        n = max((p for _, p in types), default=1)
+        for t, p in types:
+            positions.setdefault(t, []).append(p / n)
+    conv = set(c.conventional())
+    c.typical_order = [
+        t for t, _ in sorted(
+            ((t, sum(v) / len(v)) for t, v in positions.items() if t in conv),
+            key=lambda kv: kv[1],
+        )
+    ]
+    return c
+
+
+PRIMARY_SYSTEM = """You pick ONE reference site whose page SKELETON best fits a brief.
+
+You are not judging looks — you cannot see these sites. You are judging structure: what
+sections exist, in what order, at what density, and whether that shape serves this
+audience and this offering.
+
+Score each site on four axes, then pick one:
+- FIT: does its section sequence match what this brief needs to communicate?
+- DEPTH: does it carry enough sections to fill a real page, without padding?
+- PACING: does it alternate weight sensibly, or is it a wall of equal blocks?
+- AUDIENCE: does its density and copy volume suit this brief's reader?
+
+Blending is not an option. One site owns the rhythm; naming a second as "also good"
+defeats the purpose.
+
+JSON only:
+{"primary": "<site>", "why": "<one sentence tied to the brief>",
+ "runner_up": "<site>", "rejected": {"<site>": "<one clause>"}}"""
+
+
+def pick_primary(
+    provider: Provider, brief: Brief, labelled: dict[str, list[tuple[str, int]]]
+) -> tuple[str, str, object]:
+    lines = []
+    for site, types in labelled.items():
+        seq = " -> ".join(t for t, _ in sorted(types, key=lambda x: x[1]))
+        lines.append(f"{site}: {seq}")
+    user = (
+        f"<brief>\nOffering: {brief.offering}\nAudience: {brief.audience}\n"
+        f"Tone: {brief.tone}\nPrimary action: {brief.primary_action}\n</brief>\n\n"
+        "<skeletons>\n" + "\n".join(lines) + "\n</skeletons>"
+    )
+    res = provider.complete(tier=Tier.CHEAP, system=PRIMARY_SYSTEM, user=user, max_tokens=2000)
+    m = _JSON.search(res.text)
+    if not m:
+        raise ValueError(f"no JSON from primary selection: {res.text[:200]}")
+    d = json.loads(m.group(0))
+    return d["primary"], d.get("why", ""), res
+
+
+SECTION_SYSTEM = """You rank several sites' versions of ONE section type, for one brief.
+
+You cannot see them. Judge STRUCTURE from the measurements and copy given:
+
+- COVERAGE: does it carry the elements this section needs to do its job for this brief?
+- DENSITY: is the copy volume right for this audience — technical readers tolerate more,
+  consumers less?
+- EVIDENCE: does it show something concrete (a product, a number, a name) or only assert?
+- ECONOMY: does every element earn its place, or is it padded to fill space?
+
+A section whose text did not render is missing its copy, not lacking it — rank it on its
+counts alone and say so.
+
+Rank all candidates. The winner's structure will be adapted, never copied: a different
+brand, different copy, a different design system.
+
+JSON only:
+{"winner": "<site>", "why": "<one sentence tied to this brief>",
+ "order": ["<site>", ...],
+ "adopt": ["<2-4 concrete structural elements worth carrying over>"]}"""
+
+
+def rank_section(
+    provider: Provider, brief: Brief, section_type: str, candidates: list[Candidate]
+) -> tuple[dict, object]:
+    if len(candidates) < 2:
+        only = candidates[0].site if candidates else None
+        return (
+            {"winner": only, "why": "only candidate — not a ranked choice",
+             "order": [only] if only else [], "adopt": [], "unopposed": True},
+            None,
+        )
+    user = (
+        f"<brief>\nOffering: {brief.offering}\nAudience: {brief.audience}\n"
+        f"Tone: {brief.tone}\n</brief>\n\n"
+        f"<section_type>{section_type}</section_type>\n\n"
+        "<candidates>\n" + "\n\n".join(c.line() for c in candidates) + "\n</candidates>"
+    )
+    res = provider.complete(tier=Tier.CHEAP, system=SECTION_SYSTEM, user=user, max_tokens=2500)
+    m = _JSON.search(res.text)
+    if not m:
+        raise ValueError(f"no JSON ranking {section_type}: {res.text[:200]}")
+    return json.loads(m.group(0)), res
+
+
+def to_design_brief(
+    comm: Commonality, primary: str, primary_why: str, rankings: dict[str, dict]
+) -> str:
+    """The <sources> block `design_director` reads.
+
+    Structure only. It deliberately carries no colours, fonts or spacing — the
+    visual direction is the design agent's to decide, and handing it six sites'
+    aesthetics is how a page ends up looking like six sites.
+    """
+    out = [comm.report(), "", f"PRIMARY REFERENCE: {primary}", f"  {primary_why}",
+           "  Its section order and pacing are the skeleton. Its look is NOT.", ""]
+    out.append("BEST-STRUCTURED VERSION OF EACH SECTION")
+    for t in comm.typical_order:
+        r = rankings.get(t)
+        if not r:
+            continue
+        tag = " (unopposed)" if r.get("unopposed") else ""
+        out.append(f"  {t}: {r['winner']}{tag} — {r['why']}")
+        for a in r.get("adopt", []):
+            out.append(f"      adopt: {a}")
+    out.append("")
+    out.append("These are structural patterns to adapt, never designs to reproduce. "
+               "Extracting layout patterns is fine; reproducing a company's "
+               "distinctive look for their competitor is not.")
+    return "\n".join(out)

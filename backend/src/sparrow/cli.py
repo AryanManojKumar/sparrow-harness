@@ -255,14 +255,88 @@ def _repair_until_builds(bb, ws: Path, provider_name: str, max_attempts: int = 3
               f"{out.usage.output_tokens:,} out  ${cost:.4f}")
 
 
+def cmd_scout(args) -> int:
+    """Extract reference sites, rank them against the brief, emit the design brief."""
+    from sparrow.blueprints import Blueprint  # noqa: F401  (keeps import graph honest)
+    from sparrow.providers import Tier, get_provider
+    from sparrow.rank import (Candidate, RANKABLE, commonality, pick_primary,
+                              rank_section, to_design_brief)
+    from sparrow.scout import classify, extract
+
+    bb = Blackboard.model_validate_json(Path(args.blackboard).read_text())
+    if bb.brief is None:
+        print("no brief on the blackboard", file=sys.stderr)
+        return 1
+
+    out_dir = PROJECTS / bb.project_id / "sources"
+    provider = get_provider()
+    labelled: dict[str, list[tuple[str, int]]] = {}
+    by_type: dict[str, list[Candidate]] = {}
+    spent = 0.0
+
+    for url in args.urls:
+        site = url.split("//")[-1].split("/")[0]
+        r = extract(url, out_dir, shots=args.shots)
+        if not r.ok:
+            print(f"  {site:26} could not be read — {r.error[:50]}", file=sys.stderr)
+            continue
+        if len(r.bands) < 4:
+            print(f"  {site:26} only {len(r.bands)} section(s) — too thin to rank, skipped",
+                  file=sys.stderr)
+            continue
+        types = classify(provider, r.bands)
+        labelled[site] = [(t, b.index + 1) for t, b in zip(types, r.bands)]
+        for t, b in zip(types, r.bands):
+            if t in RANKABLE:
+                by_type.setdefault(t, []).append(Candidate(
+                    site=site, section_type=t, position=b.index + 1, height=b.height,
+                    words=b.words, images=b.images, buttons=b.buttons,
+                    list_items=b.listItems, headings=b.headings, text=b.text,
+                    unrendered=b.unrendered,
+                ))
+        print(f"  {site:26} {len(r.bands):>2} sections  {', '.join(dict.fromkeys(types))[:64]}")
+
+    if len(labelled) < 2:
+        print("\nneed at least two readable sources to rank", file=sys.stderr)
+        return 1
+
+    comm = commonality(labelled)
+    print(f"\n{comm.report()}")
+
+    primary, why, usage = pick_primary(provider, bb.brief, labelled)
+    spent += usage.cost(provider.name, Tier.CHEAP)
+    print(f"\nprimary reference: {primary}\n  {why}")
+
+    rankings: dict[str, dict] = {}
+    for t in comm.typical_order:
+        cands = by_type.get(t, [])
+        if not cands:
+            continue
+        r, usage = rank_section(provider, bb.brief, t, cands)
+        if usage is not None:
+            spent += usage.cost(provider.name, Tier.CHEAP)
+        rankings[t] = r
+        tag = " (unopposed)" if r.get("unopposed") else ""
+        print(f"  {t:<18} -> {r['winner']}{tag}")
+
+    brief_text = to_design_brief(comm, primary, why, rankings)
+    dest = PROJECTS / bb.project_id / "sources" / "design-brief.md"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(brief_text)
+    print(f"\n  written {dest}\n  ranking cost ${spent:.4f}")
+    return 0
+
+
 def cmd_inspect(args) -> int:
     """Deterministic pass first, then one vision call per section."""
     from sparrow.agents.inspector import Inspector, deterministic_defects
+    from sparrow.blueprints import load_dir
     from sparrow.capture import inspect_page, serve
 
     bb = Blackboard.model_validate_json(Path(args.blackboard).read_text())
     ws = _workspace(bb.project_id)
     shots_dir = ws.parent / "shots" / "sections"
+    blueprints = load_dir(Path(args.blueprints)) if args.blueprints else {}
 
     with serve(ws / "out", port=args.port) as url:
         reports = inspect_page(url, shots_dir)
@@ -289,7 +363,8 @@ def cmd_inspect(args) -> int:
         section = ordered[pos] if pos < len(ordered) else None
         if section is None:
             continue
-        defects, usage = inspector.inspect_section(bb, section, shots, page_level)
+        defects, usage = inspector.inspect_section(
+            bb, section, shots, page_level, blueprints.get(section.blueprint_id))
         cost = usage.cost(inspector.provider.name, inspector.tier)
         total += cost
         found += len(defects)
@@ -344,9 +419,17 @@ def main() -> int:
     b.add_argument("--blueprints", required=True)
     b.set_defaults(fn=cmd_build)
 
+    sc = sub.add_parser("scout", help="extract and rank reference sites against the brief")
+    sc.add_argument("blackboard")
+    sc.add_argument("urls", nargs="+")
+    sc.add_argument("--shots", action="store_true", help="also capture per-section screenshots")
+    sc.set_defaults(fn=cmd_scout)
+
     i = sub.add_parser("inspect", help="deterministic checks, then one vision call per section")
     i.add_argument("blackboard")
     i.add_argument("--port", type=int, default=4402)
+    i.add_argument("--blueprints", default=None,
+                   help="blueprint dir — without it the inspector cannot judge omissions")
     i.set_defaults(fn=cmd_inspect)
 
     s = sub.add_parser("shoot", help="scroll-then-capture a static export")

@@ -237,3 +237,54 @@ def extract(
         browser.close()
         return SiteExtract(url, title, True, page_height=page_h,
                            semantic_sections=semantic, bands=bands)
+
+
+# --- classification ---------------------------------------------------------
+
+SECTION_TYPES = (
+    "nav, hero, logo-wall, feature-grid, feature-detail, product-showcase, "
+    "testimonial, pricing, faq, comparison, integration-grid, stats, cta, footer, other"
+)
+
+CLASSIFY_SYSTEM = f"""You label sections of a marketing website from their structure alone.
+
+Each line gives one section: tag, pixel height, word count, and counts of images, buttons
+and list items, plus its headings and the first words of its text.
+
+Label each with exactly one of: {SECTION_TYPES}
+
+Judge from SHAPE, not vibes:
+- a logo wall is short, many images, almost no words
+- a feature grid has repeated equal-weight items
+- a hero is the FIRST tall band, few words, one or two buttons — position matters as much
+  as shape, and a hero may carry a lot of product imagery
+- a section with no words and no headings is "other". Say so rather than guessing.
+
+JSON only: {{"labels": [{{"index": 0, "type": "...", "confidence": "high|low"}}]}}"""
+
+
+def classify(provider, bands: list[Band]) -> list[str]:
+    """Label bands by structure. Cheap tier, no screenshots."""
+    import json as _json
+    import re as _re
+
+    from sparrow.providers import Tier
+
+    lines = [
+        f"{b.index}. <{b.tag}> h={b.height} words={b.words} imgs={b.images} "
+        f"btns={b.buttons} li={b.listItems} | headings: {'; '.join(b.headings) or '-'} "
+        f"| text: {b.text[:110]}"
+        for b in bands
+    ]
+    res = provider.complete(
+        tier=Tier.CHEAP, system=CLASSIFY_SYSTEM, user="\n".join(lines), max_tokens=3000
+    )
+    m = _re.search(r"\{.*\}", res.text, _re.DOTALL)
+    if not m:
+        return ["other"] * len(bands)
+    out = ["other"] * len(bands)
+    for lab in _json.loads(m.group(0)).get("labels", []):
+        i = lab.get("index")
+        if isinstance(i, int) and 0 <= i < len(out):
+            out[i] = str(lab.get("type", "other"))
+    return out

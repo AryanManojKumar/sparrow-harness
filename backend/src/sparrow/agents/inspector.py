@@ -80,6 +80,7 @@ Each row is a thought that has actually produced a false report from this agent.
 | "I have looked at five sections and found nothing, I should find something" | Passing is the common case. An inspector that always finds something is one nobody reads. |
 | "The spacing here feels tight" | Feelings are not defects. If you cannot point at it, it is not yours to report. |
 | "This would look better as two columns" | You are not redesigning. Report what is broken, not what is different. |
+| "The brief mentions X but this section has no X" | Sections divide the brief between them. The blueprint says what THIS one carries; what it omits, it omits deliberately. |
 | "The deterministic pass missed this contrast issue, I should flag it" | If it is not in the findings, it passed. Do not relitigate arithmetic. |
 | "This element might be misaligned" | Might is not a report. Either it visibly is, or you say nothing. |"""
 
@@ -117,6 +118,7 @@ class Inspector(Agent):
         section: Section,
         shots: list,
         page_findings: list[Defect],
+        blueprint=None,
     ) -> tuple[list[Defect], object]:
         det = (
             "\n".join(f"- {d.what} ({d.where})" for d in page_findings)
@@ -124,6 +126,15 @@ class Inspector(Agent):
         )
         user = "\n\n".join([
             f"<section>\nid: {section.id}\nblueprint: {section.blueprint_id}\n</section>",
+            # Without the blueprint, "missing" is unanswerable. The inspector once
+            # reported a CTA for lacking the brief's secondary action, when that
+            # section's blueprint says in as many words: no secondary action.
+            ("<blueprint>\nWhat this section is SUPPOSED to contain. Anything the "
+             "blueprint excludes is not a defect — it is the design.\n"
+             f"purpose: {blueprint.purpose}\nslots: {', '.join(blueprint.slots)}\n"
+             f"structure: {blueprint.structure}\n</blueprint>")
+            if blueprint is not None else
+            "<blueprint>not available — do not report anything as missing</blueprint>",
             f"<deterministic_findings>\n{det}\n</deterministic_findings>",
             "<screenshots>\n"
             + "\n".join(f"- {s.breakpoint} ({s.width}x{s.height})" for s in shots)
