@@ -32,16 +32,32 @@ CONSTRAINTS = [
 ]
 
 DESIGN_SYSTEM = DesignSystem(
+    atmosphere=(
+        "A ledger, not a dashboard. Warm paper ground, hairline rules, and text that sits "
+        "flat on the page — the register of an auditor's working papers rather than a "
+        "monitoring product. Nothing glows. Evidence is presented, not sold."
+    ),
+    signature=(
+        "The control ledger: a hairline-ruled table of live controls, each row carrying its "
+        "SOC 2 criterion, its state and its timestamp, bleeding off the right edge of the hero."
+    ),
+    key_characteristics=[
+        "Deep evidence green as the only saturated colour, on CTAs and nothing else",
+        "Amber appears at most once per section, and only to mark an exception",
+        "Hairline borders instead of cards wherever a boundary is needed",
+        "No glow, no coloured shadow, no gradient of any kind",
+        "Numbers set at the same weight as the labels beside them — no hero statistics",
+    ],
     colors=[
-        Color(token="background", value="oklch(0.993 0.004 95)", role="warm off-white page ground"),
-        Color(token="foreground", value="oklch(0.22 0.012 95)", role="body text"),
-        Color(token="primary", value="oklch(0.45 0.10 155)", role="forest green — CTAs, emphasis"),
-        Color(token="primary-foreground", value="oklch(0.985 0.006 95)", role="text on green"),
-        Color(token="accent", value="oklch(0.78 0.145 72)", role="amber — one emphasis per section maximum"),
-        Color(token="muted", value="oklch(0.965 0.006 95)", role="alternating section grounds"),
-        Color(token="muted-foreground", value="oklch(0.52 0.014 95)", role="secondary text"),
-        Color(token="border", value="oklch(0.90 0.008 95)", role="hairlines"),
-        Color(token="card", value="oklch(1 0.002 95)", role="raised surfaces"),
+        Color(token="background", name="Working Paper", value="oklch(0.993 0.004 95)", role="warm off-white page ground"),
+        Color(token="foreground", name="Ledger Ink", value="oklch(0.22 0.012 95)", role="body text"),
+        Color(token="primary", name="Evidence Green", value="oklch(0.45 0.10 155)", role="CTAs and emphasis — the only saturated colour"),
+        Color(token="primary-foreground", name="Paper White", value="oklch(0.985 0.006 95)", role="text on green"),
+        Color(token="accent", name="Exception Amber", value="oklch(0.78 0.145 72)", role="one emphasis per section maximum; marks an exception"),
+        Color(token="muted", name="Bond", value="oklch(0.965 0.006 95)", role="alternating section grounds"),
+        Color(token="muted-foreground", name="Pencil", value="oklch(0.52 0.014 95)", role="secondary text"),
+        Color(token="border", name="Rule", value="oklch(0.90 0.008 95)", role="hairlines"),
+        Color(token="card", name="Leaf", value="oklch(1 0.002 95)", role="raised surfaces"),
     ],
     forbidden_hues=[(200, 290)],
     font_family="Geist",

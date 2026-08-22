@@ -26,7 +26,7 @@ def to_css(ds: DesignSystem) -> str:
     """The `:root` block, fenced so it can be replaced idempotently."""
     lines = [CSS_BEGIN, ":root {"]
     for c in ds.colors:
-        lines.append(f"    --{c.token}: {c.value};  /* {c.role} */")
+        lines.append(f"    --{c.token}: {c.value};  /* {c.name} — {c.role} */")
     lines.append(f"    --radius: {ds.radius_base};")
     lines.append("}")
     lines.append(CSS_END)
@@ -49,9 +49,19 @@ def to_prompt(ds: DesignSystem) -> str:
     """
     out: list[str] = []
 
+    out.append(f"ATMOSPHERE\n  {ds.atmosphere}")
+    out.append("")
+    out.append(f"SIGNATURE — the one thing this page is remembered by\n  {ds.signature}")
+    out.append("  Everything around it stays quiet. Boldness is spent here and nowhere else.")
+    if ds.key_characteristics:
+        out.append("")
+        out.append("KEY CHARACTERISTICS")
+        for k in ds.key_characteristics:
+            out.append(f"  - {k}")
+    out.append("")
     out.append("PALETTE")
     for c in ds.colors:
-        out.append(f"  --{c.token}: {c.value}  — {c.role}")
+        out.append(f"  --{c.token}  \"{c.name}\"  {c.value}  — {c.role}")
     out.append(f"  {ds.color_scale().closure()}")
     for lo, hi in ds.forbidden_hues:
         out.append(f"  FORBIDDEN: no colour at any chroma with hue {lo}–{hi}.")

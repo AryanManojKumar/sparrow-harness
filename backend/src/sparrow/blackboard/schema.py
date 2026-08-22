@@ -74,7 +74,16 @@ def _ordinal(n: int) -> str:
 
 
 class Color(BaseModel):
+    """A colour with a NAME, not just a slot.
+
+    open-design's 154 shipped systems all name their colours — "Rausch",
+    "Ink Black", "Hairline Gray", "Soft Cloud" — rather than leaving them as
+    `--primary`. A named colour is something an agent can reason about and stay
+    faithful to; a slot is something it fills.
+    """
+
     token: str          # "primary" -> --primary
+    name: str           # "Evidence Green" — what the design agent calls it
     value: str          # oklch(...)
     role: str           # what it is for, injected into the prompt
 
@@ -86,7 +95,25 @@ class TypeStep(BaseModel):
 
 
 class DesignSystem(BaseModel):
-    """The design agent's recorded decisions. Vocabulary, never composition."""
+    """The design agent's recorded decisions. Vocabulary, never composition.
+
+    The first three fields are what separates a design system from a token dump.
+    They exist because a palette and a type scale do not, on their own, stop a
+    model producing the same page it would produce for any other brief.
+    """
+
+    # What this looks and feels like, in prose. open-design opens every one of its
+    # systems this way, and it is what a builder reads to know whether a choice
+    # belongs.
+    atmosphere: str
+
+    # The single element this page will be remembered by. Anthropic's
+    # frontend-design skill: "Spend your boldness in one place." Without a named
+    # signature, boldness gets spread evenly and the page reads as templated.
+    signature: str
+
+    # 4-8 specific, checkable statements about what makes this system itself.
+    key_characteristics: list[str] = Field(default_factory=list)
 
     colors: list[Color]
     forbidden_hues: list[tuple[int, int]] = Field(default_factory=list)
