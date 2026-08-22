@@ -88,14 +88,22 @@ _JSON = re.compile(r"\{.*\}", re.DOTALL)
 
 @dataclass
 class Defect:
+    """A defect carries a routing code AND a human message, never one or the other.
+
+    `code` is stable lower-kebab-case the orchestrator branches on — it decides
+    whether this goes to the repairer, to the design director, or to the user as
+    an escalation. `what` is what a person reads. CLAUDE.md §8 requires both.
+    """
+
     severity: str
+    code: str
     what: str
     where: str
     source: str  # "computed" or "vision"
 
     def __str__(self) -> str:
         mark = {"high": "!!", "medium": " !", "low": "  "}.get(self.severity, "  ")
-        return f"{mark} [{self.source}] {self.what} — {self.where}"
+        return f"{mark} [{self.source}:{self.code}] {self.what} — {self.where}"
 
 
 class Inspector(Agent):
@@ -136,6 +144,7 @@ class Inspector(Agent):
         return [
             Defect(
                 str(d.get("severity", "medium")),
+                "visual-defect",
                 str(d.get("what", "")).strip(),
                 str(d.get("where", "")).strip(),
                 "vision",
@@ -150,11 +159,11 @@ def deterministic_defects(reports: dict[str, PageReport]) -> list[Defect]:
     out: list[Defect] = []
     for bp, r in reports.items():
         for e in r.console_errors:
-            out.append(Defect("high", f"console error: {e}", bp, "computed"))
+            out.append(Defect("high", "console-error", f"console error: {e}", bp, "computed"))
         for f in r.failed_requests:
-            out.append(Defect("high", f"request failed: {f}", bp, "computed"))
+            out.append(Defect("high", "request-failed", f"request failed: {f}", bp, "computed"))
         for o in r.horizontal_overflow:
-            out.append(Defect("high", f"content overflows the viewport: {o}", bp, "computed"))
+            out.append(Defect("high", "viewport-overflow", f"content overflows the viewport: {o}", bp, "computed"))
         for c in r.contrast_failures:
-            out.append(Defect("medium", f"contrast {c}", bp, "computed"))
+            out.append(Defect("medium", "contrast-below-wcag", f"contrast {c}", bp, "computed"))
     return out

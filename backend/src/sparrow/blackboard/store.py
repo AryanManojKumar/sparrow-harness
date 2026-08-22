@@ -20,9 +20,23 @@ from sparrow.blackboard.schema import Blackboard, Decision
 
 @dataclass(frozen=True)
 class Rejected:
-    """Returned to the proposing agent verbatim, so it can adapt."""
+    """Returned to the proposing agent verbatim, so it can adapt.
 
-    reason: str
+    Two fields, not one — the shape DeepSeek Harness uses for `GoalBlockReason`.
+    `code` is a stable lower-kebab-case classification the orchestrator routes on;
+    `message` is prose for a human or a model. One field cannot serve both: a
+    string a machine can branch on reads as noise to a business owner, and prose
+    a human understands cannot be matched against. This is the concrete answer to
+    CLAUDE.md §8 — `contrast_ratio_failed: 3.9` is a routing code, never the thing
+    you show someone.
+    """
+
+    code: str
+    message: str
+
+    @property
+    def reason(self) -> str:  # backwards-compatible read
+        return self.message
 
 
 @dataclass(frozen=True)
@@ -65,23 +79,21 @@ class Store:
         current = self.load()
 
         if expect_version is not None and expect_version != current.version:
-            return Rejected(
-                f"stale patch: built against version {expect_version}, "
-                f"blackboard is at {current.version}. Re-read and re-propose."
-            )
+            return Rejected("stale-revision", f"stale patch: built against version {expect_version}, "
+                f"blackboard is at {current.version}. Re-read and re-propose.")
 
         doc = current.model_dump(mode="json")
         try:
             patched = jsonpatch.apply_patch(doc, patch)
         except jsonpatch.JsonPatchException as e:
-            return Rejected(f"patch could not be applied: {e}")
+            return Rejected("patch-inapplicable", f"patch could not be applied: {e}")
         except jsonpatch.JsonPointerException as e:
-            return Rejected(f"patch targets a path that does not exist: {e}")
+            return Rejected("unknown-path", f"patch targets a path that does not exist: {e}")
 
         try:
             bb = Blackboard.model_validate(patched)
         except ValidationError as e:
-            return Rejected(f"patch produces an invalid blackboard: {e.errors()}")
+            return Rejected("schema-violation", f"patch produces an invalid blackboard: {e.errors()}")
 
         bb.version = current.version + 1
         bb.decisions.append(Decision(
