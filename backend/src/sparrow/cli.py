@@ -143,17 +143,28 @@ def _repair_until_builds(bb, ws: Path, provider_name: str, max_attempts: int = 3
     """
     from sparrow.agents.builder import Repairer, write_section
 
+    from sparrow.loop import Blocked, Outcome, Rounds
+
     spent = 0.0
     repairer: Repairer | None = None
+    rounds = Rounds("build", cap=max_attempts)
 
-    for attempt in range(1, max_attempts + 1):
+    while True:
         ok, output = _run_build(ws)
         if ok:
-            print(f"\n  build ok{'' if attempt == 1 else f' after {attempt - 1} repair(s)'}")
+            rounds.complete("pnpm build exited 0")
+            print(f"\n  build ok — {rounds.summary()}")
+            return spent
+
+        slot = rounds.reserve()
+        if isinstance(slot, Blocked):
+            print(f"\n  {slot.code}: {slot.message}", file=sys.stderr)
             return spent
 
         m = _FAILED_FILE.search(output)
         if not m:
+            # Not an attempt at the problem — the problem was never identified.
+            rounds.settle(Outcome.SUPERSEDED, "no section could be blamed")
             print(f"\n  build failed, and no section could be blamed:\n{output[-800:]}",
                   file=sys.stderr)
             return spent
@@ -161,23 +172,31 @@ def _repair_until_builds(bb, ws: Path, provider_name: str, max_attempts: int = 3
         rel = m.group(1)
         section = next((s for s in bb.sections if s.target_path == rel), None)
         if section is None:
+            rounds.settle(Outcome.SUPERSEDED, f"{rel} is not a known section")
             print(f"\n  build failed in {rel}, which is not a known section", file=sys.stderr)
             return spent
 
         first = output.find("Export ")
         err = output[max(0, first - 200):][:2500] if first > 0 else output[-2500:]
-        print(f"\n  build failed in {section.id} — repairing (attempt {attempt}/{max_attempts})")
+        print(f"\n  build failed in {section.id} — repairing "
+              f"(round {slot}/{max_attempts})")
 
         repairer = repairer or Repairer()
-        out = repairer.repair(bb, section, (ws / rel).read_text(), err)
+        try:
+            out = repairer.repair(bb, section, (ws / rel).read_text(), err)
+        except Exception as e:
+            # Transport or parse failure is not an attempt at the defect.
+            rounds.settle(Outcome.INFRA_FAILED, f"{type(e).__name__}: {e}")
+            print(f"     repairer failed to respond ({type(e).__name__}) — "
+                  f"not charged, {rounds.remaining} left", file=sys.stderr)
+            continue
+
         write_section(ws, section, out.code)
+        rounds.settle(Outcome.ATTEMPTED, f"repaired {section.id}")
         cost = out.usage.cost(provider_name, repairer.tier)
         spent += cost
         print(f"     repaired  {out.usage.input_tokens:,} in  "
               f"{out.usage.output_tokens:,} out  ${cost:.4f}")
-
-    print(f"\n  still failing after {max_attempts} attempts — escalate", file=sys.stderr)
-    return spent
 
 
 def cmd_inspect(args) -> int:
