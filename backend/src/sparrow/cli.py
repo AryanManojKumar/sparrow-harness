@@ -18,7 +18,7 @@ from dotenv import load_dotenv
 
 from sparrow.audit import audit_dir, summarise
 from sparrow.blackboard.schema import Blackboard
-from sparrow.render.tokens import apply_to_stylesheet, to_prompt
+from sparrow.render.tokens import apply_to_stylesheet, font_imports, to_prompt
 
 ROOT = Path(__file__).resolve().parents[3]
 SCAFFOLD = ROOT / "scaffold"
@@ -51,9 +51,33 @@ def cmd_tokens(args) -> int:
     if bb.design_system is None:
         print("no design_system on the blackboard", file=sys.stderr)
         return 1
-    css = _workspace(bb.project_id) / "src/app/globals.css"
+    ws = _workspace(bb.project_id)
+    css = ws / "src/app/globals.css"
     css.write_text(apply_to_stylesheet(css.read_text(), bb.design_system))
     print(f"tokens written to {css}")
+
+    # Bind the chosen families, so `font-display` / `font-body` / `font-mono`
+    # actually resolve for the builder.
+    imp, consts, rest = font_imports(bb.design_system)
+    cls, theme = rest.split("|||")
+    layout = ws / "src/app/layout.tsx"
+    src = layout.read_text()
+    src = re.sub(r'import \{[^}]*\} from "next/font/google";\n', "", src)
+    src = re.sub(r"const \w+ = \w+\(\s*\{\s*subsets.*?\}\s*\);\n", "", src, flags=re.S)
+    src = src.replace('import "./globals.css";', f'import "./globals.css";\n{imp}\n{consts}')
+    src = re.sub(r'\{/\* families are bound.*?\*/\}\n\s*', "", src)
+    src = re.sub(r'<html lang="en"[^>]*>',
+                 f'<html lang="en" className={{cn("font-body", `{cls}`)}}>', src)
+    layout.write_text(src)
+
+    # Bind the utilities in @theme so Tailwind emits font-display/-body/-mono.
+    css_src = css.read_text()
+    css_src = re.sub(r"\n *--font-(display|body|mono): [^;]+;", "", css_src)
+    css_src = css_src.replace("@theme inline {", f"@theme inline {{\n{theme}")
+    css.write_text(css_src)
+    print(f"fonts bound in {layout.name}: {bb.design_system.font_display} / "
+          f"{bb.design_system.font_body}"
+          + (f" / {bb.design_system.font_mono}" if bb.design_system.font_mono else ""))
     return 0
 
 
@@ -122,12 +146,44 @@ def cmd_build(args) -> int:
         if out.extension_request:
             print(f"     ↳ EXTENSION REQUEST: {out.extension_request}")
 
+    _compose_page(bb, ws)
     total += _repair_until_builds(bb, ws, builder.provider.name)
     print(f"\n  total ${total:.4f}")
     return 0
 
 
 _FAILED_FILE = re.compile(r"\./(src/components/sections/\w+\.tsx)")
+
+
+def _compose_page(bb, ws: Path) -> None:
+    """Assemble the built sections into the page, in sitemap order.
+
+    Nobody owned this. The builder writes section files and stops; without a
+    composer the scaffold's placeholder page ships and every section is dead
+    code that still compiles. drift-test-03 got all the way to a screenshot
+    before that surfaced.
+    """
+    ordered = sorted(bb.sections, key=lambda s: s.order)
+    imports = "\n".join(
+        f'import {s.component_name} from "@/components/sections/{s.component_name}";'
+        for s in ordered
+    )
+    body = "\n".join(f"      <{s.component_name} />" for s in ordered)
+    (ws / "src/app/page.tsx").write_text(
+        f"{imports}\n\nexport default function Home() {{\n"
+        f"  return (\n    <main>\n{body}\n    </main>\n  );\n}}\n"
+    )
+
+    # Placeholder metadata so the page is not shipped titleless; content_editor
+    # owns the real copy once it exists.
+    layout = ws / "src/app/layout.tsx"
+    src = layout.read_text()
+    if bb.brief and 'title: ""' in src:
+        offer = bb.brief.offering.split(".")[0][:52]
+        src = src.replace('title: ""', f'title: "{offer}"')
+        src = src.replace('description: ""', f'description: "{bb.brief.offering[:150]}"')
+        layout.write_text(src)
+    print(f"\n  composed page.tsx — {len(ordered)} sections in sitemap order")
 
 
 def _run_build(ws: Path) -> tuple[bool, str]:

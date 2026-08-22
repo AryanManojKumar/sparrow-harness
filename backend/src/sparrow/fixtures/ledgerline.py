@@ -60,7 +60,8 @@ DESIGN_SYSTEM = DesignSystem(
         Color(token="card", name="Leaf", value="oklch(1 0.002 95)", role="raised surfaces"),
     ],
     forbidden_hues=[(200, 290)],
-    font_family="Geist",
+    font_display="Geist",
+    font_body="Geist",
     font_weights=[400, 500, 600],
     type_steps=[
         TypeStep(name="display", classes="text-5xl md:text-6xl leading-[1.05] tracking-tight",

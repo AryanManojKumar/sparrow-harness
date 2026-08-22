@@ -118,7 +118,13 @@ class DesignSystem(BaseModel):
     colors: list[Color]
     forbidden_hues: list[tuple[int, int]] = Field(default_factory=list)
 
-    font_family: str
+    # Three roles, not one string. The first run returned "Spline Sans (primary)
+    # paired with IBM Plex Mono (evidence metadata)" in a single field, which is
+    # readable prose and unloadable as a font. A field that has to be parsed back
+    # out is a field with the wrong shape.
+    font_display: str            # headings — the characteristic face
+    font_body: str               # prose — may equal font_display
+    font_mono: str | None = None # optional: code, IDs, timestamps
     font_weights: list[int]
     type_steps: list[TypeStep]
 

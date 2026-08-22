@@ -28,6 +28,7 @@ def to_css(ds: DesignSystem) -> str:
     for c in ds.colors:
         lines.append(f"    --{c.token}: {c.value};  /* {c.name} — {c.role} */")
     lines.append(f"    --radius: {ds.radius_base};")
+    lines.append("    /* families are bound in layout.tsx via next/font */")
     lines.append("}")
     lines.append(CSS_END)
     return "\n".join(lines)
@@ -67,7 +68,14 @@ def to_prompt(ds: DesignSystem) -> str:
         out.append(f"  FORBIDDEN: no colour at any chroma with hue {lo}–{hi}.")
 
     out.append("")
-    out.append(f"TYPE — {ds.font_family}.")
+    fonts = f"{ds.font_display} for display"
+    if ds.font_body != ds.font_display:
+        fonts += f", {ds.font_body} for body"
+    if ds.font_mono:
+        fonts += f", {ds.font_mono} for code/IDs"
+    out.append(f"TYPE — {fonts}.")
+    out.append("  Use `font-display`, `font-body` and `font-mono` — the families are "
+               "already loaded and bound to those utilities. Never name a family directly.")
     weights = ", ".join(str(w) for w in ds.font_weights)
     out.append(
         f"  Weights {weights} only — never {max(ds.font_weights) + 100} or above. "
@@ -109,3 +117,51 @@ FIDELITY = (
     "Use ONLY the fonts, colors, spacing, and component styles defined in the design "
     "system. Do not introduce any fonts, colors, or visual styles not in the design system."
 )
+
+
+# --- font wiring ------------------------------------------------------------
+
+def _var(name: str) -> str:
+    """Google family name -> the identifier next/font/google actually exports.
+
+    Spaces become underscores and the family's own casing is preserved:
+    "Barlow Condensed" -> Barlow_Condensed, "IBM Plex Mono" -> IBM_Plex_Mono.
+    Stripping to PascalCase produces `BarlowCondensed`, which does not exist and
+    fails with an opaque "Can't resolve 'next/font/google/target.css'".
+    """
+    return "_".join(part for part in name.replace("-", " ").split() if part)
+
+
+def _slug(name: str) -> str:
+    return "".join(c for c in name.lower() if c.isalnum())
+
+
+def font_imports(ds: DesignSystem) -> tuple[str, str, str]:
+    """next/font/google declarations for the families the design agent chose.
+
+    Returns (import line, const declarations, className expression). A design
+    system that names a face nothing loads is a design system the builder cannot
+    honour — this closes that gap at render time rather than hoping.
+    """
+    fams: dict[str, str] = {"display": ds.font_display, "body": ds.font_body}
+    if ds.font_mono:
+        fams["mono"] = ds.font_mono
+    uniq = {name: (_var(name), _slug(name)) for name in dict.fromkeys(fams.values())}
+
+    imp = ("import { " + ", ".join(sorted(v for v, _ in uniq.values()))
+           + ' } from "next/font/google";')
+    # `weight` is REQUIRED for non-variable families and harmless for variable
+    # ones. Omitting it fails as an opaque "Can't resolve
+    # 'next/font/google/target.css'" — the real message only appears one line
+    # further down: "Missing weight for Barlow Condensed."
+    weights = ", ".join(f'"{w}"' for w in sorted(ds.font_weights))
+    consts = "\n".join(
+        f'const {slug} = {ident}({{ subsets: ["latin"], display: "swap", '
+        f'weight: [{weights}], variable: "--font-{slug}" }});'
+        for ident, slug in uniq.values()
+    )
+    theme = "\n".join(
+        f"    --font-{role}: var(--font-{uniq[name][1]});" for role, name in fams.items()
+    )
+    cls = " ".join(f"${{{slug}.variable}}" for _, slug in uniq.values())
+    return imp, consts, f"{cls}|||{theme}"

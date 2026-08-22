@@ -119,7 +119,9 @@ JSON only. No prose outside it, no code fence.
      "name": "an evocative name specific to this subject",
      "value": "oklch(L C H)", "role": "what it is for"}
   ],
-  "font_family": "a real, loadable family",
+  "font_display": "a real Google Fonts family, exact name",
+  "font_body": "a real Google Fonts family, exact name; may repeat font_display",
+  "font_mono": "a real Google Fonts monospace family, or null if the design has no use for one",
   "font_weights": [400, 500, 600],
   "type_steps": [{"name": "display|h2|h3|body|small|eyebrow",
                   "classes": "exact Tailwind classes",
@@ -137,8 +139,14 @@ JSON only. No prose outside it, no code fence.
   "motion": "what moves, how far, how long"
 }
 
-All nine colour tokens are required. Values must be oklch. Tailwind classes must be real
-Tailwind v4 utilities."""
+All nine colour tokens are required. Values must be oklch.
+
+Font names must be families that actually exist on Google Fonts, spelled exactly as
+Google spells them — they are loaded by name and a typo is a build failure. In
+`type_steps.classes` refer to them only as `font-display`, `font-body` or `font-mono`;
+never write a family name into a class.
+
+Tailwind classes must be real Tailwind v4 utilities."""
 
 _JSON = re.compile(r"\{.*\}", re.DOTALL)
 

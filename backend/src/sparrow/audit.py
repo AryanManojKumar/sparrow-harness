@@ -57,9 +57,19 @@ def audit_file(path: Path, ds: DesignSystem) -> list[Finding]:
         for st in ds.type_steps
         for m in TEXT_STEP.finditer(st.classes)
     }
-    allowed_shadows = {ds.shadow_rest, ds.shadow_hover}
-    allowed_rounded = {ds.radius_card, ds.radius_input, "rounded-full"}
-    allowed_gaps = {ds.grid_gap, ds.inline_gap}
+    # A declared value is often a responsive set — "gap-6 md:gap-8" is ONE
+    # decision expressed as two utilities. Comparing whole strings against
+    # individual classes flagged a builder that had followed the spec exactly.
+    def utilities(*declared: str) -> set[str]:
+        out: set[str] = set()
+        for d in declared:
+            for part in d.split():
+                out.add(part.split(":")[-1])
+        return out
+
+    allowed_shadows = utilities(ds.shadow_rest, ds.shadow_hover)
+    allowed_rounded = utilities(ds.radius_card, ds.radius_input) | {"rounded-full"}
+    allowed_gaps = utilities(ds.grid_gap, ds.inline_gap)
 
     out: list[Finding] = []
     name = path.name
@@ -73,13 +83,13 @@ def audit_file(path: Path, ds: DesignSystem) -> list[Finding]:
             if m.group(1) not in allowed_steps:
                 out.append(Finding(name, n, "off-scale-type", m.group(0)))
         for m in SHADOW.finditer(line):
-            if m.group(0) not in allowed_shadows:
+            if m.group(0).split(":")[-1] not in allowed_shadows:
                 out.append(Finding(name, n, "off-scale-shadow", m.group(0)))
         for m in ROUNDED.finditer(line):
-            if m.group(0) not in allowed_rounded:
+            if m.group(0).split(":")[-1] not in allowed_rounded:
                 out.append(Finding(name, n, "off-scale-radius", m.group(0)))
         for m in GAP.finditer(line):
-            if m.group(0) not in allowed_gaps:
+            if m.group(0).split(":")[-1] not in allowed_gaps:
                 out.append(Finding(name, n, "off-scale-gap", m.group(0)))
         if BANNED_IMPORT.search(line):
             out.append(Finding(name, n, "banned-import", "framer-motion — use motion/react"))

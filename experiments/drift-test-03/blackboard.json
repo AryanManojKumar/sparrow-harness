@@ -1,0 +1,221 @@
+{
+  "project_id": "drift-test-03",
+  "version": 1,
+  "brief": {
+    "category": "B2B SaaS landing page",
+    "offering": "Continuous SOC 2 compliance automation. Connects to a company's cloud infrastructure, monitors controls continuously, and produces audit-ready evidence.",
+    "audience": "Technical founders and heads of compliance at Series A-C fintech companies. Bought by people who have been through one painful audit already.",
+    "tone": "Precise, calm, credible. Understated rather than loud. The reader is technical and allergic to marketing language.",
+    "primary_action": "Book a demo",
+    "secondary_action": "Read the docs"
+  },
+  "constraints": [
+    {
+      "id": "c0001",
+      "text": "no blue - our competitor is blue",
+      "superseded_by": null,
+      "recorded_at": "2026-08-22T21:38:37.170462Z"
+    },
+    {
+      "id": "c0002",
+      "text": "must mention SOC 2",
+      "superseded_by": null,
+      "recorded_at": "2026-08-22T21:38:37.170469Z"
+    },
+    {
+      "id": "c0003",
+      "text": "no stock photos of people",
+      "superseded_by": null,
+      "recorded_at": "2026-08-22T21:38:37.170471Z"
+    },
+    {
+      "id": "c0004",
+      "text": "no countdown timers or fake urgency",
+      "superseded_by": null,
+      "recorded_at": "2026-08-22T21:38:37.170472Z"
+    }
+  ],
+  "design_system": {
+    "atmosphere": "A calm control environment informed by audit working papers, evidence folders, and chain-of-custody records. Pale mineral surfaces, carbon-copy brown, and restrained evidence-tab ochre make SOC 2 automation feel maintained and inspectable rather than marketed. The overall impression is precise, durable, and ready for scrutiny.",
+    "signature": "The memorable element is a continuous ochre evidence tape labeled with real SOC 2 control IDs, cloud sources, collection times, and verification states.",
+    "key_characteristics": [
+      "Ochre is reserved for the evidence tape, selected proof, and primary-action focus states; it is never used as ambient decoration.",
+      "SOC 2 control IDs, source names, timestamps, and verification states replace arbitrary numbering and generic eyebrows.",
+      "Headings use condensed, form-like typography while body copy remains highly legible and conversationally restrained.",
+      "Product captures are presented as audit exhibits with provenance labels, never as floating devices or perspective mockups.",
+      "Rules and dashed marks appear only when they communicate evidence lineage, collection boundaries, or verification state.",
+      "Buttons and inputs have compact corners; pill shapes are prohibited except for machine states that are genuinely binary.",
+      "There are no gradients, decorative glows, stock photos of people, countdown timers, or urgency devices."
+    ],
+    "colors": [
+      {
+        "token": "background",
+        "name": "Control Room Mineral",
+        "value": "oklch(0.965 0.012 118)",
+        "role": "The quiet pale-sage page ground; cool enough to avoid the familiar cream SaaS aesthetic."
+      },
+      {
+        "token": "foreground",
+        "name": "Carbon Copy",
+        "value": "oklch(0.255 0.022 58)",
+        "role": "Primary text, navigation, and high-confidence interface marks."
+      },
+      {
+        "token": "primary",
+        "name": "Ledger Umber",
+        "value": "oklch(0.355 0.052 55)",
+        "role": "Primary buttons, decisive links, and active controls."
+      },
+      {
+        "token": "primary-foreground",
+        "name": "Clean Evidence",
+        "value": "oklch(0.985 0.006 110)",
+        "role": "Text and icons placed on Ledger Umber."
+      },
+      {
+        "token": "accent",
+        "name": "Evidence Tab Ochre",
+        "value": "oklch(0.745 0.128 82)",
+        "role": "The signature evidence tape, selected proof, focus indication, and sparing audit annotations."
+      },
+      {
+        "token": "muted",
+        "name": "Archived Worksheet",
+        "value": "oklch(0.915 0.018 112)",
+        "role": "Secondary surfaces, code blocks, filters, and inactive control rows."
+      },
+      {
+        "token": "muted-foreground",
+        "name": "Pencil Annotation",
+        "value": "oklch(0.49 0.025 72)",
+        "role": "Supporting copy, metadata, timestamps, and inactive labels."
+      },
+      {
+        "token": "border",
+        "name": "Folder Edge",
+        "value": "oklch(0.805 0.028 100)",
+        "role": "Field boundaries, evidence divisions, and structural rules."
+      },
+      {
+        "token": "card",
+        "name": "Filed Exhibit",
+        "value": "oklch(0.992 0.005 108)",
+        "role": "Cards, product captures, and elevated evidence surfaces."
+      }
+    ],
+    "forbidden_hues": [],
+    "font_display": "Barlow Condensed",
+    "font_body": "Public Sans",
+    "font_mono": "IBM Plex Mono",
+    "font_weights": [
+      400,
+      500,
+      600
+    ],
+    "type_steps": [
+      {
+        "name": "display",
+        "classes": "font-display text-5xl md:text-7xl font-semibold leading-[0.94] tracking-[-0.025em]",
+        "use": "The single hero promise; keep language factual and avoid stacking multiple display statements."
+      },
+      {
+        "name": "h2",
+        "classes": "font-display text-4xl md:text-5xl font-semibold leading-none tracking-[-0.02em]",
+        "use": "Major section headings and the final demo invitation."
+      },
+      {
+        "name": "h3",
+        "classes": "font-display text-2xl md:text-3xl font-semibold leading-[1.1] tracking-[-0.01em]",
+        "use": "Product capabilities, evidence categories, and integration groups."
+      },
+      {
+        "name": "body",
+        "classes": "font-body text-base md:text-lg font-normal leading-7",
+        "use": "Core explanations, feature descriptions, navigation actions, and primary buttons."
+      },
+      {
+        "name": "small",
+        "classes": "font-body text-sm font-normal leading-5",
+        "use": "Supporting detail, documentation links, captions, and secondary controls."
+      },
+      {
+        "name": "eyebrow",
+        "classes": "font-mono text-xs font-medium leading-4 tracking-[0.08em] uppercase",
+        "use": "Only factual system labels such as SOC 2 control IDs, cloud sources, collection times, and evidence states."
+      }
+    ],
+    "section_padding": "py-20 md:py-28",
+    "container": "max-w-6xl px-5 md:px-8",
+    "grid_gap": "gap-6 md:gap-8",
+    "inline_gap": "gap-2",
+    "stack_tight": "space-y-3",
+    "stack_loose": "space-y-8 md:space-y-10",
+    "radius_base": "0.375rem",
+    "radius_card": "rounded-md",
+    "radius_input": "rounded-sm",
+    "radius_full_allowed": "Only tiny live-monitoring indicators and binary verified or failed state markers may be fully round; buttons, tags, cards, and inputs may not.",
+    "shadow_rest": "shadow-xs",
+    "shadow_hover": "shadow-sm",
+    "imagery_treatment": "Use only real product UI, infrastructure diagrams, and evidence artifacts\u2014never stock photos of people. Present screenshots front-on as filed exhibits on the card color, with crisp borders and mono provenance labels for source, SOC 2 control, collector, and timestamp; avoid gradients, glass effects, device frames, and perspective tilt.",
+    "motion": "Standard entrances fade while translating upward 6px over 180ms with an ease-out curve. In the signature evidence tape, a single ochre verification tick may travel to the next checkpoint over 320ms when evidence refreshes; nothing loops continuously. Hover and focus transitions last 120ms, and reduced-motion mode removes translation and checkpoint travel."
+  },
+  "sections": [
+    {
+      "id": "hero",
+      "order": 1,
+      "blueprint_id": "hero",
+      "target_path": "src/components/sections/Hero.tsx",
+      "component_name": "Hero",
+      "ground": "page",
+      "status": "pending",
+      "attempts": 0,
+      "defects": []
+    },
+    {
+      "id": "logo-wall",
+      "order": 2,
+      "blueprint_id": "logo-wall",
+      "target_path": "src/components/sections/LogoWall.tsx",
+      "component_name": "LogoWall",
+      "ground": "page",
+      "status": "pending",
+      "attempts": 0,
+      "defects": []
+    },
+    {
+      "id": "feature-grid",
+      "order": 3,
+      "blueprint_id": "feature-grid",
+      "target_path": "src/components/sections/FeatureGrid.tsx",
+      "component_name": "FeatureGrid",
+      "ground": "muted",
+      "status": "pending",
+      "attempts": 0,
+      "defects": []
+    },
+    {
+      "id": "pricing",
+      "order": 4,
+      "blueprint_id": "pricing",
+      "target_path": "src/components/sections/Pricing.tsx",
+      "component_name": "Pricing",
+      "ground": "page",
+      "status": "pending",
+      "attempts": 0,
+      "defects": []
+    },
+    {
+      "id": "faq",
+      "order": 5,
+      "blueprint_id": "faq",
+      "target_path": "src/components/sections/Faq.tsx",
+      "component_name": "Faq",
+      "ground": "muted",
+      "status": "pending",
+      "attempts": 0,
+      "defects": []
+    }
+  ],
+  "dependencies": {},
+  "decisions": []
+}
