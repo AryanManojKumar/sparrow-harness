@@ -157,7 +157,22 @@ class DesignDirector(Agent):
     tier = Tier.TOP          # this agent's ceiling is the product's ceiling
     max_tokens = 12000
 
-    def direct(self, bb: Blackboard, *, sources: str = "") -> tuple[DesignSystem, str, object]:
+    def direct(
+        self, bb: Blackboard, *, sources: str = "", avoid: list[DesignSystem] | None = None
+    ) -> tuple[DesignSystem, str, object]:
+        """Propose a direction. `avoid` forces a genuinely different one.
+
+        Measured: three runs on identical inputs produced byte-identical design
+        systems — same fonts, same oklch values to three decimals, same signature.
+        That is good for replayability and useless at the approval gate, where a
+        user who dislikes the direction needs a real alternative rather than the
+        same answer again.
+
+        Re-rolling cannot supply one, because nothing about the inputs changed.
+        Divergence has to be instructed, so a rejected direction is passed back in
+        and ruled out — the branch/replace split Superdesign uses, where branch is
+        for alternatives and replace is for refining the chosen one.
+        """
         parts = [context_block(bb)]
         if sources.strip():
             parts.append(
@@ -166,6 +181,28 @@ class DesignDirector(Agent):
                 "their look — the visual direction is yours to decide.\n"
                 f"{sources.strip()}\n</sources>"
             )
+        if avoid:
+            rejected = "\n\n".join(
+                f"REJECTED DIRECTION {i}:\n  signature: {a.signature}\n"
+                f"  atmosphere: {a.atmosphere}\n"
+                f"  type: {a.font_display} / {a.font_body}\n"
+                f"  ground: {next(c.value for c in a.colors if c.token == 'background')}\n"
+                f"  primary: {next(c.value for c in a.colors if c.token == 'primary')}"
+                for i, a in enumerate(avoid, 1)
+            )
+            parts.append(
+                "<already_rejected>\n"
+                "The user has seen the direction(s) below and asked for something else. "
+                "Do not repeat them, and do not produce a variation of them.\n\n"
+                f"{rejected}\n\n"
+                "Change the ARGUMENT, not the adjectives. The rejected direction chose "
+                "one reading of the subject; find a different true thing about it and "
+                "build from that instead. A new signature, a different type register, and "
+                "a ground that is not a neighbour of the rejected one. Say in `revised` "
+                "what you changed the direction TO, and why it is a different idea rather "
+                "than the same idea restyled.\n</already_rejected>"
+            )
+
         res = self.call(system=SYSTEM, user="\n\n".join(parts))
 
         m = _JSON.search(res.text)
