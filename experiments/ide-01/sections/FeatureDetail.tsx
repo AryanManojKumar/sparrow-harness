@@ -1,59 +1,44 @@
-import {
-  Check,
-  FileDiff,
-  GitBranch,
-  MessageSquareWarning,
-  SquareTerminal,
-} from "lucide-react";
-
-const steps = [
+const mechanismPoints = [
   {
-    label: "01 / PLAN",
-    title: "Define scope before work starts",
-    description:
-      "The shared plan records the task boundary, repository constraints, owned paths, and required checks. Every run starts from the same committed plan snapshot.",
+    label: "Plugin boundary",
+    title: "Inputs and outputs stay attributable",
+    body: "A plugin declares the repository scope, tools, model adapter, and validation hooks available to its run. The harness records that resolved configuration beside the run, so reviewers can inspect what the agent was permitted to read, execute, and change.",
   },
   {
-    label: "02 / RUN",
-    title: "Assign bounded work with a trace",
-    description:
-      "Each agent receives one plan entry. Its run trace preserves commands, touched files, check results, and the resulting commit hash for inspection.",
+    label: "Shared event schema",
+    title: "Different agents produce one review trail",
+    body: "Planning decisions, tool calls, command results, file writes, and validation outcomes enter the same event stream. The adapter may change, but the evidence presented to the team does not.",
   },
   {
-    label: "03 / REVIEW",
-    title: "Assemble changes as reviewable diffs",
-    description:
-      "Completed runs are grouped back under their plan entries as file-level hunks. Failed checks and unresolved comments remain explicit approval blockers.",
+    label: "Diff provenance",
+    title: "Each hunk links back to its cause",
+    body: "Changed lines retain the originating task, run identifier, and validation result. An unresolved assumption becomes an amber checkpoint on the affected hunk rather than disappearing into a transcript.",
   },
 ];
 
-function ReviewRow({
-  line,
-  marker,
-  children,
-  attention = false,
-}: {
-  line: string;
-  marker?: "+" | "−";
-  children: React.ReactNode;
-  attention?: boolean;
-}) {
-  return (
-    <div
-      className={`grid grid-cols-[4rem_1fr] border-t border-border ${
-        attention ? "bg-accent" : "bg-card"
-      }`}
-    >
-      <div className="flex items-start justify-end gap-2 border-r border-border px-5 py-3 font-mono text-xs font-medium uppercase leading-5 tracking-[0.1em] text-muted-foreground">
-        <span>{marker}</span>
-        <span>{line}</span>
-      </div>
-      <div className="min-w-0 px-5 py-3 font-mono text-xs font-medium leading-5 text-foreground">
-        {children}
-      </div>
-    </div>
-  );
-}
+const diffLines = [
+  {
+    oldLine: "41",
+    newLine: "41",
+    marker: "−",
+    code: "return client.request(route, payload)",
+    tone: "muted",
+  },
+  {
+    oldLine: "42",
+    newLine: "41",
+    marker: "+",
+    code: "const request = withRetryPolicy(route, payload)",
+    tone: "primary",
+  },
+  {
+    oldLine: "",
+    newLine: "42",
+    marker: "+",
+    code: "return client.request(request)",
+    tone: "primary",
+  },
+];
 
 export default function FeatureDetail() {
   return (
@@ -62,195 +47,244 @@ export default function FeatureDetail() {
       aria-labelledby="feature-detail-heading"
     >
       <div className="mx-auto max-w-7xl px-5 sm:px-8">
-        <div className="grid items-start gap-5 md:gap-8 lg:grid-cols-[0.82fr_1.18fr]">
+        <div className="grid gap-5 md:gap-8 lg:grid-cols-[0.8fr_1.2fr]">
           <div className="space-y-8 md:space-y-10">
             <div className="space-y-3">
               <p className="font-mono text-xs font-medium uppercase leading-5 tracking-[0.1em] text-primary">
-                Shared execution plan
+                Plugin architecture
               </p>
               <h2
                 id="feature-detail-heading"
                 className="font-display text-3xl font-semibold leading-[1.02] tracking-[-0.035em] text-foreground md:text-5xl"
               >
-                One plan keeps parallel changes reviewable.
+                Everything is a plugin. Every run is traceable.
               </h2>
-              <p className="font-body text-base font-normal leading-7 text-muted-foreground md:text-lg md:leading-8">
-                The harness ties every assignment, command, and diff hunk to a
-                versioned plan entry. Reviewers can verify why a change exists,
-                which run produced it, and what still requires a decision.
-              </p>
+              <div className="space-y-3">
+                <p className="font-body text-base font-normal leading-7 text-foreground md:text-lg md:leading-8">
+                  Agents, repository tools, validation commands, and review
+                  policies connect through explicit plugin contracts. The
+                  contract is the control surface: it defines what a run can
+                  access, which events it must emit, and what evidence is
+                  required before its changes can be proposed.
+                </p>
+                <p className="font-body text-base font-normal leading-7 text-muted-foreground md:text-lg md:leading-8">
+                  That separation lets a team change an agent or add an
+                  internal tool without changing how work is reviewed. Every
+                  implementation still resolves into the same inspectable
+                  artifacts: a run manifest, an ordered trace, file-level
+                  diffs, command results, and explicit review checkpoints.
+                  Reviewers evaluate the patch with its provenance attached,
+                  not by reconstructing intent from a conversation log.
+                </p>
+              </div>
             </div>
 
-            <ol className="space-y-8 md:space-y-10">
-              {steps.map((step) => (
-                <li
-                  key={step.label}
-                  className="border-l-2 border-primary pl-5"
+            <div className="space-y-8 md:space-y-10">
+              {mechanismPoints.map((point) => (
+                <article
+                  key={point.label}
+                  className="border-l-2 border-primary px-5"
                 >
                   <div className="space-y-3">
                     <p className="font-mono text-xs font-medium uppercase leading-5 tracking-[0.1em] text-primary">
-                      {step.label}
+                      {point.label}
                     </p>
                     <h3 className="font-display text-xl font-semibold leading-7 tracking-[-0.02em] text-foreground md:text-2xl md:leading-8">
-                      {step.title}
+                      {point.title}
                     </h3>
                     <p className="font-body text-sm font-normal leading-6 text-muted-foreground">
-                      {step.description}
+                      {point.body}
                     </p>
                   </div>
-                </li>
+                </article>
               ))}
-            </ol>
+            </div>
           </div>
 
-          <figure className="overflow-hidden rounded-md border border-border bg-card shadow-[0_2px_0_0_oklch(0.805_0.032_235)]">
-            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border bg-card px-5 py-5 sm:px-8">
-              <div className="flex items-center gap-2">
-                <GitBranch
-                  className="h-4 w-4 text-primary"
-                  aria-hidden="true"
-                />
-                <span className="font-mono text-xs font-medium uppercase leading-5 tracking-[0.1em] text-foreground">
-                  review/auth-session-boundary
-                </span>
-              </div>
-              <span className="font-mono text-xs font-medium uppercase leading-5 tracking-[0.1em] text-muted-foreground">
-                packet rp_1842
-              </span>
-            </div>
-
-            <div className="grid gap-5 p-5 sm:p-8">
-              <div className="rounded-md border border-border bg-muted">
-                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-5 py-3">
-                  <div className="flex items-center gap-2">
-                    <Check
-                      className="h-4 w-4 text-primary"
-                      aria-hidden="true"
-                    />
-                    <span className="font-mono text-xs font-medium uppercase leading-5 tracking-[0.1em] text-primary">
-                      Plan / entry resolved
-                    </span>
-                  </div>
-                  <span className="font-mono text-xs font-medium uppercase leading-5 tracking-[0.1em] text-muted-foreground">
-                    plan@8d21c6a
-                  </span>
-                </div>
-                <div className="space-y-3 px-5 py-5">
-                  <p className="font-display text-xl font-semibold leading-7 tracking-[-0.02em] text-foreground md:text-2xl md:leading-8">
-                    Isolate session renewal from request handlers
+          <div className="space-y-8 md:space-y-10">
+            <article
+              className="overflow-hidden rounded-md border border-border bg-card shadow-[0_2px_0_0_oklch(0.805_0.032_235)]"
+              aria-label="Plugin-based run mechanism"
+            >
+              <header className="flex items-start justify-between gap-2 border-b border-border p-5">
+                <div className="space-y-3">
+                  <p className="font-mono text-xs font-medium uppercase leading-5 tracking-[0.1em] text-primary">
+                    Run manifest
                   </p>
-                  <div className="grid gap-5 md:grid-cols-2 md:gap-8">
-                    <div className="space-y-3">
-                      <p className="font-mono text-xs font-medium uppercase leading-5 tracking-[0.1em] text-muted-foreground">
-                        Owned paths
+                  <h3 className="font-display text-xl font-semibold leading-7 tracking-[-0.02em] text-foreground md:text-2xl md:leading-8">
+                    Plugin contracts resolve before execution
+                  </h3>
+                </div>
+                <span className="rounded-sm border border-primary bg-muted px-5 font-mono text-xs font-medium uppercase leading-5 tracking-[0.1em] text-primary">
+                  ● active
+                </span>
+              </header>
+
+              <div className="grid gap-5 p-5 md:grid-cols-[1fr_1fr] md:gap-8">
+                <div className="space-y-3">
+                  <p className="font-mono text-xs font-medium uppercase leading-5 tracking-[0.1em] text-muted-foreground">
+                    .harness/plugins/repository.ts
+                  </p>
+                  <div className="overflow-hidden rounded-sm border border-border bg-muted">
+                    <div className="grid grid-cols-[3rem_1fr] border-b border-border p-5">
+                      <span className="font-mono text-sm font-normal leading-6 text-muted-foreground">
+                        07
+                      </span>
+                      <span className="font-mono text-sm font-normal leading-6 text-foreground">
+                        plugin: repository-tools
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-[3rem_1fr] border-b border-border p-5">
+                      <span className="font-mono text-sm font-normal leading-6 text-muted-foreground">
+                        08
+                      </span>
+                      <span className="font-mono text-sm font-normal leading-6 text-foreground">
+                        scope: packages/api/**
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-[3rem_1fr] border-b border-border p-5">
+                      <span className="font-mono text-sm font-normal leading-6 text-muted-foreground">
+                        09
+                      </span>
+                      <span className="font-mono text-sm font-normal leading-6 text-primary">
+                        tools: [read, patch, test]
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-[3rem_1fr] p-5">
+                      <span className="font-mono text-sm font-normal leading-6 text-muted-foreground">
+                        10
+                      </span>
+                      <span className="font-mono text-sm font-normal leading-6 text-foreground">
+                        review: approval-required
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="space-y-3">
+                  <p className="font-mono text-xs font-medium uppercase leading-5 tracking-[0.1em] text-muted-foreground">
+                    run_01JQ8F2C · trace
+                  </p>
+                  <div className="space-y-3 border-l-2 border-primary px-5">
+                    <div>
+                      <p className="font-mono text-sm font-medium leading-6 text-primary">
+                        + plugin.resolved
                       </p>
-                      <p className="font-mono text-xs font-medium leading-5 text-foreground">
-                        src/auth/session.ts
-                        <br />
-                        src/auth/session.test.ts
+                      <p className="font-body text-sm font-normal leading-6 text-muted-foreground">
+                        Repository scope and allowed tools recorded.
                       </p>
                     </div>
-                    <div className="space-y-3">
-                      <p className="font-mono text-xs font-medium uppercase leading-5 tracking-[0.1em] text-muted-foreground">
-                        Required check
+                    <div>
+                      <p className="font-mono text-sm font-medium leading-6 text-primary">
+                        + command.completed
                       </p>
-                      <p className="font-mono text-xs font-medium leading-5 text-foreground">
-                        pnpm test session
+                      <p className="font-mono text-sm font-normal leading-6 text-foreground">
+                        pnpm test packages/api
+                      </p>
+                    </div>
+                    <div>
+                      <p className="font-mono text-sm font-medium leading-6 text-primary">
+                        + patch.proposed
+                      </p>
+                      <p className="font-body text-sm font-normal leading-6 text-muted-foreground">
+                        Two hunks attached to task API-184.
                       </p>
                     </div>
                   </div>
                 </div>
               </div>
+            </article>
 
-              <div className="rounded-md border border-border bg-card">
-                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border bg-muted px-5 py-3">
-                  <div className="flex items-center gap-2">
-                    <SquareTerminal
-                      className="h-4 w-4 text-primary"
-                      aria-hidden="true"
-                    />
-                    <span className="font-mono text-xs font-medium uppercase leading-5 tracking-[0.1em] text-foreground">
-                      Run / run_01J8F4K2
-                    </span>
-                  </div>
-                  <span className="font-mono text-xs font-medium uppercase leading-5 tracking-[0.1em] text-primary">
-                    checks passed +2
-                  </span>
+            <article
+              className="overflow-hidden rounded-md border border-border bg-card shadow-[0_2px_0_0_oklch(0.805_0.032_235)]"
+              aria-label="Traceable diff review outcome"
+            >
+              <header className="flex items-start justify-between gap-2 border-b border-border p-5">
+                <div className="space-y-3">
+                  <p className="font-mono text-xs font-medium uppercase leading-5 tracking-[0.1em] text-primary">
+                    Diff review
+                  </p>
+                  <h3 className="font-display text-xl font-semibold leading-7 tracking-[-0.02em] text-foreground md:text-2xl md:leading-8">
+                    The patch carries its run history
+                  </h3>
                 </div>
-                <div className="grid gap-5 px-5 py-5 md:grid-cols-2 md:gap-8">
-                  <div className="space-y-3">
-                    <p className="font-mono text-xs font-medium uppercase leading-5 tracking-[0.1em] text-muted-foreground">
-                      Trace
-                    </p>
-                    <p className="font-mono text-xs font-medium leading-5 text-foreground">
-                      $ pnpm test session
-                      <br />
-                      + 18 passed
-                    </p>
-                  </div>
-                  <div className="space-y-3">
-                    <p className="font-mono text-xs font-medium uppercase leading-5 tracking-[0.1em] text-muted-foreground">
-                      Result
-                    </p>
-                    <p className="font-mono text-xs font-medium leading-5 text-foreground">
-                      commit 31b86e4
-                      <br />
-                      +2 files changed
-                    </p>
-                  </div>
+                <span className="rounded-sm border border-accent bg-accent px-5 font-mono text-xs font-medium uppercase leading-5 tracking-[0.1em] text-foreground">
+                  ! decision
+                </span>
+              </header>
+
+              <div className="border-b border-border bg-muted p-5">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <p className="font-mono text-sm font-medium leading-6 text-foreground">
+                    packages/api/src/client.ts
+                  </p>
+                  <p className="font-mono text-xs font-medium uppercase leading-5 tracking-[0.1em] text-muted-foreground">
+                    run_01JQ8F2C · a84c2de
+                  </p>
                 </div>
               </div>
 
-              <div className="overflow-hidden rounded-md border border-border bg-card">
-                <div className="flex flex-wrap items-center justify-between gap-2 bg-primary px-5 py-3">
-                  <div className="flex items-center gap-2 text-primary-foreground">
-                    <FileDiff className="h-4 w-4" aria-hidden="true" />
-                    <span className="font-mono text-xs font-medium uppercase leading-5 tracking-[0.1em]">
-                      Review / src/auth/session.ts
-                    </span>
-                  </div>
-                  <span className="font-mono text-xs font-medium uppercase leading-5 tracking-[0.1em] text-primary-foreground">
-                    @@ -42,6 +42,9 @@
-                  </span>
+              <div className="border-l-2 border-primary">
+                <div className="border-b border-border bg-muted p-5">
+                  <p className="font-mono text-sm font-normal leading-6 text-primary">
+                    @@ -41,2 +41,3 @@ export async function send
+                  </p>
                 </div>
 
-                <ReviewRow line="42">
-                  export async function renewSession(
-                </ReviewRow>
-                <ReviewRow line="43">session: Session,</ReviewRow>
-                <ReviewRow line="44" marker="+">
-                  + signal: AbortSignal,
-                </ReviewRow>
-                <ReviewRow line="45" marker="+">
-                  + clock: Clock = systemClock,
-                </ReviewRow>
-                <ReviewRow line="46" marker="−">
-                  − if (Date.now() &gt; session.expiresAt) &#123;
-                </ReviewRow>
-                <ReviewRow line="47" marker="+">
-                  + if (clock.now() &gt; session.expiresAt) &#123;
-                </ReviewRow>
-                <ReviewRow line="48" attention>
-                  <span className="flex items-start gap-2">
-                    <MessageSquareWarning
-                      className="h-4 w-4 shrink-0 text-foreground"
-                      aria-hidden="true"
-                    />
-                    <span>
-                      Review required: confirm the injected clock remains scoped
-                      to authentication code.
+                {diffLines.map((line) => (
+                  <div
+                    key={`${line.marker}-${line.newLine}-${line.code}`}
+                    className={`grid grid-cols-[3rem_3rem_1fr] border-b border-border p-5 ${
+                      line.tone === "primary" ? "bg-card" : "bg-muted"
+                    }`}
+                  >
+                    <span className="font-mono text-sm font-normal leading-6 text-muted-foreground">
+                      {line.oldLine}
                     </span>
-                  </span>
-                </ReviewRow>
+                    <span className="font-mono text-sm font-normal leading-6 text-muted-foreground">
+                      {line.newLine}
+                    </span>
+                    <code
+                      className={`font-mono text-sm font-normal leading-6 ${
+                        line.tone === "primary"
+                          ? "text-primary"
+                          : "text-foreground"
+                      }`}
+                    >
+                      {line.marker} {line.code}
+                    </code>
+                  </div>
+                ))}
               </div>
-            </div>
 
-            <figcaption className="border-t border-border bg-muted px-5 py-5 font-body text-sm font-normal leading-6 text-muted-foreground sm:px-8">
-              The review packet preserves the plan revision, run trace, commit,
-              file path, diff hunk, and unresolved human checkpoint in one
-              artifact.
-            </figcaption>
-          </figure>
+              <aside className="p-5">
+                <div className="rounded-sm border border-accent bg-muted p-5">
+                  <div className="flex items-start gap-2">
+                    <span
+                      className="font-mono text-sm font-medium leading-6 text-foreground"
+                      aria-hidden="true"
+                    >
+                      !
+                    </span>
+                    <div className="space-y-3">
+                      <p className="font-mono text-xs font-medium uppercase leading-5 tracking-[0.1em] text-foreground">
+                        Review checkpoint · retry policy
+                      </p>
+                      <p className="font-body text-sm font-normal leading-6 text-muted-foreground">
+                        The run introduced the repository default retry policy,
+                        but the task does not specify whether POST requests are
+                        safe to retry. Confirm the route constraint before
+                        approval.
+                      </p>
+                      <p className="font-mono text-sm font-normal leading-6 text-foreground">
+                        source: task API-184 · event patch.proposed
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              </aside>
+            </article>
+          </div>
         </div>
       </div>
     </section>

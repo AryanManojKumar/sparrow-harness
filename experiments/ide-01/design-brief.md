@@ -3,52 +3,63 @@
 Section types by prevalence:
   hero                 4/4 ####
   feature-grid         4/4 ####
-  product-showcase     4/4 ####
+  feature-detail       4/4 ####
+  product-showcase     3/4 ###
   cta                  3/4 ###
   testimonial          2/4 ##
-  feature-detail       2/4 ##
   faq                  1/4 #
   logo-wall            1/4 #
-  integration-grid     1/4 #
-  pricing              1/4 #
-  (chrome and unclassified, excluded: footer 4/4, nav 2/4, other 2/4)
+  (chrome and unclassified, excluded: footer 4/4, other 2/4, nav 2/4)
 
-Conventional for this category: hero, feature-grid, product-showcase, cta, testimonial, feature-detail
-Typical order: hero -> feature-detail -> product-showcase -> testimonial -> feature-grid -> cta
+Conventional for this category: hero, feature-grid, feature-detail, product-showcase, cta, testimonial
+Typical order: hero -> feature-detail -> product-showcase -> feature-grid -> testimonial -> cta
 
-PRIMARY REFERENCE: antigravity.google
-  Its sequence supports a precise technical explanation of the harness, its fleet and shared-plan workflow, reviewable changes, pricing, and a clear Start free conversion path without relying on hype.
+VISUAL CONVENTIONS IN THIS CATEGORY (counted, not copied)
+  dark-grounded pages:   2/4  — the category is split
+  pages using video:     2/4
+  pages using canvas:    2/4
+  pages showing code:    0/4
+  large product images:  5 per page on average
+
+  These are conventions, not requirements. Following one is a choice you
+  should be able to justify; departing from one is also a choice. What you
+  must not do is land on a register by default without noticing there was
+  a decision to make.
+
+PRIMARY REFERENCE: cursor.com
+  Its hero-to-feature-detail sequence, credibility proof, layered feature sections, and repeated CTAs provide the clearest structure for explaining a reviewable multi-agent workflow to experienced engineers.
   Its section order and pacing are the skeleton. Its look is NOT.
 
 BEST-STRUCTURED VERSION OF EACH SECTION
-  hero: deepseek.com — Its compact, technical hero signals a concrete developer-preview product with minimal padding, best matching engineers who value inspectability over hype, though the copy would need to state shared plans and reviewable diffs explicitly.
-      adopt: A clear technical product-status label such as “Developer preview”
-      adopt: A concise proposition that names the harness or operating model directly
-      adopt: One focused access CTA, such as viewing the source or starting a preview
-      adopt: A restrained technical visual that demonstrates the workflow rather than adding promotional decoration
-  feature-detail: deepseek.com — It directly explains the harness concept with a concrete kernel reference and enough technical density to address engineers concerned with agents operating reliably in real repositories, while Antigravity’s copy is broader and trust-oriented rather than reviewability-focused.
-      adopt: Lead with a precise definition of the harness’s role
-      adopt: Anchor the explanation in a named technical component or implementation detail
-      adopt: Use supporting visuals to clarify how the system operates in real environments
-  product-showcase: antigravity.google — Its concise showcase directly demonstrates multiple local agents operating in parallel across projects and workspaces, closest to the brief’s need for controlled, multi-agent repository work without the padding of Cursor or the unreadable terminal output of Kiro.
-      adopt: A command-center framing for coordinating multiple agents
-      adopt: A visual showing parallel agent activity across projects or workspaces
-      adopt: A concise product-specific heading paired with the interface
-      adopt: Clear visual evidence of the product rather than broad capability claims
-  testimonial: cursor.com — Its testimonial includes a concrete adoption metric and a concise first-hand comparison, making it more credible to engineers wary of unreviewable agent demos than Kiro’s generic time-saving claim.
-      adopt: A prominent first-person customer quote
-      adopt: A quantified before-and-after outcome
-      adopt: Compact testimonial copy with supporting customer imagery
-      adopt: Clear attribution with the speaker’s role and company
-  feature-grid: deepseek.com — Its substantial, technical feature-grid copy pairs a concrete plugin architecture with run traceability, directly addressing the need for reviewable, inspectable agent work at scale.
-      adopt: Group capabilities around a clear architectural principle such as plugins or modular components
-      adopt: Make traceability a named feature with explicit run-level evidence
-      adopt: Use concise feature headings paired with concrete implementation details
-      adopt: Include tangible system artifacts—runs, diffs, tasks, or review checkpoints—rather than broad claims
-  cta: deepseek.com — It best fits technical engineers by pairing a direct trial CTA with a source-install path, a concrete launch command, and a quick-start route rather than relying on unsupported download or brand claims.
-      adopt: Primary CTA for trying the harness immediately
-      adopt: Secondary path for installing from source
-      adopt: Short, concrete launch command or setup example
-      adopt: Separate quick-start link for review-oriented technical readers
+  hero: deepseek.com — Its concise, technical hero names the harness, signals a developer preview, and provides a concrete source-oriented proof point without the consumer-focused clutter or hype of the alternatives.
+      adopt: Explicit product/category naming in the hero
+      adopt: A concrete technical status or availability signal
+      adopt: A source or inspectable artifact as evidence
+      adopt: A restrained primary CTA structure
+  feature-detail: deepseek.com — Its technical framing of a plugin-based system and traceable runs most directly addresses staff engineers’ need to inspect and govern agent work, with enough copy to explain the mechanism without obvious padding.
+      adopt: Lead with a precise architectural principle tied to reviewability
+      adopt: Explain the mechanism that makes every agent run inspectable
+      adopt: Use concrete product/interface visuals to substantiate the workflow
+      adopt: Keep the feature detail compact and free of redundant calls to action
+  product-showcase: antigravity.google — It most directly demonstrates managing multiple agents across workspaces with concise, technically relevant copy and supporting visuals, though it should add explicit diff-review evidence.
+      adopt: A clear product-level heading or command-center framing
+      adopt: Concrete depiction of parallel agents operating across multiple workspaces
+      adopt: Supporting product visuals tied to the described workflow
+      adopt: A focused CTA for inspecting or trying the harness
+  feature-grid: deepseek.com — Its concise, technical treatment of the model-versus-harness distinction directly addresses why staff engineers need controlled, real-world agent execution, with the named Cordis kernel providing concrete evidence.
+      adopt: Lead with a precise conceptual distinction before listing capabilities
+      adopt: Use a named technical component as an evidence-bearing feature
+      adopt: Organize supporting capabilities into a compact feature grid with restrained imagery
+      adopt: Keep the section dense and low on calls to action
+  testimonial: cursor.com — Its quote includes a concrete adoption change—from single digits to over 80%—giving skeptical technical readers stronger evidence than Kiro’s generic trust claim.
+      adopt: Lead with a specific customer quote rather than a broad trust headline
+      adopt: Include a quantified before-and-after outcome
+      adopt: Identify the speaker’s role and engineering context
+      adopt: Keep the testimonial compact and evidence-led
+  cta: deepseek.com (pos 5) — It best fits technical readers with a direct start path, source-install option, quick-start route, and an executable command that makes the CTA concrete rather than merely promotional.
+      adopt: A primary “try it now” action paired with an install-from-source path
+      adopt: A clearly labeled Quick Start or documentation route
+      adopt: A short executable command that shows exactly how to begin
+      adopt: Separate entry points for individual developers and organizations
 
 These are structural patterns to adapt, never designs to reproduce. Extracting layout patterns is fine; reproducing a company's distinctive look for their competitor is not.

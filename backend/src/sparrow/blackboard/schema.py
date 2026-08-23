@@ -190,9 +190,18 @@ class Section(BaseModel):
 
 
 class Blueprint(BaseModel):
+    """A section's structural spec.
+
+    `slots` and `assets` are separate because two different agents consume them.
+    The builder fills slots with copy; `curator` produces assets. Collapsed into
+    one list, the blueprinter read "slots" as "image slots" — a hero came back
+    with none at all, because it has no imagery.
+    """
+
     id: str
     purpose: str
-    slots: list[str]
+    slots: list[str]                                  # content the builder writes
+    assets: list[str] = Field(default_factory=list)   # imagery curator produces
     structure: str
 
 

@@ -17,6 +17,7 @@ _FIELD = {
     "slots": re.compile(r"^Slots:\s*(.+?)(?=\n\n|\Z)", re.S | re.M),
     "structure": re.compile(r"^Structure:\s*(.+?)(?=\n\n|\Z)", re.S | re.M),
 }
+_ASSETS = re.compile(r"^Assets:\s*\n((?:- .+\n?)+)", re.M)
 _ID = re.compile(r"^#\s*Blueprint:\s*(\S+)", re.M)
 
 
@@ -31,9 +32,15 @@ def parse(text: str) -> Blueprint:
     if not m:
         raise ValueError("blueprint is missing its '# Blueprint: <id>' heading")
 
-    slots = [s.strip(" `") for s in re.split(r"[·,]", grab("slots")) if s.strip(" `")]
+    raw_slots = grab("slots")
+    slots = ([] if raw_slots.strip() in {"", "—", "-"}
+             else [s.strip(" `") for s in re.split(r"[·,]", raw_slots) if s.strip(" `")])
+    am = _ASSETS.search(text)
+    assets = ([ln.lstrip("- ").strip() for ln in am.group(1).splitlines() if ln.strip()]
+              if am else [])
     return Blueprint(
-        id=m.group(1), purpose=grab("purpose"), slots=slots, structure=grab("structure")
+        id=m.group(1), purpose=grab("purpose"), slots=slots, assets=assets,
+        structure=grab("structure"),
     )
 
 

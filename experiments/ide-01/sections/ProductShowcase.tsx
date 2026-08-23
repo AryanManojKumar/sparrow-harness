@@ -1,361 +1,362 @@
-export default function ProductShowcase() {
-  const diffRows = [
-    {
-      oldLine: "41",
-      newLine: "41",
-      marker: " ",
-      content: "export async function authorize(request: Request) {",
-      className: "bg-card text-foreground",
-    },
-    {
-      oldLine: "42",
-      newLine: "",
-      marker: "−",
-      content: "  const token = request.headers.get('authorization');",
-      className: "bg-muted text-muted-foreground",
-    },
-    {
-      oldLine: "",
-      newLine: "42",
-      marker: "+",
-      content: "  const token = readBearerToken(request.headers);",
-      className: "bg-background text-primary",
-    },
-    {
-      oldLine: "",
-      newLine: "43",
-      marker: "+",
-      content: "  const requestId = request.headers.get('x-request-id');",
-      className: "bg-background text-primary",
-    },
-    {
-      oldLine: "43",
-      newLine: "44",
-      marker: " ",
-      content: "  if (!token) {",
-      className: "bg-card text-foreground",
-    },
-    {
-      oldLine: "44",
-      newLine: "45",
-      marker: " ",
-      content: "    throw new UnauthorizedError({ requestId });",
-      className: "bg-card text-foreground",
-    },
-    {
-      oldLine: "45",
-      newLine: "46",
-      marker: " ",
-      content: "  }",
-      className: "bg-card text-foreground",
-    },
-    {
-      oldLine: "",
-      newLine: "47",
-      marker: "+",
-      content: "  return verifyToken(token, { requestId });",
-      className: "bg-background text-primary",
-    },
-    {
-      oldLine: "46",
-      newLine: "",
-      marker: "−",
-      content: "  return verifyToken(token);",
-      className: "bg-muted text-muted-foreground",
-    },
-    {
-      oldLine: "47",
-      newLine: "48",
-      marker: " ",
-      content: "}",
-      className: "bg-card text-foreground",
-    },
-  ];
+import Link from "next/link";
+import {
+  ArrowRight,
+  Bot,
+  Check,
+  CircleDot,
+  FileCode,
+  Folder,
+  GitBranch,
+  GitPullRequest,
+  MessageSquare,
+  Network,
+  Play,
+} from "lucide-react";
 
+const agents = [
+  {
+    agent: "agent-api",
+    workspace: "workspaces/key-api",
+    task: "Add dual-key verification",
+    commit: "a81c9e2",
+    state: "ready",
+  },
+  {
+    agent: "agent-web",
+    workspace: "workspaces/key-web",
+    task: "Surface session refresh state",
+    commit: "d37f4b1",
+    state: "running",
+  },
+  {
+    agent: "agent-infra",
+    workspace: "workspaces/key-infra",
+    task: "Stage signing-key rotation",
+    commit: "c04bd78",
+    state: "ready",
+  },
+];
+
+const diffLines = [
+  {
+    line: "48",
+    sign: " ",
+    content: "export async function verifySession(token: string) {",
+    emphasis: false,
+  },
+  {
+    line: "49",
+    sign: "-",
+    content: "  return verify(token, env.SIGNING_KEY)",
+    emphasis: false,
+  },
+  {
+    line: "49",
+    sign: "+",
+    content: "  const keys = await signingKeys.active()",
+    emphasis: true,
+  },
+  {
+    line: "50",
+    sign: "+",
+    content: "  return verifyAgainstAny(token, keys)",
+    emphasis: true,
+  },
+  {
+    line: "51",
+    sign: " ",
+    content: "}",
+    emphasis: false,
+  },
+];
+
+export default function ProductShowcase() {
   return (
     <section
-      className="bg-background py-20 md:py-28 lg:py-32"
-      aria-labelledby="product-showcase-heading"
+      aria-labelledby="product-showcase-title"
+      className="bg-background py-20 text-foreground md:py-28 lg:py-32"
     >
       <div className="mx-auto max-w-7xl px-5 sm:px-8">
-        <div className="space-y-8 md:space-y-10">
-          <header className="max-w-4xl space-y-3">
+        <div className="grid items-end gap-5 md:grid-cols-12 md:gap-8">
+          <div className="space-y-3 md:col-span-8">
             <p className="font-mono text-xs font-medium uppercase leading-5 tracking-[0.1em] text-primary">
-              Product capture / review packet
+              Command center / run_8H2K
             </p>
             <h2
-              id="product-showcase-heading"
-              className="font-display text-3xl font-semibold leading-[1.02] tracking-[-0.035em] text-foreground md:text-5xl"
+              id="product-showcase-title"
+              className="font-display text-3xl font-semibold leading-[1.02] tracking-[-0.035em] md:text-5xl"
             >
-              One shared plan. A fleet of diffs you can still review.
+              Coordinate the fleet. Inspect every patch.
             </h2>
             <p className="max-w-3xl font-body text-base font-normal leading-7 text-muted-foreground md:text-lg md:leading-8">
-              Plan entries are assigned to named runs, each run records its
-              touched files and commit, and every proposed change waits in a
-              file-level diff with an explicit review checkpoint.
+              A shared plan assigns bounded work to isolated workspaces. Run traces
+              show what each agent changed, while file-level diffs and approval
+              checkpoints keep the merge decision with your team.
             </p>
-          </header>
+          </div>
 
-          <figure className="space-y-3">
-            <div className="overflow-hidden rounded-md border border-border bg-card shadow-[0_2px_0_0_oklch(0.805_0.032_235)]">
-              <div className="flex flex-col justify-between gap-5 border-b border-border bg-muted p-5 md:flex-row md:items-center md:gap-8">
-                <div className="flex flex-wrap items-center gap-2">
-                  <span className="font-mono text-xs font-medium uppercase leading-5 tracking-[0.1em] text-foreground">
-                    northstar/api
-                  </span>
-                  <span className="text-muted-foreground" aria-hidden="true">
-                    /
-                  </span>
-                  <span className="font-mono text-xs font-medium leading-5 tracking-[0.1em] text-primary">
-                    run/1842
-                  </span>
-                </div>
-                <div className="flex flex-wrap items-center gap-2">
-                  <span
-                    className="h-2 w-2 rounded-full bg-primary"
-                    aria-hidden="true"
-                  />
-                  <span className="font-mono text-xs font-medium uppercase leading-5 tracking-[0.1em] text-muted-foreground">
-                    6 runs resolved
-                  </span>
-                  <span className="font-mono text-xs font-medium uppercase leading-5 tracking-[0.1em] text-foreground">
-                    14 files
-                  </span>
-                  <span className="font-mono text-xs font-medium uppercase leading-5 tracking-[0.1em] text-foreground">
-                    0 merged
-                  </span>
+          <div className="md:col-span-4 md:flex md:justify-end">
+            <Link
+              href="/start"
+              className="inline-flex items-center gap-2 rounded-md border border-foreground bg-accent px-5 py-3 font-body text-sm font-medium leading-6 text-foreground shadow-[0_2px_0_0_oklch(0.805_0.032_235)] transition-[box-shadow] duration-[140ms] hover:shadow-[0_4px_0_0_oklch(0.805_0.032_235)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+            >
+              Start free
+              <ArrowRight aria-hidden="true" className="h-4 w-4" />
+            </Link>
+          </div>
+        </div>
+
+        <div className="mt-8 grid gap-5 md:mt-10 md:grid-cols-12 md:gap-8">
+          <article className="overflow-hidden rounded-md border border-border bg-card shadow-[0_2px_0_0_oklch(0.805_0.032_235)] md:col-span-7">
+            <header className="flex items-start justify-between gap-2 border-b border-border bg-muted px-5 py-3">
+              <div className="flex items-center gap-2">
+                <Network aria-hidden="true" className="h-4 w-4 text-primary" />
+                <div>
+                  <p className="font-mono text-xs font-medium uppercase leading-5 tracking-[0.1em]">
+                    Parallel agents
+                  </p>
+                  <p className="font-body text-sm font-normal leading-6 text-muted-foreground">
+                    Shared task: rotate signing keys without interrupting sessions
+                  </p>
                 </div>
               </div>
+              <span className="font-mono text-xs font-medium uppercase leading-5 tracking-[0.1em] text-primary">
+                run_8H2K
+              </span>
+            </header>
 
-              <div className="overflow-x-auto">
-                <div className="min-w-[880px]">
-                  <div className="grid grid-cols-12 border-b border-border bg-card">
-                    <div className="col-span-4 border-r border-border p-5">
-                      <p className="font-mono text-xs font-medium uppercase leading-5 tracking-[0.1em] text-primary">
-                        01 / Plan
-                      </p>
-                    </div>
-                    <div className="col-span-3 border-r border-border p-5">
-                      <p className="font-mono text-xs font-medium uppercase leading-5 tracking-[0.1em] text-primary">
-                        02 / Run
-                      </p>
-                    </div>
-                    <div className="col-span-5 p-5">
-                      <p className="font-mono text-xs font-medium uppercase leading-5 tracking-[0.1em] text-primary">
-                        03 / Review
-                      </p>
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-12">
-                    <div className="col-span-4 border-r border-border bg-card p-5">
-                      <div className="space-y-3">
-                        <div className="border-l-2 border-primary bg-background p-5">
-                          <div className="flex items-center justify-between gap-2">
-                            <span className="font-mono text-xs font-medium uppercase leading-5 tracking-[0.1em] text-primary">
-                              PLAN-14
-                            </span>
-                            <span className="font-mono text-xs font-medium uppercase leading-5 tracking-[0.1em] text-muted-foreground">
-                              assigned
-                            </span>
-                          </div>
-                          <p className="font-body text-sm font-normal leading-6 text-foreground">
-                            Propagate request IDs through authorization errors.
-                          </p>
-                          <p className="font-mono text-xs font-medium leading-5 tracking-[0.1em] text-muted-foreground">
-                            scope: packages/api/src/auth/*
-                          </p>
-                        </div>
-
-                        <div className="border-l-2 border-border p-5">
-                          <div className="flex items-center justify-between gap-2">
-                            <span className="font-mono text-xs font-medium uppercase leading-5 tracking-[0.1em] text-foreground">
-                              PLAN-15
-                            </span>
-                            <span className="font-mono text-xs font-medium uppercase leading-5 tracking-[0.1em] text-muted-foreground">
-                              resolved
-                            </span>
-                          </div>
-                          <p className="font-body text-sm font-normal leading-6 text-foreground">
-                            Add coverage for missing and malformed bearer
-                            tokens.
-                          </p>
-                        </div>
-
-                        <div className="border-l-2 border-border p-5">
-                          <div className="flex items-center justify-between gap-2">
-                            <span className="font-mono text-xs font-medium uppercase leading-5 tracking-[0.1em] text-foreground">
-                              PLAN-16
-                            </span>
-                            <span className="font-mono text-xs font-medium uppercase leading-5 tracking-[0.1em] text-muted-foreground">
-                              resolved
-                            </span>
-                          </div>
-                          <p className="font-body text-sm font-normal leading-6 text-foreground">
-                            Update the API error contract and generated schema.
-                          </p>
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="col-span-3 border-r border-border bg-muted p-5">
-                      <div className="space-y-3">
-                        <div className="rounded-sm border border-primary bg-card p-5">
-                          <div className="flex items-center justify-between gap-2">
-                            <span className="font-mono text-xs font-medium uppercase leading-5 tracking-[0.1em] text-primary">
-                              agent-02
-                            </span>
-                            <span
-                              className="h-2 w-2 rounded-full bg-primary"
-                              aria-label="Run complete"
-                            />
-                          </div>
-                          <p className="font-mono text-xs font-medium leading-5 tracking-[0.1em] text-foreground">
-                            run_1842.02
-                          </p>
-                          <p className="font-body text-sm font-normal leading-6 text-muted-foreground">
-                            3 files · 1 commit
-                          </p>
-                          <p className="font-mono text-xs font-medium leading-5 tracking-[0.1em] text-muted-foreground">
-                            7e3a19c
-                          </p>
-                        </div>
-
-                        <div className="rounded-sm border border-border bg-card p-5">
-                          <div className="flex items-center justify-between gap-2">
-                            <span className="font-mono text-xs font-medium uppercase leading-5 tracking-[0.1em] text-foreground">
-                              agent-04
-                            </span>
-                            <span
-                              className="h-2 w-2 rounded-full bg-primary"
-                              aria-label="Run complete"
-                            />
-                          </div>
-                          <p className="font-mono text-xs font-medium leading-5 tracking-[0.1em] text-foreground">
-                            run_1842.04
-                          </p>
-                          <p className="font-body text-sm font-normal leading-6 text-muted-foreground">
-                            2 test files · checks passed
-                          </p>
-                        </div>
-
-                        <div className="rounded-sm border border-border bg-card p-5">
-                          <div className="flex items-center justify-between gap-2">
-                            <span className="font-mono text-xs font-medium uppercase leading-5 tracking-[0.1em] text-foreground">
-                              agent-05
-                            </span>
-                            <span
-                              className="h-2 w-2 rounded-full bg-primary"
-                              aria-label="Run complete"
-                            />
-                          </div>
-                          <p className="font-mono text-xs font-medium leading-5 tracking-[0.1em] text-foreground">
-                            run_1842.05
-                          </p>
-                          <p className="font-body text-sm font-normal leading-6 text-muted-foreground">
-                            schema regenerated · no drift
-                          </p>
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="col-span-5 bg-card">
-                      <div className="flex items-start justify-between gap-5 border-b border-border p-5 md:gap-8">
-                        <div className="space-y-3">
-                          <p className="font-mono text-xs font-medium leading-5 tracking-[0.1em] text-foreground">
-                            packages/api/src/auth/authorize.ts
-                          </p>
-                          <p className="font-mono text-xs font-medium uppercase leading-5 tracking-[0.1em] text-muted-foreground">
-                            7e3a19c · +4 −2
-                          </p>
-                        </div>
-                        <div className="flex items-center gap-2 rounded-sm border border-accent bg-accent p-5">
-                          <span
-                            className="font-mono text-xs font-medium leading-5 text-foreground"
-                            aria-hidden="true"
-                          >
-                            !
-                          </span>
-                          <span className="font-mono text-xs font-medium uppercase leading-5 tracking-[0.1em] text-foreground">
-                            review required
-                          </span>
-                        </div>
-                      </div>
-
-                      <div className="border-l-2 border-primary">
-                        <div className="border-b border-border bg-muted p-5">
-                          <p className="font-mono text-xs font-medium leading-5 tracking-[0.1em] text-primary">
-                            @@ -41,7 +41,8 @@ authorize(request)
-                          </p>
-                        </div>
-
+            <div className="p-5">
+              <div className="relative border-l-2 border-primary">
+                <span
+                  aria-hidden="true"
+                  className="absolute left-0 top-5 h-3 w-3 -translate-x-2 border border-foreground bg-accent"
+                />
+                <div className="divide-y divide-border">
+                  {agents.map((agent) => (
+                    <div
+                      key={agent.agent}
+                      className="grid gap-5 px-5 py-3 md:grid-cols-[1fr_1fr_auto]"
+                    >
+                      <div className="flex items-start gap-2">
+                        <span
+                          aria-hidden="true"
+                          className={`mt-3 h-2 w-2 rounded-full border border-foreground ${
+                            agent.state === "ready" ? "bg-primary" : "bg-accent"
+                          }`}
+                        />
                         <div>
-                          {diffRows.map((row, index) => (
-                            <div
-                              key={`${row.oldLine}-${row.newLine}-${index}`}
-                              className={`grid grid-cols-[3rem_3rem_1fr] border-b border-border ${row.className}`}
-                            >
-                              <span className="border-r border-border px-5 font-mono text-xs font-medium leading-5 tracking-[0.1em] text-muted-foreground">
-                                {row.oldLine}
-                              </span>
-                              <span className="border-r border-border px-5 font-mono text-xs font-medium leading-5 tracking-[0.1em] text-muted-foreground">
-                                {row.newLine}
-                              </span>
-                              <code className="whitespace-pre px-5 font-mono text-xs font-medium leading-5 tracking-[0.1em]">
-                                {row.marker} {row.content}
-                              </code>
-                            </div>
-                          ))}
+                          <p className="font-mono text-xs font-medium uppercase leading-5 tracking-[0.1em]">
+                            {agent.agent}
+                          </p>
+                          <p className="font-body text-sm font-normal leading-6 text-muted-foreground">
+                            {agent.task}
+                          </p>
                         </div>
                       </div>
-
-                      <div className="border-l-2 border-accent bg-muted p-5">
-                        <div className="flex items-start gap-2">
-                          <span
-                            className="bg-accent px-5 font-mono text-xs font-medium leading-5 text-foreground"
-                            aria-hidden="true"
-                          >
-                            !
-                          </span>
-                          <div className="space-y-3">
-                            <p className="font-mono text-xs font-medium uppercase leading-5 tracking-[0.1em] text-foreground">
-                              Reviewer checkpoint · unresolved
-                            </p>
-                            <p className="font-body text-sm font-normal leading-6 text-foreground">
-                              Confirm that downstream audit events accept a
-                              missing request ID before approving this hunk.
-                            </p>
-                            <p className="font-mono text-xs font-medium leading-5 tracking-[0.1em] text-muted-foreground">
-                              owner: platform-reviewers · line 47
-                            </p>
-                          </div>
-                        </div>
+                      <div>
+                        <p className="font-mono text-xs font-medium uppercase leading-5 tracking-[0.1em] text-muted-foreground">
+                          {agent.workspace}
+                        </p>
+                        <p className="font-mono text-xs font-medium uppercase leading-5 tracking-[0.1em]">
+                          commit {agent.commit}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-2 font-mono text-xs font-medium uppercase leading-5 tracking-[0.1em]">
+                        {agent.state === "ready" ? (
+                          <Check aria-hidden="true" className="h-4 w-4 text-primary" />
+                        ) : (
+                          <Play aria-hidden="true" className="h-4 w-4 text-foreground" />
+                        )}
+                        {agent.state}
                       </div>
                     </div>
-                  </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </article>
 
-                  <div className="flex items-center justify-between gap-5 border-t border-border bg-muted p-5 md:gap-8">
-                    <p className="font-mono text-xs font-medium leading-5 tracking-[0.1em] text-muted-foreground">
-                      harness review run_1842 --plan shared-plan.yaml
+          <article className="overflow-hidden rounded-md border border-border bg-card shadow-[0_2px_0_0_oklch(0.805_0.032_235)] md:col-span-5">
+            <header className="flex items-start justify-between gap-2 border-b border-border bg-muted px-5 py-3">
+              <div className="flex items-center gap-2">
+                <Folder aria-hidden="true" className="h-4 w-4 text-primary" />
+                <div>
+                  <p className="font-mono text-xs font-medium uppercase leading-5 tracking-[0.1em]">
+                    Workspace map
+                  </p>
+                  <p className="font-body text-sm font-normal leading-6 text-muted-foreground">
+                    acme/platform · branch key-rotation
+                  </p>
+                </div>
+              </div>
+              <GitBranch aria-hidden="true" className="h-4 w-4 text-muted-foreground" />
+            </header>
+
+            <div className="p-5">
+              <div className="relative space-y-3 border-l-2 border-primary px-5">
+                <span
+                  aria-hidden="true"
+                  className="absolute left-0 top-3 h-3 w-3 -translate-x-2 border border-foreground bg-accent"
+                />
+                <div className="border border-border bg-muted px-5 py-3">
+                  <div className="flex items-center gap-2">
+                    <Folder aria-hidden="true" className="h-4 w-4 text-primary" />
+                    <p className="font-mono text-xs font-medium uppercase leading-5 tracking-[0.1em]">
+                      workspaces/key-api
                     </p>
-                    <p className="font-mono text-xs font-medium uppercase leading-5 tracking-[0.1em] text-foreground">
-                      merge blocked · 1 checkpoint
+                  </div>
+                  <p className="font-body text-sm font-normal leading-6 text-muted-foreground">
+                    packages/auth · 3 files changed
+                  </p>
+                </div>
+                <div className="border border-border px-5 py-3">
+                  <div className="flex items-center gap-2">
+                    <Folder aria-hidden="true" className="h-4 w-4 text-primary" />
+                    <p className="font-mono text-xs font-medium uppercase leading-5 tracking-[0.1em]">
+                      workspaces/key-web
+                    </p>
+                  </div>
+                  <p className="font-body text-sm font-normal leading-6 text-muted-foreground">
+                    apps/console · run in progress
+                  </p>
+                </div>
+                <div className="border border-border px-5 py-3">
+                  <div className="flex items-center gap-2">
+                    <Folder aria-hidden="true" className="h-4 w-4 text-primary" />
+                    <p className="font-mono text-xs font-medium uppercase leading-5 tracking-[0.1em]">
+                      workspaces/key-infra
+                    </p>
+                  </div>
+                  <p className="font-body text-sm font-normal leading-6 text-muted-foreground">
+                    infra/keys · 2 files changed
+                  </p>
+                </div>
+              </div>
+            </div>
+          </article>
+
+          <article className="overflow-hidden rounded-md border border-border bg-card shadow-[0_2px_0_0_oklch(0.805_0.032_235)] md:col-span-5">
+            <header className="flex items-start justify-between gap-2 border-b border-border bg-muted px-5 py-3">
+              <div className="flex items-center gap-2">
+                <Bot aria-hidden="true" className="h-4 w-4 text-primary" />
+                <div>
+                  <p className="font-mono text-xs font-medium uppercase leading-5 tracking-[0.1em]">
+                    Coordination trace
+                  </p>
+                  <p className="font-body text-sm font-normal leading-6 text-muted-foreground">
+                    Plan constraints shared across all runs
+                  </p>
+                </div>
+              </div>
+              <CircleDot aria-hidden="true" className="h-4 w-4 text-accent" />
+            </header>
+
+            <div className="p-5">
+              <div className="relative border-l-2 border-primary px-5">
+                <span
+                  aria-hidden="true"
+                  className="absolute left-0 top-5 h-3 w-3 -translate-x-2 border border-foreground bg-accent"
+                />
+                <div className="space-y-3">
+                  <div className="border border-border px-5 py-3">
+                    <p className="font-mono text-xs font-medium uppercase leading-5 tracking-[0.1em] text-primary">
+                      plan / constraint accepted
+                    </p>
+                    <p className="font-body text-sm font-normal leading-6">
+                      Preserve verification for the current and previous signing key.
+                    </p>
+                  </div>
+                  <div className="border border-border px-5 py-3">
+                    <p className="font-mono text-xs font-medium uppercase leading-5 tracking-[0.1em] text-primary">
+                      run / dependency resolved
+                    </p>
+                    <p className="font-body text-sm font-normal leading-6">
+                      agent-web reads the API contract from commit{" "}
+                      <span className="font-mono">a81c9e2</span>.
+                    </p>
+                  </div>
+                  <div className="border border-accent bg-muted px-5 py-3">
+                    <p className="flex items-center gap-2 font-mono text-xs font-medium uppercase leading-5 tracking-[0.1em]">
+                      <MessageSquare aria-hidden="true" className="h-4 w-4 text-accent" />
+                      review / decision required
+                    </p>
+                    <p className="font-body text-sm font-normal leading-6">
+                      Confirm the overlap window before the infrastructure patch can
+                      enter the merge set.
                     </p>
                   </div>
                 </div>
               </div>
             </div>
+          </article>
 
-            <figcaption className="font-body text-sm font-normal leading-6 text-muted-foreground">
-              Review packet for{" "}
-              <span className="font-mono text-xs font-medium leading-5 tracking-[0.1em] text-foreground">
-                run_1842
+          <article className="overflow-hidden rounded-md border border-border bg-card shadow-[0_2px_0_0_oklch(0.805_0.032_235)] md:col-span-7">
+            <header className="flex items-start justify-between gap-2 border-b border-border bg-muted px-5 py-3">
+              <div className="flex items-center gap-2">
+                <GitPullRequest aria-hidden="true" className="h-4 w-4 text-primary" />
+                <div>
+                  <p className="font-mono text-xs font-medium uppercase leading-5 tracking-[0.1em]">
+                    Explicit diff review
+                  </p>
+                  <p className="font-mono text-xs font-medium uppercase leading-5 tracking-[0.1em] text-muted-foreground">
+                    packages/auth/src/keys.ts
+                  </p>
+                </div>
+              </div>
+              <span className="font-mono text-xs font-medium uppercase leading-5 tracking-[0.1em]">
+                a81c9e2
               </span>
-              : plan ownership, run provenance, commit identity, file-level
-              changes, and the unresolved human decision remain attached to the
-              same artifact.
-            </figcaption>
-          </figure>
+            </header>
+
+            <div className="p-5">
+              <div className="relative overflow-hidden border-l-2 border-primary">
+                <span
+                  aria-hidden="true"
+                  className="absolute left-0 top-8 h-3 w-3 -translate-x-2 border border-foreground bg-accent"
+                />
+                <div className="flex items-center gap-2 border-b border-border bg-muted px-5 py-3">
+                  <FileCode aria-hidden="true" className="h-4 w-4 text-primary" />
+                  <p className="font-mono text-xs font-medium uppercase leading-5 tracking-[0.1em] text-primary">
+                    @@ -48,5 +48,6 @@ verifySession
+                  </p>
+                </div>
+
+                <div>
+                  {diffLines.map((line, index) => (
+                    <div
+                      key={`${line.line}-${index}`}
+                      className={`grid grid-cols-[auto_auto_1fr] border-b border-border px-5 py-3 font-mono text-xs font-medium uppercase leading-5 tracking-[0.1em] last:border-b-0 ${
+                        line.emphasis ? "bg-muted text-primary" : ""
+                      }`}
+                    >
+                      <span className="w-8 text-muted-foreground">{line.line}</span>
+                      <span className="w-5" aria-label={line.sign === "+" ? "Added" : line.sign === "-" ? "Removed" : undefined}>
+                        {line.sign}
+                      </span>
+                      <code className="overflow-x-auto whitespace-pre">
+                        {line.content}
+                      </code>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="flex items-start gap-2 border-t border-accent bg-muted px-5 py-3">
+                  <MessageSquare
+                    aria-hidden="true"
+                    className="h-4 w-4 text-accent"
+                  />
+                  <div>
+                    <p className="font-mono text-xs font-medium uppercase leading-5 tracking-[0.1em]">
+                      unresolved · security-review
+                    </p>
+                    <p className="font-body text-sm font-normal leading-6">
+                      Require a bounded expiry on the previous key before approval.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </article>
         </div>
       </div>
     </section>

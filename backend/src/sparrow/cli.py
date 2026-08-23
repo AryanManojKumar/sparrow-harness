@@ -326,7 +326,29 @@ def cmd_scout(args) -> int:
     dest = PROJECTS / bb.project_id / "sources" / "design-brief.md"
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_text(brief_text)
-    print(f"\n  written {dest}\n  ranking cost ${spent:.4f}")
+    print(f"\n  written {dest}")
+
+    # Blueprints from what the winning sources were measured doing — the last
+    # hand-written link in the chain.
+    from sparrow.agents.blueprinter import Blueprinter, to_markdown
+
+    bp_dir = PROJECTS / bb.project_id / "blueprints"
+    bp_dir.mkdir(parents=True, exist_ok=True)
+    bper = Blueprinter(provider)
+    order = comm.typical_order
+    print(f"\n  blueprints from ranked sources:")
+    for i, t in enumerate(order):
+        r = rankings.get(t)
+        if not r:
+            continue
+        neighbours = [x for x in order if x != t]
+        bp, usage = bper.write(bb.brief, t, r, by_type.get(t, []), neighbours)
+        spent += usage.cost(provider.name, bper.tier)
+        comp = "".join(w.capitalize() for w in t.replace("-", " ").split())
+        (bp_dir / f"{i + 1:02d}-{t}.md").write_text(to_markdown(bp, comp))
+        print(f"    {t:<18} {len(bp.slots)} slots · {len(bp.structure.split())} words")
+
+    print(f"\n  written {bp_dir}\n  scout cost ${spent:.4f}")
     return 0
 
 
