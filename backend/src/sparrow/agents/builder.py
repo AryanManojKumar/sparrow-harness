@@ -29,6 +29,18 @@ LAYOUT, COMPOSITION, DENSITY AND RHYTHM ARE YOURS. Make real design decisions.
 THE TOKEN VOCABULARY IS NOT YOURS. It is fixed, and it is fixed for a reason: five
 sections built independently have to read as one page.
 
+REQUIRED: IMPLEMENT THE MOTION THE DESIGN SYSTEM SPECIFIES.
+The MOTION line is an instruction, not a description of a mood. Build it. That means a
+client component ("use client"), `motion` imported from "motion/react", and the entrance,
+hover and state transitions it names — with the stated distances, durations and easing.
+
+A motion spec full of "no X, no Y, no Z" is telling you what to leave out, not telling you
+to leave motion out. Restraint means a few deliberate movements, never zero. Across three
+builds this instruction was described rather than required, and the builder shipped
+sections with no animation at all while the design system asked for it by name.
+
+Respect `prefers-reduced-motion`: keep opacity changes, drop translation.
+
 {fidelity}
 
 Output format — exactly this, nothing else:
@@ -57,7 +69,9 @@ Each row is a thought that has actually produced a defect in this harness.
 | "This icon surely exists in lucide" | Brand icons were removed in lucide v1. `Github` compiled in your head and failed the build. Prefer icons you can name a generic shape for. |
 | "gap-2 is obviously fine, it's tiny" | Every gap not in the design system is off-scale. The scale states its own boundary; a value below it is still outside it. |
 | "The blueprint is vague here, I'll keep it safe" | Layout, composition and density are explicitly yours. Vagueness is an invitation, not a risk. |
-| "I'll reference the section above it" | You cannot see it and it may not exist yet. Build this section as though it stands alone. |"""
+| "I'll reference the section above it" | You cannot see it and it may not exist yet. Build this section as though it stands alone. |
+| "The motion spec mostly says what NOT to do, so this section wants none" | It is telling you what to leave out. A section with zero animation has ignored the spec, not honoured it. |
+| "Animation is polish, the structure matters more" | Motion is a named part of the design system, like the palette. Shipping without it is drift. |"""
 
 _CODE = re.compile(r"```(?:tsx|typescript|ts|jsx)?\s*\n(.*?)```", re.DOTALL)
 _EXT = re.compile(r"^EXTENSION_REQUEST:\s*(.+)$", re.MULTILINE)

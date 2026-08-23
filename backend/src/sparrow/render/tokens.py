@@ -110,7 +110,7 @@ def to_prompt(ds: DesignSystem) -> str:
     out.append("")
     out.append(f"IMAGERY TREATMENT\n  {ds.imagery_treatment}")
     out.append("")
-    out.append(f"MOTION\n  {ds.motion}")
+    out.append(f"MOTION — implement this; it is a requirement, not a mood\n  {ds.motion}")
     return "\n".join(out)
 
 
