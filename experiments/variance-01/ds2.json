@@ -1,0 +1,125 @@
+{
+  "atmosphere": "A calm review workspace built from cool working-paper surfaces, repository ink, and restrained branch blue, making long technical explanations comfortable to inspect. Review amber appears only where human attention or resolution is required. Plans, runs, and diffs read as accountable engineering artifacts rather than autonomous magic.",
+  "signature": "The Review Gutter: a persistent diff-derived vocabulary of line numbers, hunk brackets, file paths, and amber review checkpoints attached to every product artifact.",
+  "key_characteristics": [
+    "Every capability claim is paired with a visible mechanism such as a shared-plan entry, run trace, file-level diff, or approval checkpoint.",
+    "Developer-preview status, run identifiers, file paths, commit hashes, and commands use font-mono and retain authentic artifact syntax.",
+    "PLAN, RUN, and REVIEW are numbered only when explaining that actual three-stage workflow; non-sequential sections use descriptive artifact labels.",
+    "Branch Blue identifies proposed or selected work, while Review Amber is reserved for unresolved comments, required decisions, and the Start free action.",
+    "Change states always combine color with a plus, minus, comment, or approval symbol so meaning never depends on color alone.",
+    "Cards and controls use compact radii, firm borders, and offset shadows rather than glass effects, glow, gradients, or terminal cosplay.",
+    "Headlines remain declarative and technical; oversized velocity statistics, engineer-replacement language, and unsupported superlatives are excluded.",
+    "Start free is a solid, finite action, while Read the docs is presented as a quieter bordered or text action."
+  ],
+  "colors": [
+    {
+      "token": "background",
+      "name": "Working Tree",
+      "value": "oklch(0.965 0.014 232)",
+      "role": "Cool daylight page field that feels like an active engineering workspace rather than a marketing canvas."
+    },
+    {
+      "token": "foreground",
+      "name": "Repository Ink",
+      "value": "oklch(0.235 0.032 246)",
+      "role": "Primary prose, headings, commands, and high-priority interface labels."
+    },
+    {
+      "token": "primary",
+      "name": "Branch Blue",
+      "value": "oklch(0.455 0.128 239)",
+      "role": "Selected work, proposed changes, links, and active workflow paths."
+    },
+    {
+      "token": "primary-foreground",
+      "name": "Clean Checkout",
+      "value": "oklch(0.985 0.004 230)",
+      "role": "Text and icons placed on Branch Blue."
+    },
+    {
+      "token": "accent",
+      "name": "Review Amber",
+      "value": "oklch(0.755 0.145 78)",
+      "role": "Human review checkpoints, unresolved annotations, focus emphasis, and the Start free action; never general decoration."
+    },
+    {
+      "token": "muted",
+      "name": "Staged File",
+      "value": "oklch(0.918 0.018 232)",
+      "role": "Code rows, metadata bands, disabled states, and quiet explanatory regions."
+    },
+    {
+      "token": "muted-foreground",
+      "name": "Blame Gray",
+      "value": "oklch(0.485 0.028 244)",
+      "role": "Supporting copy, timestamps, line numbers, attribution, and secondary metadata."
+    },
+    {
+      "token": "border",
+      "name": "Hunk Rule",
+      "value": "oklch(0.805 0.032 235)",
+      "role": "Diff boundaries, card edges, input outlines, and connections between review artifacts."
+    },
+    {
+      "token": "card",
+      "name": "Patch Sheet",
+      "value": "oklch(0.992 0.004 225)",
+      "role": "Product captures, review packets, testimonials, and other contained evidence."
+    }
+  ],
+  "forbidden_hues": [],
+  "font_display": "Recursive",
+  "font_body": "Public Sans",
+  "font_mono": "Geist Mono",
+  "font_weights": [
+    400,
+    500,
+    600
+  ],
+  "type_steps": [
+    {
+      "name": "display",
+      "classes": "font-display text-5xl font-semibold leading-[0.94] tracking-[-0.045em] md:text-7xl",
+      "use": "Hero proposition only; keep it concise enough to preserve the tight engineered rhythm."
+    },
+    {
+      "name": "h2",
+      "classes": "font-display text-3xl font-semibold leading-[1.02] tracking-[-0.035em] md:text-5xl",
+      "use": "Major section claims that name a mechanism or review outcome."
+    },
+    {
+      "name": "h3",
+      "classes": "font-display text-xl font-semibold leading-7 tracking-[-0.02em] md:text-2xl md:leading-8",
+      "use": "Feature, workflow stage, testimonial, and artifact titles."
+    },
+    {
+      "name": "body",
+      "classes": "font-body text-base font-normal leading-7 md:text-lg md:leading-8",
+      "use": "Explanations, mechanism-led feature copy, testimonial quotations, and CTA support."
+    },
+    {
+      "name": "small",
+      "classes": "font-body text-sm font-normal leading-6",
+      "use": "Supporting details, captions, attribution, helper text, and compact navigation."
+    },
+    {
+      "name": "eyebrow",
+      "classes": "font-mono text-xs font-medium uppercase leading-5 tracking-[0.1em]",
+      "use": "Developer-preview status, file paths, run IDs, workflow states, and authentic artifact labels."
+    }
+  ],
+  "section_padding": "py-20 md:py-28 lg:py-32",
+  "container": "mx-auto max-w-7xl px-5 sm:px-8",
+  "grid_gap": "gap-5 md:gap-8",
+  "inline_gap": "gap-2",
+  "stack_tight": "space-y-3",
+  "stack_loose": "space-y-8 md:space-y-10",
+  "radius_base": "0.375rem",
+  "radius_card": "rounded-md",
+  "radius_input": "rounded-sm",
+  "radius_full_allowed": "Customer avatars and small run-status lamps only; buttons, labels, cards, inputs, and code artifacts must not become pills.",
+  "shadow_rest": "shadow-[0_2px_0_0_oklch(0.805_0.032_235)]",
+  "shadow_hover": "shadow-[0_4px_0_0_oklch(0.805_0.032_235)]",
+  "imagery_treatment": "Present honest interface captures as review packets on Patch Sheet, preserving file paths, task ownership, line numbers, run states, and readable diff content. Attach the Review Gutter with Branch Blue hunk brackets and sparse Review Amber checkpoints. Avoid gradients, floating decorative code, fake terminal noise, excessive perspective, blurred UI, and video that does not demonstrate a review mechanism.",
+  "motion": "Use motion only to explain state transitions: plan entries resolve into assigned runs, then corresponding diff hunks appear with an 8px horizontal shift and opacity change over 180ms. Review checkpoints may advance along the gutter over 240ms after explicit interaction; hover elevation changes from the resting to hover shadow over 140ms. No ambient loops, parallax, cursor theater, or auto-typing; reduced-motion mode removes translation while retaining immediate state changes."
+}
