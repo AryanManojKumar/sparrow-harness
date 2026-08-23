@@ -260,7 +260,7 @@ def cmd_scout(args) -> int:
     from sparrow.blueprints import Blueprint  # noqa: F401  (keeps import graph honest)
     from sparrow.providers import Tier, get_provider
     from sparrow.rank import (Candidate, RANKABLE, commonality, pick_primary,
-                              rank_section, to_design_brief)
+                              rank_section, register_report, to_design_brief)
     from sparrow.scout import classify, extract
 
     bb = Blackboard.model_validate_json(Path(args.blackboard).read_text())
@@ -272,6 +272,7 @@ def cmd_scout(args) -> int:
     provider = get_provider()
     labelled: dict[str, list[tuple[str, int]]] = {}
     by_type: dict[str, list[Candidate]] = {}
+    registers: dict[str, object] = {}
     spent = 0.0
 
     for url in args.urls:
@@ -284,6 +285,8 @@ def cmd_scout(args) -> int:
             print(f"  {site:26} only {len(r.bands)} section(s) — too thin to rank, skipped",
                   file=sys.stderr)
             continue
+        if r.register is not None:
+            registers[site] = r.register
         types = classify(provider, r.bands)
         labelled[site] = [(t, b.index + 1) for t, b in zip(types, r.bands)]
         for t, b in zip(types, r.bands):
@@ -319,7 +322,7 @@ def cmd_scout(args) -> int:
         tag = " (unopposed)" if r.get("unopposed") else ""
         print(f"  {t:<18} -> {r['winner']}{tag}")
 
-    brief_text = to_design_brief(comm, primary, why, rankings)
+    brief_text = to_design_brief(comm, primary, why, rankings, registers)
     dest = PROJECTS / bb.project_id / "sources" / "design-brief.md"
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_text(brief_text)

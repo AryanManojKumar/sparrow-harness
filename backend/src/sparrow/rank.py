@@ -215,8 +215,35 @@ def rank_section(
     return json.loads(m.group(0)), res
 
 
+def register_report(registers: dict[str, object]) -> str:
+    """Counted visual conventions. Facts to weigh, not a palette to copy."""
+    n = len(registers) or 1
+    dark = sum(1 for r in registers.values() if r.dark)
+    video = sum(1 for r in registers.values() if r.video)
+    canvas = sum(1 for r in registers.values() if r.canvas)
+    code = sum(1 for r in registers.values() if r.code_blocks > 5)
+    imgs = sum(r.product_images for r in registers.values()) / n
+
+    lines = ["VISUAL CONVENTIONS IN THIS CATEGORY (counted, not copied)"]
+    lines.append(f"  dark-grounded pages:   {dark}/{n}"
+                 + ("  — dark is the category norm here" if dark > n / 2
+                    else "  — the category is split" if dark else
+                    "  — the category is light-grounded"))
+    lines.append(f"  pages using video:     {video}/{n}")
+    lines.append(f"  pages using canvas:    {canvas}/{n}")
+    lines.append(f"  pages showing code:    {code}/{n}")
+    lines.append(f"  large product images:  {imgs:.0f} per page on average")
+    lines.append("")
+    lines.append("  These are conventions, not requirements. Following one is a choice you")
+    lines.append("  should be able to justify; departing from one is also a choice. What you")
+    lines.append("  must not do is land on a register by default without noticing there was")
+    lines.append("  a decision to make.")
+    return "\n".join(lines)
+
+
 def to_design_brief(
-    comm: Commonality, primary: str, primary_why: str, rankings: dict[str, dict]
+    comm: Commonality, primary: str, primary_why: str, rankings: dict[str, dict],
+    registers: dict[str, object] | None = None,
 ) -> str:
     """The <sources> block `design_director` reads.
 
@@ -224,7 +251,10 @@ def to_design_brief(
     visual direction is the design agent's to decide, and handing it six sites'
     aesthetics is how a page ends up looking like six sites.
     """
-    out = [comm.report(), "", f"PRIMARY REFERENCE: {primary}", f"  {primary_why}",
+    out = [comm.report(), ""]
+    if registers:
+        out += [register_report(registers), ""]
+    out += [f"PRIMARY REFERENCE: {primary}", f"  {primary_why}",
            "  Its section order and pacing are the skeleton. Its look is NOT.", ""]
     out.append("BEST-STRUCTURED VERSION OF EACH SECTION")
     for t in comm.typical_order:

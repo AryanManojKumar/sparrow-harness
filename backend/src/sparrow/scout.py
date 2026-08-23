@@ -168,6 +168,57 @@ class Band:
     shot: Path | None = None
 
 
+# Aggregate visual register — COUNTED, never copied.
+#
+# The design brief carries no palettes, fonts or spacing, because blending six
+# sites' aesthetics is how a page ends up looking like six sites. But that went
+# too far: it also withheld whether the category has a visual convention at all.
+# On a dev-tool run, two of four sources were dark-grounded and the design agent
+# had no way to know, so it defaulted light. Counting "2/4 sources use a dark
+# ground" is the same kind of fact as "4/4 have a hero" — convention, not taste.
+_REGISTER = r"""
+() => {
+  const px = (c) => { const cv=document.createElement('canvas'); cv.width=cv.height=1;
+    const x=cv.getContext('2d',{willReadFrequently:true});
+    x.fillStyle='#fff'; x.fillRect(0,0,1,1); x.fillStyle=c; x.fillRect(0,0,1,1);
+    const d=x.getImageData(0,0,1,1).data; return [d[0],d[1],d[2]]; };
+  const lum = ([r,g,b]) => (0.2126*r + 0.7152*g + 0.0722*b) / 255;
+  const vw = document.documentElement.clientWidth;
+  let dark = 0, light = 0;
+  for (const el of document.querySelectorAll('body *')) {
+    const r = el.getBoundingClientRect();
+    if (r.width < vw*0.9 || r.height < 200) continue;
+    const bg = getComputedStyle(el).backgroundColor;
+    if (!bg || /rgba\(0, 0, 0, 0\)/.test(bg)) continue;
+    (lum(px(bg)) < 0.45 ? (dark += r.height) : (light += r.height));
+  }
+  const body = lum(px(getComputedStyle(document.body).backgroundColor || '#fff'));
+  const total = dark + light || 1;
+  return {
+    dark: body < 0.45 || dark/total > 0.5,
+    darkShare: +(dark/total).toFixed(2),
+    video: document.querySelectorAll('video').length,
+    canvas: document.querySelectorAll('canvas').length,
+    codeBlocks: document.querySelectorAll('pre, code').length,
+    productImages: [...document.querySelectorAll('img')]
+      .filter(i => i.getBoundingClientRect().width > 320).length,
+  };
+}
+"""
+
+
+@dataclass
+class Register:
+    """Countable facts about how a category presents itself."""
+
+    dark: bool
+    dark_share: float
+    video: int
+    canvas: int
+    code_blocks: int
+    product_images: int
+
+
 @dataclass
 class SiteExtract:
     url: str
@@ -176,6 +227,7 @@ class SiteExtract:
     error: str = ""
     page_height: int = 0
     semantic_sections: int = 0
+    register: Register | None = None
     bands: list[Band] = field(default_factory=list)
 
 
@@ -213,6 +265,12 @@ def extract(
         title = page.title()
         page_h = page.evaluate("document.body.scrollHeight")
         semantic = page.evaluate("document.querySelectorAll('section').length")
+        reg = page.evaluate(_REGISTER)
+        register = Register(
+            dark=bool(reg["dark"]), dark_share=float(reg["darkShare"]),
+            video=int(reg["video"]), canvas=int(reg["canvas"]),
+            code_blocks=int(reg["codeBlocks"]), product_images=int(reg["productImages"]),
+        )
         raw = page.evaluate(_SEGMENT, {"minHeight": min_band_height})
 
         bands = [Band(**b) for b in raw]
@@ -236,7 +294,7 @@ def extract(
 
         browser.close()
         return SiteExtract(url, title, True, page_height=page_h,
-                           semantic_sections=semantic, bands=bands)
+                           semantic_sections=semantic, register=register, bands=bands)
 
 
 # --- classification ---------------------------------------------------------
