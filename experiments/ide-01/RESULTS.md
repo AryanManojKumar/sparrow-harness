@@ -125,3 +125,51 @@ Every "product capture" on the page is CSS drawing a fake UI. The blueprints now
 real assets by name and nothing produces them. That is `curator`, and on the evidence —
 3/4 sources use video, 2/4 use canvas, 5 large product images per page — it is the
 largest remaining gap between this and the sources.
+
+---
+
+# Third pass — assets and motion
+
+Everything regenerated with the motion register in the brief and real imagery from
+`curator`. **$1.10 total**: design system $0.079, five assets $0.14, build $0.872.
+
+| | pass 2 (no assets) | pass 3 |
+|---|---|---|
+| lines | 1,401 | 1,186 |
+| sections with motion | **0 / 6** | **6 / 6** |
+| `useReducedMotion` | 0 | 6 / 6 |
+| real product imagery | 0 | 5 captures across 2 sections |
+| drift | clean | clean |
+| build | first try | first try |
+
+## What landed
+
+**Motion is now built in every section**, with `useReducedMotion` honoured in all six —
+the requirement phrasing fixed a gap that had shipped three builds in a row with none.
+
+**Real captures replace hand-drawn UI.** The hero carries one, and the product showcase
+composes four into a 2×2 grid with captions — bounded runs in isolated workspaces, a
+shared project view, a command view, a completed diff. Those are generated screenshots
+of a plausible product, not divs pretending.
+
+## What did not
+
+**The captures are rendered too small to read.** In the showcase grid each sits at
+roughly a quarter width, so the detail that makes a generated screenshot convincing —
+real code, hunk headers, commit hashes — is invisible at page scale. The most expensive
+asset in the pipeline is being used as texture.
+
+The design system's `imagery_treatment` says how to frame an image, not how large it
+should be relative to its section. Neither the blueprint nor the design system carries a
+prominence signal, so the builder chose, and chose small.
+
+**Four elements never became visible** in the capture, even after the scroll pass. Those
+are animation states the entrance never resolved — the inspector's own trap, appearing in
+our output rather than a source's.
+
+## Next
+
+Both are the same class of fix as the ones that worked: state it as a requirement.
+Blueprints should carry asset prominence ("full-bleed", "half-width", "thumbnail"), and
+the entrance animation needs a guaranteed terminal state rather than one that depends on
+an observer firing.

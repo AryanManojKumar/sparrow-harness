@@ -1,327 +1,225 @@
-import type { ReactNode } from "react";
+"use client";
 
-type CapabilityCardProps = {
+import { useState } from "react";
+import {
+  Check,
+  FileDiff,
+  Fingerprint,
+  GitBranch,
+  ListTree,
+  type LucideIcon,
+} from "lucide-react";
+import { AnimatePresence, motion, useReducedMotion } from "motion/react";
+
+type Feature = {
+  label: string;
   title: string;
-  description: string;
-  artifactLabel: string;
-  artifactMeta: string;
-  className?: string;
-  children: ReactNode;
+  body: string;
+  mechanism: string[];
+  icon: LucideIcon;
 };
 
-function CapabilityCard({
-  title,
-  description,
-  artifactLabel,
-  artifactMeta,
-  className = "",
-  children,
-}: CapabilityCardProps) {
+const features: Feature[] = [
+  {
+    label: "shared-plan.yaml",
+    title: "Shared execution plan",
+    body: "Work is recorded as versioned plan entries with explicit repository scope, ownership, dependencies, and acceptance checks. Every assigned run points back to the entry it is expected to satisfy.",
+    mechanism: [
+      "Scopes changed paths before an agent starts",
+      "Records dependencies between concurrent tasks",
+      "Keeps acceptance checks beside the requested change",
+    ],
+    icon: ListTree,
+  },
+  {
+    label: "orchestrator.plugin",
+    title: "Repository and agent orchestration",
+    body: "Repository plugins prepare isolated worktrees and enforce path boundaries. Agent plugins receive the same scoped task contract, so different models can run without changing the review surface.",
+    mechanism: [
+      "Pins each worktree to a known base commit",
+      "Applies concurrency locks to overlapping paths",
+      "Normalizes agent output into one run contract",
+    ],
+    icon: GitBranch,
+  },
+  {
+    label: "run.trace",
+    title: "Explicit change provenance",
+    body: "A run trace binds the plan entry, agent adapter, base commit, executed commands, outputs, and changed files to one run ID. Traceability is stored as an artifact, not inferred from the final patch.",
+    mechanism: [
+      "Links commands and outputs to the producing run",
+      "Retains the base commit used for generation",
+      "Attributes every changed path to its plan entry",
+    ],
+    icon: Fingerprint,
+  },
+  {
+    label: "patchset.diff",
+    title: "Reviewable diffs before landing",
+    body: "Proposed changes are assembled as file-level diffs against the pinned base. Review comments and required decisions remain attached to their hunks, and the landing adapter stays gated until approval.",
+    mechanism: [
+      "Presents additions and removals by file and hunk",
+      "Keeps unresolved comments attached to patch context",
+      "Requires an approval state before the landing adapter runs",
+    ],
+    icon: FileDiff,
+  },
+];
+
+function FeatureUnit({
+  feature,
+  index,
+}: {
+  feature: Feature;
+  index: number;
+}) {
+  const [inspecting, setInspecting] = useState(false);
+  const reduceMotion = useReducedMotion();
+  const Icon = feature.icon;
+  const panelId = `feature-mechanism-${index}`;
+
   return (
-    <article
-      className={`rounded-md border border-border bg-card p-5 shadow-[0_2px_0_0_oklch(0.805_0.032_235)] transition-shadow duration-[140ms] hover:shadow-[0_4px_0_0_oklch(0.805_0.032_235)] md:p-8 ${className}`}
+    <motion.article
+      initial={{ opacity: 0, x: reduceMotion ? 0 : 8 }}
+      whileInView={{ opacity: 1, x: 0 }}
+      viewport={{ once: true, amount: 0.2 }}
+      transition={{ duration: 0.18, ease: "easeOut" }}
+      whileHover={{
+        boxShadow: "0 4px 0 0 oklch(0.805 0.032 235)",
+        transition: { duration: 0.14, ease: "easeOut" },
+      }}
+      className="grid h-full grid-cols-[auto_1fr] overflow-hidden rounded-md border border-border bg-card shadow-[0_2px_0_0_oklch(0.805_0.032_235)]"
     >
-      <div className="space-y-8">
+      <div className="relative w-5 border-r border-border bg-muted" aria-hidden="true">
+        <motion.span
+          animate={{
+            y: reduceMotion ? 0 : inspecting ? 48 : 0,
+            opacity: inspecting ? 1 : 0.8,
+            backgroundColor: inspecting
+              ? "oklch(0.455 0.128 239)"
+              : "oklch(0.755 0.145 78)",
+          }}
+          transition={{
+            duration: reduceMotion ? 0 : 0.24,
+            ease: "easeOut",
+          }}
+          className="absolute right-0 top-5 size-2 translate-x-1/2 rounded-full border border-card"
+        />
+      </div>
+
+      <div className="space-y-8 p-5 md:p-8">
         <div className="space-y-3">
+          <div className="flex items-center gap-2 text-primary">
+            <Icon aria-hidden="true" className="size-5" strokeWidth={1.75} />
+            <span className="font-mono text-xs font-medium uppercase leading-5 tracking-[0.1em]">
+              {feature.label}
+            </span>
+          </div>
+
           <h3 className="font-display text-xl font-semibold leading-7 tracking-[-0.02em] text-foreground md:text-2xl md:leading-8">
-            {title}
+            {feature.title}
           </h3>
+
           <p className="font-body text-sm font-normal leading-6 text-muted-foreground">
-            {description}
+            {feature.body}
           </p>
         </div>
 
-        <div className="overflow-hidden rounded-md border border-border bg-background">
-          <div className="flex items-center justify-between gap-2 border-b border-border bg-muted px-5 py-3">
-            <span className="font-mono text-xs font-medium uppercase leading-5 tracking-[0.1em] text-foreground">
-              {artifactLabel}
-            </span>
-            <span className="font-mono text-xs font-medium uppercase leading-5 tracking-[0.1em] text-muted-foreground">
-              {artifactMeta}
-            </span>
-          </div>
-          {children}
+        <div className="space-y-3">
+          <button
+            type="button"
+            aria-expanded={inspecting}
+            aria-controls={panelId}
+            onClick={() => setInspecting((current) => !current)}
+            className="inline-flex items-center gap-2 rounded-md border border-border bg-card px-5 py-3 font-body text-sm font-normal leading-6 text-foreground shadow-[0_2px_0_0_oklch(0.805_0.032_235)] transition-shadow duration-[140ms] hover:shadow-[0_4px_0_0_oklch(0.805_0.032_235)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+          >
+            {inspecting ? (
+              <Check aria-hidden="true" className="size-5 text-primary" />
+            ) : (
+              <span
+                aria-hidden="true"
+                className="font-mono text-xs font-medium uppercase leading-5 tracking-[0.1em] text-accent"
+              >
+                !
+              </span>
+            )}
+            {inspecting ? "Hide mechanism" : "Inspect mechanism"}
+          </button>
+
+          <AnimatePresence initial={false}>
+            {inspecting ? (
+              <motion.div
+                id={panelId}
+                initial={{ opacity: 0, x: reduceMotion ? 0 : 8 }}
+                animate={{ opacity: 1, x: 0 }}
+                exit={{ opacity: 0, x: reduceMotion ? 0 : 8 }}
+                transition={{
+                  duration: reduceMotion ? 0 : 0.18,
+                  ease: "easeOut",
+                }}
+                className="rounded-md border border-border bg-muted p-5"
+              >
+                <ul className="space-y-3">
+                  {feature.mechanism.map((item) => (
+                    <li
+                      key={item}
+                      className="flex items-start gap-2 font-body text-sm font-normal leading-6 text-foreground"
+                    >
+                      <span
+                        aria-hidden="true"
+                        className="font-mono text-xs font-medium uppercase leading-5 tracking-[0.1em] text-primary"
+                      >
+                        +
+                      </span>
+                      <span>{item}</span>
+                    </li>
+                  ))}
+                </ul>
+              </motion.div>
+            ) : null}
+          </AnimatePresence>
         </div>
       </div>
-    </article>
-  );
-}
-
-function ArtifactLine({
-  number,
-  marker,
-  markerClassName,
-  children,
-  status,
-}: {
-  number: string;
-  marker: string;
-  markerClassName: string;
-  children: ReactNode;
-  status?: ReactNode;
-}) {
-  return (
-    <div className="flex items-start gap-2 border-l-2 border-primary px-5 py-3">
-      <span className="font-mono text-xs font-medium uppercase leading-5 tracking-[0.1em] text-muted-foreground">
-        {number}
-      </span>
-      <span
-        className={`font-mono text-xs font-medium uppercase leading-5 tracking-[0.1em] ${markerClassName}`}
-        aria-hidden="true"
-      >
-        {marker}
-      </span>
-      <span className="min-w-0 flex-1 font-mono text-xs font-medium uppercase leading-5 tracking-[0.1em] text-foreground">
-        {children}
-      </span>
-      {status}
-    </div>
+    </motion.article>
   );
 }
 
 export default function FeatureGrid() {
+  const reduceMotion = useReducedMotion();
+
   return (
     <section className="bg-muted py-20 md:py-28 lg:py-32">
       <div className="mx-auto max-w-7xl px-5 sm:px-8">
         <div className="space-y-8 md:space-y-10">
-          <header className="max-w-7xl space-y-3">
+          <motion.header
+            initial={{ opacity: 0, x: reduceMotion ? 0 : 8 }}
+            whileInView={{ opacity: 1, x: 0 }}
+            viewport={{ once: true, amount: 0.4 }}
+            transition={{ duration: 0.18, ease: "easeOut" }}
+            className="max-w-3xl space-y-3"
+          >
             <p className="font-mono text-xs font-medium uppercase leading-5 tracking-[0.1em] text-primary">
-              Harness capabilities / evidence attached
+              Harness architecture
             </p>
-            <h2 className="max-w-7xl font-display text-3xl font-semibold leading-[1.02] tracking-[-0.035em] text-foreground md:text-5xl">
-              Plugins extend execution. Run records preserve the evidence.
+            <h2 className="font-display text-3xl font-semibold leading-[1.02] tracking-[-0.035em] text-foreground md:text-5xl">
+              A plugin harness with provenance at every boundary.
             </h2>
-            <p className="max-w-7xl font-body text-base font-normal leading-7 text-muted-foreground md:text-lg md:leading-8">
-              Each agent works from the same repository plan, through explicit
-              extension points, with its commands, outputs, commits, and review
-              state retained as inspectable artifacts.
+            <p className="font-body text-base font-normal leading-7 text-muted-foreground md:text-lg md:leading-8">
+              Planning, repository access, agent execution, trace capture, and
+              landing policy are independent plugins. Their shared artifact
+              contract makes every run traceable from requested scope to the
+              diff presented for review.
             </p>
-          </header>
+          </motion.header>
 
-          <div className="grid grid-cols-1 gap-5 md:grid-cols-2 md:gap-8 lg:grid-cols-6">
-            <CapabilityCard
-              title="One plan, checked into the repository"
-              description="Plan entries name the intended files, acceptance checks, and human checkpoints. Agents claim entries rather than inventing a separate task list."
-              artifactLabel=".harness/plan.yaml"
-              artifactMeta="plan@84c1"
-              className="lg:col-span-2"
-            >
-              <div className="divide-y divide-border">
-                <ArtifactLine
-                  number="08"
-                  marker="+"
-                  markerClassName="text-primary"
-                  status={
-                    <span className="font-mono text-xs font-medium uppercase leading-5 tracking-[0.1em] text-primary">
-                      ✓ scoped
-                    </span>
-                  }
-                >
-                  task: isolate token refresh
-                </ArtifactLine>
-                <ArtifactLine
-                  number="09"
-                  marker="+"
-                  markerClassName="text-primary"
-                >
-                  paths: src/auth/**, tests/auth/**
-                </ArtifactLine>
-                <ArtifactLine
-                  number="10"
-                  marker="!"
-                  markerClassName="text-foreground"
-                  status={
-                    <span className="border border-accent bg-accent px-5 font-mono text-xs font-medium uppercase leading-5 tracking-[0.1em] text-foreground">
-                      review
-                    </span>
-                  }
-                >
-                  checkpoint: migration boundary
-                </ArtifactLine>
-              </div>
-            </CapabilityCard>
-
-            <CapabilityCard
-              title="Parallel runs keep ownership explicit"
-              description="Each claimed plan entry receives an agent, branch, and run ID. File scopes show collisions before independently proposed changes are combined."
-              artifactLabel="run fleet"
-              artifactMeta="3 active"
-              className="lg:col-span-2"
-            >
-              <div className="divide-y divide-border">
-                <ArtifactLine
-                  number="01"
-                  marker="+"
-                  markerClassName="text-primary"
-                  status={
-                    <span className="font-mono text-xs font-medium uppercase leading-5 tracking-[0.1em] text-primary">
-                      ● running
-                    </span>
-                  }
-                >
-                  agent-02 / run_7F31
-                </ArtifactLine>
-                <ArtifactLine
-                  number="02"
-                  marker="+"
-                  markerClassName="text-primary"
-                >
-                  branch: harness/token-refresh
-                </ArtifactLine>
-                <ArtifactLine
-                  number="03"
-                  marker="!"
-                  markerClassName="text-foreground"
-                  status={
-                    <span className="border border-accent bg-accent px-5 font-mono text-xs font-medium uppercase leading-5 tracking-[0.1em] text-foreground">
-                      conflict
-                    </span>
-                  }
-                >
-                  src/auth/session.ts
-                </ArtifactLine>
-              </div>
-            </CapabilityCard>
-
-            <CapabilityCard
-              title="Plugins declare where they intervene"
-              description="Checked-in plugin configuration registers tools, policy checks, and lifecycle hooks. A run record identifies the exact plugin version invoked."
-              artifactLabel="harness.config.ts"
-              artifactMeta="plugin graph"
-              className="lg:col-span-2"
-            >
-              <div className="divide-y divide-border">
-                <ArtifactLine
-                  number="14"
-                  marker="+"
-                  markerClassName="text-primary"
-                >
-                  plugin: &quot;schema-guard@2.4.1&quot;
-                </ArtifactLine>
-                <ArtifactLine
-                  number="15"
-                  marker="+"
-                  markerClassName="text-primary"
-                >
-                  hook: &quot;before_apply&quot;
-                </ArtifactLine>
-                <ArtifactLine
-                  number="16"
-                  marker="+"
-                  markerClassName="text-primary"
-                  status={
-                    <span className="font-mono text-xs font-medium uppercase leading-5 tracking-[0.1em] text-primary">
-                      ✓ loaded
-                    </span>
-                  }
-                >
-                  command: &quot;pnpm db:check&quot;
-                </ArtifactLine>
-              </div>
-            </CapabilityCard>
-
-            <CapabilityCard
-              title="Every run leaves an inspectable record"
-              description="The record connects the plan entry to prompts, tool calls, command output, changed paths, and the resulting commit. Reviewers can trace a change without replaying the agent."
-              artifactLabel="runs/run_7F31/record"
-              artifactMeta="commit 91ae20b"
-              className="lg:col-span-3"
-            >
-              <div className="divide-y divide-border">
-                <ArtifactLine
-                  number="21"
-                  marker="+"
-                  markerClassName="text-primary"
-                  status={
-                    <span className="font-mono text-xs font-medium uppercase leading-5 tracking-[0.1em] text-primary">
-                      ✓ exit 0
-                    </span>
-                  }
-                >
-                  $ pnpm test auth --runInBand
-                </ArtifactLine>
-                <ArtifactLine
-                  number="22"
-                  marker="+"
-                  markerClassName="text-primary"
-                >
-                  output: 18 passed / 0 failed
-                </ArtifactLine>
-                <ArtifactLine
-                  number="23"
-                  marker="+"
-                  markerClassName="text-primary"
-                >
-                  write: src/auth/token-store.ts
-                </ArtifactLine>
-                <ArtifactLine
-                  number="24"
-                  marker="!"
-                  markerClassName="text-foreground"
-                  status={
-                    <span className="border border-accent bg-accent px-5 font-mono text-xs font-medium uppercase leading-5 tracking-[0.1em] text-foreground">
-                      inspect
-                    </span>
-                  }
-                >
-                  tool call: schema-guard@2.4.1
-                </ArtifactLine>
-              </div>
-            </CapabilityCard>
-
-            <CapabilityCard
-              title="The landing unit is a reviewable diff"
-              description="Proposed changes stay grouped by plan entry and file, with test evidence beside the hunk. Unresolved comments remain visible and block approval."
-              artifactLabel="src/auth/token-store.ts"
-              artifactMeta="+12 −4"
-              className="lg:col-span-3"
-            >
-              <div className="divide-y divide-border">
-                <ArtifactLine
-                  number="42"
-                  marker="−"
-                  markerClassName="text-muted-foreground"
-                >
-                  return cache.get(userId)
-                </ArtifactLine>
-                <ArtifactLine
-                  number="42"
-                  marker="+"
-                  markerClassName="text-primary"
-                >
-                  return cache.get(scopedKey(userId))
-                </ArtifactLine>
-                <ArtifactLine
-                  number="43"
-                  marker="+"
-                  markerClassName="text-primary"
-                >
-                  ?? refreshFromProvider(userId)
-                </ArtifactLine>
-                <ArtifactLine
-                  number="44"
-                  marker="!"
-                  markerClassName="text-foreground"
-                  status={
-                    <span className="border border-accent bg-accent px-5 font-mono text-xs font-medium uppercase leading-5 tracking-[0.1em] text-foreground">
-                      1 comment
-                    </span>
-                  }
-                >
-                  verify tenant scope before approval
-                </ArtifactLine>
-              </div>
-            </CapabilityCard>
-          </div>
-
-          <div>
-            <a
-              href="/docs"
-              className="inline-flex items-center gap-2 border-b border-primary font-body text-sm font-normal leading-6 text-primary"
-            >
-              Read the docs
-              <span aria-hidden="true">→</span>
-            </a>
+          <div className="grid grid-cols-1 gap-5 md:grid-cols-2 md:gap-8">
+            {features.map((feature, index) => (
+              <FeatureUnit
+                key={feature.label}
+                feature={feature}
+                index={index}
+              />
+            ))}
           </div>
         </div>
       </div>
