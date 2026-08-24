@@ -126,12 +126,7 @@ def capture(
             page.evaluate(_SCROLL)
             page.wait_for_timeout(600)
 
-            hidden = page.evaluate("""
-              () => [...document.querySelectorAll('section, section *')]
-                .filter(e => parseFloat(getComputedStyle(e).opacity) < 0.9)
-                .map(e => e.tagName + '.' + (e.className || '').toString().slice(0, 40))
-                .slice(0, 20)
-            """)
+            hidden = page.evaluate(_INVISIBLE)
 
             path = out_dir / f"{name}-full.png"
             page.screenshot(path=str(path), full_page=True)
@@ -214,6 +209,20 @@ _CONTRAST = r"""
 # drift-test-02 the mobile hero had both buttons and the entire product panel
 # running off-screen while this check reported clean; only the vision pass saw
 # it. So walk the box model instead, and report the OUTERMOST offender.
+# Only opacity at or near ZERO is a defect. A threshold of 0.9 flagged seven
+# elements that were deliberately dimmed to 0.80 and 0.96 alongside ten that were
+# genuinely invisible — the noise buries the signal.
+_INVISIBLE = r"""
+() => [...document.querySelectorAll('section, section *')]
+  .filter(e => parseFloat(getComputedStyle(e).opacity) <= 0.05)
+  .map(e => {
+    const r = e.getBoundingClientRect();
+    const t = (e.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 40);
+    return `<${e.tagName.toLowerCase()}> y=${Math.round(r.top + scrollY)} "${t}"`;
+  })
+  .slice(0, 20)
+"""
+
 _OVERFLOW = r"""
 () => {
   const vw = document.documentElement.clientWidth;

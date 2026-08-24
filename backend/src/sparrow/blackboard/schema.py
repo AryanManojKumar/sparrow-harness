@@ -205,10 +205,25 @@ class Provenance(StrEnum):
     GENERATED = "generated"
 
 
+class Prominence(StrEnum):
+    """How large an asset sits relative to its section.
+
+    `imagery_treatment` says how to FRAME an image — chrome, bleed, shadow. It says
+    nothing about size, so the builder chose, and chose small: four generated
+    captures at quarter width, where the code and commit hashes that make them
+    convincing are invisible. Unstated means defaulted.
+    """
+
+    DOMINANT = "dominant"
+    SUPPORTING = "supporting"
+    THUMBNAIL = "thumbnail"
+
+
 class Asset(BaseModel):
     id: str
     section_id: str
     brief: str                       # what it must show, from the blueprint
+    prominence: Prominence = Prominence.SUPPORTING
     provenance: Provenance
     path: str                        # relative to the workspace's public/
     width: int = 0

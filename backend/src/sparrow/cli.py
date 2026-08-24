@@ -356,7 +356,7 @@ def cmd_scout(args) -> int:
 def cmd_assets(args) -> int:
     """Produce the imagery the blueprints ask for."""
     from sparrow.agents.curator import Curator, derive_variants
-    from sparrow.blackboard.schema import Asset, Provenance
+    from sparrow.blackboard.schema import Asset, Prominence, Provenance
     from sparrow.blueprints import load_dir
 
     bb = Blackboard.model_validate_json(Path(args.blackboard).read_text())
@@ -388,15 +388,17 @@ def cmd_assets(args) -> int:
             with Image.open(path) as im:
                 w, h = im.size
             variants = derive_variants(path)
+            prom = (Prominence.DOMINANT if len(bp.assets) == 1
+                    else Prominence.SUPPORTING if i == 1 else Prominence.THUMBNAIL)
             a = Asset(
-                id=aid, section_id=section.id, brief=brief,
+                id=aid, section_id=section.id, brief=brief, prominence=prom,
                 provenance=Provenance.GENERATED,
                 path=f"assets/{path.name}", width=w, height=h,
                 variants={k: f"assets/{v}" for k, v in variants.items()},
             )
             made.append(a)
             print(f"  {aid:<22} {w}x{h}  {path.stat().st_size//1024:>4} KB  "
-                  f"+{len(variants)} variants  [generated]")
+                  f"+{len(variants)} variants  [{prom.value}]")
             print(f"    {brief[:96]}")
 
     bb.assets = made

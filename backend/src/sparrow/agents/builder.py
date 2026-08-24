@@ -41,6 +41,13 @@ sections with no animation at all while the design system asked for it by name.
 
 Respect `prefers-reduced-motion`: keep opacity changes, drop translation.
 
+REQUIRED: EVERY ENTRANCE ANIMATION MUST HAVE A GUARANTEED END STATE.
+An element starting at opacity 0 and waiting for an observer is invisible if that
+observer never fires — off-screen, in a headless capture, with JS slow or blocked. Four
+elements shipped invisible for exactly this reason. Give whileInView a low threshold and
+once:true, prefer animate-on-mount for anything in the first screenful, and never let the
+visible state depend on a trigger you cannot guarantee.
+
 {fidelity}
 
 Output format — exactly this, nothing else:
@@ -71,7 +78,9 @@ Each row is a thought that has actually produced a defect in this harness.
 | "The blueprint is vague here, I'll keep it safe" | Layout, composition and density are explicitly yours. Vagueness is an invitation, not a risk. |
 | "I'll reference the section above it" | You cannot see it and it may not exist yet. Build this section as though it stands alone. |
 | "The motion spec mostly says what NOT to do, so this section wants none" | It is telling you what to leave out. A section with zero animation has ignored the spec, not honoured it. |
-| "Animation is polish, the structure matters more" | Motion is a named part of the design system, like the palette. Shipping without it is drift. |"""
+| "Animation is polish, the structure matters more" | Motion is a named part of the design system, like the palette. Shipping without it is drift. |
+| "opacity-0 until it scrolls into view is the standard pattern" | It is, and it ships invisible content when the trigger does not fire. Guarantee the end state. |
+| "The image is one element among several, so it can be small" | Check its prominence. A dominant asset carries the section; shrinking it throws away the only real thing on the page. |"""
 
 _CODE = re.compile(r"```(?:tsx|typescript|ts|jsx)?\s*\n(.*?)```", re.DOTALL)
 _EXT = re.compile(r"^EXTENSION_REQUEST:\s*(.+)$", re.MULTILINE)
@@ -135,7 +144,16 @@ class Builder(Agent):
              "for this section. Render them with next/image at the paths given, framed per "
              "the design system's imagery treatment. Do NOT hand-draw a fake interface in "
              "divs when a real capture is listed here — that is what these replace.\n"
-             + "\n".join(f"- /{a.path}  ({a.width}x{a.height}) — {a.brief}" for a in assets)
+             + "REQUIRED — honour each asset's PROMINENCE. These are generated at "
+             "1536x1024 and carry legible code, identifiers and timestamps. Rendered "
+             "small, that detail is lost and an expensive asset becomes texture.\n"
+             "  dominant   — the section's main event: at least 60% of the section's "
+             "height, full container width or bleeding past an edge, nothing competing.\n"
+             "  supporting — beside the copy, roughly half the container width.\n"
+             "  thumbnail  — one of several, small on purpose.\n\n"
+             + "\n".join(
+                 f"- /{a.path}  ({a.width}x{a.height})  [{a.prominence.value}]\n"
+                 f"    {a.brief}" for a in assets)
              + "\n</assets>") if assets else
             ("<assets>\nNo imagery for this section. Compose from type and layout; do not "
              "fabricate a product screenshot in markup.\n</assets>"),
