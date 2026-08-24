@@ -98,8 +98,50 @@ class Provider(Protocol):
     ) -> Completion: ...
 
 
+def _timed(fn):
+    """Wrap a provider's complete() so no call can escape being recorded.
+
+    Deliberately here rather than in Agent.call: this is the single choke point
+    every model call passes through, including ones made directly by curator and
+    the ranking helpers, which do not go through an Agent at all.
+    """
+    import functools
+    import time as _time
+
+    @functools.wraps(fn)
+    def inner(self, *, tier, system, user, max_tokens, images=None, cache=True, **kw):
+        from sparrow import telemetry
+
+        agent = getattr(self, "_agent_name", "?")
+        t0 = _time.perf_counter()
+        try:
+            c = fn(self, tier=tier, system=system, user=user, max_tokens=max_tokens,
+                   images=images, cache=cache, **kw)
+        except Exception as e:
+            telemetry.log_llm(
+                agent=agent, provider=self.name, tier=str(tier),
+                model=MODELS[self.name][tier], system=system, user=user, text="",
+                input_tokens=0, cached_tokens=0, output_tokens=0, cost=0.0,
+                duration_ms=int((_time.perf_counter() - t0) * 1000),
+                images=len(images or []), error=f"{type(e).__name__}: {e}",
+            )
+            raise
+        telemetry.log_llm(
+            agent=agent, provider=self.name, tier=str(tier), model=c.model,
+            system=system, user=user, text=c.text,
+            input_tokens=c.input_tokens, cached_tokens=c.cached_tokens,
+            output_tokens=c.output_tokens, cost=c.cost(self.name, tier),
+            duration_ms=int((_time.perf_counter() - t0) * 1000),
+            images=len(images or []),
+        )
+        return c
+
+    return inner
+
+
 class AnthropicProvider:
     name = "anthropic"
+    _agent_name = "?"
 
     def __init__(self) -> None:
         from anthropic import Anthropic
@@ -108,6 +150,7 @@ class AnthropicProvider:
             raise RuntimeError("ANTHROPIC_API_KEY is not set")
         self.client = Anthropic()
 
+    @_timed
     def complete(
         self, *, tier: Tier, system: str, user: str, max_tokens: int,
         images: list[str] | None = None, cache: bool = True,
@@ -142,6 +185,7 @@ class AnthropicProvider:
 
 class OpenAIProvider:
     name = "openai"
+    _agent_name = "?"
 
     def __init__(self) -> None:
         from openai import OpenAI
@@ -150,6 +194,7 @@ class OpenAIProvider:
             raise RuntimeError("OPENAI_API_KEY is not set")
         self.client = OpenAI()
 
+    @_timed
     def complete(
         self, *, tier: Tier, system: str, user: str, max_tokens: int,
         images: list[str] | None = None, cache: bool = True,

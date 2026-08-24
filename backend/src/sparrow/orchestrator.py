@@ -123,12 +123,18 @@ class Run:
 
     # ------------------------------------------------------------------ drive
 
-    def advance(self) -> Iterator[Event]:
+    def advance(self) -> Iterator[Event]:  # noqa: C901
         """Run stages until a gate, the end, or a failure.
 
         Deliberately a generator: a run takes minutes, and a caller — CLI or an
         SSE endpoint — needs progress as it happens rather than at the end.
         """
+        from sparrow import telemetry
+
+        with telemetry.trace(self.project_id):
+            yield from self._advance()
+
+    def _advance(self) -> Iterator[Event]:
         while self.stage is not Stage.DONE:
             if self.stage in GATES and self.pending is not None:
                 yield self._emit(Event(self.stage, "awaiting", self.pending.question))
@@ -168,5 +174,8 @@ class Run:
         self.log.append(Event(self.stage, "progress", f"gate resolved: {choice}"))
 
     def _emit(self, ev: Event) -> Event:
+        from sparrow import telemetry
+
         self.log.append(ev)
+        telemetry.log_stage(ev.stage.value, ev.kind, ev.message, ev.cost, **ev.data)
         return ev

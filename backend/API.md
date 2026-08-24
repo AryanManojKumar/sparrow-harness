@@ -132,3 +132,59 @@ POST /projects/{id}/gate   { "choice": 0 }
   flags those rather than failing.
 - **`_RUNS` is in-process.** Restarting the server loses stage position, though nothing on
   the blackboard. Fine for one machine; needs Redis before more than one.
+
+## Logging and tracing
+
+Everything is written as **JSONL** — one self-describing event per line, appended to a
+global `logs/sparrow.jsonl` and a per-project `projects/{id}/logs/run.jsonl`. Per-project
+first, because the question is always "what happened on *that* run", and grepping one file
+beats filtering a global one.
+
+Four kinds: `http`, `stage`, `llm`, `error`. Correlated by `trace_id` (one per run) and
+`span_id` (one per model call), carried in a contextvar so an agent deep in the stack does
+not have to be handed them.
+
+    GET /projects/{id}/logs?kind=llm&limit=200     replay
+    GET /projects/{id}/logs/summary                what it cost, by agent
+
+### Model calls
+
+The expensive, non-deterministic part, and the part you cannot reconstruct afterwards.
+Logged at the provider — the single choke point every call passes through, including ones
+curator and the ranking helpers make without going through an Agent:
+
+```json
+{"ts": 1787574058.4, "kind": "llm", "message": "interviewer → gpt-5.6-luna",
+ "trace_id": "2b2d33bacaae43ad", "project": "acme", "stage": "design",
+ "span_id": "5bfad642", "duration_ms": 2674, "cost": 0.0000086,
+ "data": {"agent": "interviewer", "provider": "openai", "tier": "cheap",
+          "tokens": {"input": 19, "cached": 0, "output": 4, "cache_hit": 0.0},
+          "prompt_sha": "32dd1a16b25e", "images": 0}}
+```
+
+`prompt_sha` is a hash of the exact system+user text, so two runs that diverged can be
+diffed down to the call where they stopped matching — without storing every prompt.
+
+Prompt and response text is stored, capped, only behind `SPARROW_LOG_PROMPTS=1`
+(`SPARROW_LOG_PROMPT_CAP`, default 4000 chars). It is bulky and sometimes carries a
+client's real material, so it is opt-in.
+
+### Summary
+
+```json
+GET /projects/acme/logs/summary
+{ "llm_calls": 34, "total_cost": 1.1043, "wall_seconds": 712.4,
+  "by_agent": { "builder": {"calls": 6, "cost": 0.8718, "in": 17862, "out": 27532},
+                "design_director": {"calls": 3, "cost": 0.3413, …} } }
+```
+
+`by_agent` is sorted by spend. On a typical run the builder is ~80% of it.
+
+### Console
+
+The same events print readably to stderr:
+
+    llm   builder          gpt-5.6-sol         3,002 in (90% cached)  5,593 out  $0.1828  47210ms
+    http  POST   /projects/acme/advance        200 5393ms
+
+`SPARROW_LOG_LEVEL=WARNING` quietens it without affecting what is written to disk.

@@ -88,10 +88,13 @@ class Agent:
 
     def __init__(self, provider: Provider | None = None) -> None:
         self.provider = provider or get_provider()
+        # So a log line says "builder" rather than "openai".
+        self.provider._agent_name = self.name
 
     def call(
         self, *, system: str, user: str, images: list[str] | None = None
     ) -> Completion:
+        self.provider._agent_name = self.name
         return self.provider.complete(
             tier=self.tier, system=system, user=user,
             max_tokens=self.max_tokens, images=images,

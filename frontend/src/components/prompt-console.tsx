@@ -1,32 +1,53 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import { AnimatePresence, motion } from "motion/react";
-import { ArrowUp, Mic } from "lucide-react";
+import { ArrowUp, Loader2, Mic } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { suggest, type Suggestion } from "@/lib/suggest";
+import { sourceFor, type Source } from "@/lib/sources";
 import { SparrowMark } from "@/components/sparrow-mark";
+import { SourceCard } from "@/components/source-card";
 import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
 
 const MIN_CHARS = 8;
 const DEBOUNCE_MS = 350;
+const ATTACH_MS = 550;
 
 export function PromptConsole() {
+  const router = useRouter();
   const [value, setValue] = useState("");
   const [hasTyped, setHasTyped] = useState(false);
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
   const [activeIndex, setActiveIndex] = useState(-1);
+  const [isSuggesting, setIsSuggesting] = useState(false);
+  const [source, setSource] = useState<Source | null>(null);
+  const [isAttaching, setIsAttaching] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const attachTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Set right before a suggestion writes `value` programmatically, so the
+  // effect below skips the /suggest call that text change would otherwise
+  // trigger — the text just came from the API, asking it again is wasted.
+  const skipFetchRef = useRef(false);
 
   useEffect(() => {
     abortRef.current?.abort();
 
+    if (skipFetchRef.current) {
+      skipFetchRef.current = false;
+      setSuggestions([]);
+      setActiveIndex(-1);
+      return;
+    }
+
     if (value.trim().length < MIN_CHARS) {
       setSuggestions([]);
       setActiveIndex(-1);
+      setIsSuggesting(false);
       return;
     }
 
@@ -34,6 +55,7 @@ export function PromptConsole() {
     abortRef.current = controller;
 
     const timer = setTimeout(() => {
+      setIsSuggesting(true);
       suggest(value, controller.signal)
         .then((results) => {
           setSuggestions(results);
@@ -42,7 +64,8 @@ export function PromptConsole() {
         .catch(() => {
           // Aborted by a newer keystroke, or the request failed — either way
           // autocomplete is an accelerator, not a step. Fail silently.
-        });
+        })
+        .finally(() => setIsSuggesting(false));
     }, DEBOUNCE_MS);
 
     return () => {
@@ -54,20 +77,45 @@ export function PromptConsole() {
   function handleChange(next: string) {
     setValue(next);
     if (next.length > 0 && !hasTyped) setHasTyped(true);
+
+    // A manual edit means the text no longer matches what the attached
+    // reference was picked for — drop it rather than show a stale citation.
+    if (source || isAttaching) {
+      if (attachTimerRef.current) clearTimeout(attachTimerRef.current);
+      setIsAttaching(false);
+      setSource(null);
+    }
   }
 
   function acceptSuggestion(s: Suggestion) {
+    skipFetchRef.current = true;
     setValue((prev) => {
       const trimmed = prev.trim();
-      // If the current text already reads like the start of a sentence,
-      // complete it; otherwise just drop the candidate in whole.
-      return /\b(a|an|the)\s*$/i.test(trimmed) || trimmed.length === 0
-        ? s.text.replace(/^a /, "").replace(/^./, (c) => c.toUpperCase())
-        : `${trimmed} ${s.text}`;
+      // The suggestion already restates the query as its own prefix (the
+      // backend elaborates on what was typed, it doesn't hand back a bare
+      // continuation) — appending would duplicate it. Replace whenever the
+      // suggestion already contains what's typed so far; only append for
+      // the case where it's a genuine continuation.
+      const startsSame = trimmed.length > 0 && s.text.toLowerCase().startsWith(trimmed.toLowerCase());
+      if (startsSame || trimmed.length === 0) {
+        return s.text.replace(/^a /, "").replace(/^./, (c) => c.toUpperCase());
+      }
+      return /\b(a|an|the)\s*$/i.test(trimmed) ? s.text : `${trimmed} ${s.text}`;
     });
     setSuggestions([]);
     setActiveIndex(-1);
     textareaRef.current?.focus();
+
+    // Attaching the reference is treated as its own brief load — Send stays
+    // disabled until it resolves, same as waiting on any other attachment.
+    if (attachTimerRef.current) clearTimeout(attachTimerRef.current);
+    setSource(null);
+    setIsAttaching(true);
+    const picked = sourceFor(s);
+    attachTimerRef.current = setTimeout(() => {
+      setSource(picked);
+      setIsAttaching(false);
+    }, ATTACH_MS);
   }
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
@@ -90,10 +138,13 @@ export function PromptConsole() {
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!value.trim()) return;
-    // Wired to POST /runs once the backend exists — see backend/README.md.
-    // For now the console is UI-only.
-    console.log("[sparrow] would start a run with:", value);
+    if (!value.trim() || isAttaching) return;
+    // Navigates in-app to the workspace — never off to an external host.
+    // Once POST /runs exists this becomes a real run id instead of the raw
+    // prompt in the query string.
+    const params = new URLSearchParams({ p: value.trim() });
+    if (source) params.set("source", JSON.stringify(source));
+    router.push(`/build?${params.toString()}`);
   }
 
   return (
@@ -133,8 +184,13 @@ export function PromptConsole() {
           />
 
           <div className="mt-2 flex items-center justify-between">
-            <span className="text-xs text-muted-foreground">
-              {value.trim().length > 0 ? `${value.trim().length} characters` : "One line is enough to start"}
+            <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+              {isSuggesting && <Loader2 className="size-3 animate-spin" />}
+              {isSuggesting
+                ? "Finding a direction…"
+                : value.trim().length > 0
+                  ? `${value.trim().length} characters`
+                  : "One line is enough to start"}
             </span>
             <div className="flex items-center gap-2">
               <Button type="button" variant="ghost" size="icon" aria-label="Voice input">
@@ -143,7 +199,7 @@ export function PromptConsole() {
               <Button
                 type="submit"
                 size="icon"
-                disabled={!value.trim()}
+                disabled={!value.trim() || isAttaching}
                 aria-label="Start"
               >
                 <ArrowUp />
@@ -168,12 +224,16 @@ export function PromptConsole() {
                     onClick={() => acceptSuggestion(s)}
                     onMouseEnter={() => setActiveIndex(i)}
                     className={cn(
-                      "flex w-full items-baseline gap-2 rounded-lg px-3 py-2 text-left text-sm transition-colors",
+                      "group/row flex w-full items-baseline gap-2 rounded-lg px-3 py-2 text-left text-sm transition-colors",
                       i === activeIndex ? "bg-muted text-foreground" : "text-muted-foreground hover:bg-muted/60"
                     )}
                   >
-                    <span className="truncate text-foreground">{s.text}</span>
-                    <span className="ml-auto shrink-0 text-xs text-muted-foreground">
+                    {/* Truncated by default; hovering the row reveals the
+                        full candidate instead of leaving it cut off. */}
+                    <span className="overflow-hidden text-ellipsis whitespace-nowrap text-foreground group-hover/row:overflow-visible group-hover/row:text-clip group-hover/row:whitespace-normal">
+                      {s.text}
+                    </span>
+                    <span className="ml-auto shrink-0 self-start text-xs text-muted-foreground">
                       {s.category}
                     </span>
                   </button>
@@ -182,6 +242,22 @@ export function PromptConsole() {
             </ul>
           </div>
         </div>
+
+        {/* The reference an accepted suggestion drew from — attaches after a
+            short beat (mocked here; a real lookup later), and is what Send
+            waits on. */}
+        {(source || isAttaching) && (
+          <div className="mt-3">
+            {isAttaching ? (
+              <div className="flex items-center gap-2 rounded-xl border border-dashed border-border px-3 py-2.5 text-xs text-muted-foreground">
+                <Loader2 className="size-3.5 animate-spin" />
+                Attaching reference…
+              </div>
+            ) : (
+              source && <SourceCard source={source} onRemove={() => setSource(null)} />
+            )}
+          </div>
+        )}
       </form>
     </div>
   );
