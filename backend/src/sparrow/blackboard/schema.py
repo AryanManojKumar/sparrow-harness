@@ -189,6 +189,34 @@ class Section(BaseModel):
     defects: list[str] = Field(default_factory=list)
 
 
+class Provenance(StrEnum):
+    """Where an asset came from. Decides what may be claimed about it.
+
+    USER_SUPPLIED — their own file, untouched beyond cropping and resizing.
+    RESTYLED      — their file, restyled to the design system. Still a picture of
+                    their real product, so invented text inside it is a claim they
+                    never made. Text fidelity is gated.
+    GENERATED     — made from a brief. Its contents are invented by construction;
+                    that is the point, and gating text would gate the mechanism.
+    """
+
+    USER_SUPPLIED = "user_supplied"
+    RESTYLED = "restyled"
+    GENERATED = "generated"
+
+
+class Asset(BaseModel):
+    id: str
+    section_id: str
+    brief: str                       # what it must show, from the blueprint
+    provenance: Provenance
+    path: str                        # relative to the workspace's public/
+    width: int = 0
+    height: int = 0
+    variants: dict[str, str] = Field(default_factory=dict)
+    rejected: list[str] = Field(default_factory=list)
+
+
 class Blueprint(BaseModel):
     """A section's structural spec.
 
@@ -223,11 +251,15 @@ class Blackboard(BaseModel):
     constraints: list[Constraint] = Field(default_factory=list)
     design_system: DesignSystem | None = None
     sections: list[Section] = Field(default_factory=list)
+    assets: list[Asset] = Field(default_factory=list)
     dependencies: dict[str, str] = Field(default_factory=dict)
     decisions: list[Decision] = Field(default_factory=list)
 
     def active_constraints(self) -> list[Constraint]:
         return [c for c in self.constraints if c.superseded_by is None]
+
+    def assets_for(self, section_id: str) -> list[Asset]:
+        return [a for a in self.assets if a.section_id == section_id]
 
     def next_pending(self) -> Section | None:
         pending = [s for s in self.sections if s.status is BuildStatus.PENDING]

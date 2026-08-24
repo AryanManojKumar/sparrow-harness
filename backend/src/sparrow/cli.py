@@ -132,7 +132,8 @@ def cmd_build(args) -> int:
         if bp is None:
             print(f"  {section.id}: no blueprint {section.blueprint_id!r}", file=sys.stderr)
             return 1
-        out = builder.build(bb, section, bp, stack=stack, available_primitives=primitives)
+        out = builder.build(bb, section, bp, stack=stack, available_primitives=primitives,
+                            assets=bb.assets_for(section.id))
         path = write_section(ws, section, out.code)
         cost = out.usage.cost(builder.provider.name, builder.tier)
         total += cost
@@ -352,6 +353,62 @@ def cmd_scout(args) -> int:
     return 0
 
 
+def cmd_assets(args) -> int:
+    """Produce the imagery the blueprints ask for."""
+    from sparrow.agents.curator import Curator, derive_variants
+    from sparrow.blackboard.schema import Asset, Provenance
+    from sparrow.blueprints import load_dir
+
+    bb = Blackboard.model_validate_json(Path(args.blackboard).read_text())
+    if bb.design_system is None:
+        print("no design_system on the blackboard", file=sys.stderr)
+        return 1
+
+    blueprints = load_dir(Path(args.blueprints))
+    ws = _workspace(bb.project_id)
+    public = ws / "public" / "assets"
+    public.mkdir(parents=True, exist_ok=True)
+
+    cur = Curator()
+    made: list[Asset] = []
+    print(f"curator · {IMAGE_MODEL_NOTE}\n")
+
+    for section in sorted(bb.sections, key=lambda s: s.order):
+        bp = blueprints.get(section.blueprint_id)
+        if bp is None or not bp.assets:
+            continue
+        for i, brief in enumerate(bp.assets, 1):
+            if args.limit and len(made) >= args.limit:
+                break
+            aid = f"{section.id}-{i}"
+            png = cur.generate(brief, bb.design_system)
+            path = public / f"{aid}.png"
+            path.write_bytes(png)
+            from PIL import Image
+            with Image.open(path) as im:
+                w, h = im.size
+            variants = derive_variants(path)
+            a = Asset(
+                id=aid, section_id=section.id, brief=brief,
+                provenance=Provenance.GENERATED,
+                path=f"assets/{path.name}", width=w, height=h,
+                variants={k: f"assets/{v}" for k, v in variants.items()},
+            )
+            made.append(a)
+            print(f"  {aid:<22} {w}x{h}  {path.stat().st_size//1024:>4} KB  "
+                  f"+{len(variants)} variants  [generated]")
+            print(f"    {brief[:96]}")
+
+    bb.assets = made
+    Path(args.blackboard).write_text(bb.model_dump_json(indent=2))
+    print(f"\n  {len(made)} asset(s) in {public}")
+    print("  provenance: generated — invented by construction, so no text gate applies")
+    return 0
+
+
+IMAGE_MODEL_NOTE = "gpt-image-2 · generated assets are not text-gated; restyles are"
+
+
 def cmd_inspect(args) -> int:
     """Deterministic pass first, then one vision call per section."""
     from sparrow.agents.inspector import Inspector, deterministic_defects
@@ -449,6 +506,12 @@ def main() -> int:
     sc.add_argument("urls", nargs="+")
     sc.add_argument("--shots", action="store_true", help="also capture per-section screenshots")
     sc.set_defaults(fn=cmd_scout)
+
+    a = sub.add_parser("assets", help="produce the imagery the blueprints ask for")
+    a.add_argument("blackboard")
+    a.add_argument("--blueprints", required=True)
+    a.add_argument("--limit", type=int, default=0, help="stop after N assets")
+    a.set_defaults(fn=cmd_assets)
 
     i = sub.add_parser("inspect", help="deterministic checks, then one vision call per section")
     i.add_argument("blackboard")

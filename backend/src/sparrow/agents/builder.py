@@ -97,6 +97,7 @@ class Builder(Agent):
         *,
         stack: str,
         available_primitives: list[str],
+        assets: list | None = None,
     ) -> BuildOutput:
         # Stated as an instruction, not as context. Written as "this section sits
         # on X" it was read as background information and ignored by 4 of 5
@@ -128,6 +129,16 @@ class Builder(Agent):
             f"decided at page level — it is not yours to choose, and omitting it "
             f"flattens the page rhythm.\n"
             f"</section>",
+            # Assets vary per section, so they belong in the user message — putting
+            # them in the cached system prefix breaks the prefix for every call.
+            ("<assets>\nThese images already exist in /public and are the real material "
+             "for this section. Render them with next/image at the paths given, framed per "
+             "the design system's imagery treatment. Do NOT hand-draw a fake interface in "
+             "divs when a real capture is listed here — that is what these replace.\n"
+             + "\n".join(f"- /{a.path}  ({a.width}x{a.height}) — {a.brief}" for a in assets)
+             + "\n</assets>") if assets else
+            ("<assets>\nNo imagery for this section. Compose from type and layout; do not "
+             "fabricate a product screenshot in markup.\n</assets>"),
         ])
 
         res = self.call(system=system, user=user)
