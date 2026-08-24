@@ -7,9 +7,9 @@
  * generated site, so it never reads `design_system` and never goes light.
  * ========================================================================= */
 :root {
-  --background: oklch(0.12 0.01 260);
+  --background: oklch(0.07 0.006 260);
   --foreground: oklch(0.96 0 0);
-  --card: oklch(0.16 0.012 260);
+  --card: oklch(0.15 0.012 260);
   --card-foreground: oklch(0.96 0 0);
   --popover: oklch(0.16 0.012 260);
   --popover-foreground: oklch(0.96 0 0);
@@ -66,11 +66,77 @@
   }
 }
 
-/* Cloud-field backdrop — layered radial gradients, no image asset. */
+/* Cloud-field backdrop — layered radial gradients, no image asset. Clouds sit
+ * in the top third and fade to near-black below, so the page reads as dark
+ * sky rather than an evenly-lit gradient panel. */
 .console-sky {
+  position: relative;
   background-color: var(--background);
   background-image:
-    radial-gradient(ellipse 60% 40% at 20% 15%, oklch(0.24 0.015 260 / 55%), transparent 60%),
-    radial-gradient(ellipse 50% 35% at 75% 10%, oklch(0.2 0.02 250 / 45%), transparent 60%),
-    radial-gradient(ellipse 70% 45% at 50% 0%, oklch(0.18 0.012 260 / 60%), transparent 65%);
+    radial-gradient(ellipse 55% 32% at 18% 8%, oklch(0.22 0.016 260 / 50%), transparent 60%),
+    radial-gradient(ellipse 45% 28% at 78% 4%, oklch(0.19 0.02 250 / 40%), transparent 60%),
+    radial-gradient(ellipse 65% 38% at 50% 0%, oklch(0.16 0.012 260 / 55%), transparent 65%);
+  background-repeat: no-repeat;
+}
+
+/* Sparse starfield — a handful of soft points, not a galaxy. Two tiled
+ * layers at different scales/opacities for a little depth, each drifting in
+ * and out with its own slow, offset twinkle. */
+.console-stars {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: -1;
+}
+
+.console-stars::before,
+.console-stars::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-repeat: repeat;
+  opacity: 0.5;
+}
+
+.console-stars::before {
+  background-image:
+    radial-gradient(1px 1px at 12% 22%, oklch(0.95 0 0 / 90%), transparent 100%),
+    radial-gradient(1px 1px at 68% 12%, oklch(0.95 0 0 / 75%), transparent 100%),
+    radial-gradient(1.2px 1.2px at 40% 48%, oklch(0.95 0 0 / 85%), transparent 100%),
+    radial-gradient(1px 1px at 85% 38%, oklch(0.95 0 0 / 70%), transparent 100%),
+    radial-gradient(1px 1px at 25% 68%, oklch(0.95 0 0 / 65%), transparent 100%),
+    radial-gradient(1.2px 1.2px at 92% 78%, oklch(0.95 0 0 / 80%), transparent 100%),
+    radial-gradient(1px 1px at 55% 85%, oklch(0.95 0 0 / 60%), transparent 100%);
+  background-size: 560px 560px;
+  animation: star-twinkle 7s ease-in-out infinite;
+}
+
+.console-stars::after {
+  background-image:
+    radial-gradient(1px 1px at 30% 10%, oklch(0.9 0 0 / 55%), transparent 100%),
+    radial-gradient(1px 1px at 60% 30%, oklch(0.9 0 0 / 60%), transparent 100%),
+    radial-gradient(1px 1px at 8% 55%, oklch(0.9 0 0 / 50%), transparent 100%),
+    radial-gradient(1px 1px at 78% 62%, oklch(0.9 0 0 / 55%), transparent 100%),
+    radial-gradient(1px 1px at 45% 90%, oklch(0.9 0 0 / 45%), transparent 100%);
+  background-size: 420px 420px;
+  animation: star-twinkle 9s ease-in-out infinite reverse;
+  animation-delay: -3s;
+}
+
+@keyframes star-twinkle {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 0.75;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .console-stars::before,
+  .console-stars::after {
+    animation: none;
+    opacity: 0.5;
+  }
 }

@@ -7,6 +7,8 @@ not request/response: start it, stream progress, answer gates.
 
 ## The shape
 
+    POST   /suggest                    autocomplete for the prompt box
+    POST   /interview                  one sentence -> a structured brief
     POST   /projects                   create from a brief + reference urls
     GET    /projects                   list (unreadable ones are reported, not fatal)
     GET    /projects/{id}              blackboard, current stage, spend, recent log
@@ -23,6 +25,44 @@ not request/response: start it, stream progress, answer gates.
     brief → [GATE 1] → sources → design → [GATE 2] → assets → build → verify → [GATE 3] → done
 
 Three gates, per CLAUDE.md §8. Everything between them runs without asking.
+
+## The front of the funnel
+
+`POST /suggest` — completions for a half-typed prompt. An accelerator, never a step: it
+returns `{"suggestions": []}` on any failure rather than an error, so a slow or broken
+completion never interrupts typing.
+
+```json
+POST /suggest   { "q": "a website for my compliance", "limit": 5 }
+-> { "suggestions": [
+     { "id": "compliance-software",
+       "text": "a website for my compliance management software — product features, audit …",
+       "category": "Compliance Software" } ] }
+```
+
+`POST /interview` — the submitted prompt becomes a Brief, **without creating the project**.
+The user sees what was inferred, corrects it, and only then commits. CLAUDE.md §2: nothing
+is generated until the brief exists and is right.
+
+```json
+POST /interview  { "prompt": "a site for my SOC 2 compliance startup, we sell to fintech
+                              engineers who've been through a painful audit. dont use blue,
+                              our competitor is blue" }
+-> {
+  "brief": { "category": "B2B SaaS landing page", "tone": "…", "primary_action": "Book a demo" },
+  "constraints": ["dont use blue"],
+  "assumed": [
+    "I assumed the product is software that helps teams manage SOC 2 compliance rather than
+     a consulting-only service.",
+    "I assumed booking a demo is the main conversion goal."
+  ],
+  "confidence": "low"
+}
+```
+
+`assumed` is phrased so each line is correctable in one sentence — show them as editable
+rows, not as a disclosure. `constraints` are the user's own words, extracted verbatim and
+never paraphrased.
 
 ## Creating a project
 

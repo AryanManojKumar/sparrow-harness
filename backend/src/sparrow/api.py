@@ -48,6 +48,15 @@ app.add_middleware(
 _RUNS: dict[str, Run] = {}
 
 
+class SuggestRequest(BaseModel):
+    q: str
+    limit: int = 5
+
+
+class InterviewRequest(BaseModel):
+    prompt: str
+
+
 class CreateProject(BaseModel):
     project_id: str
     category: str
@@ -82,6 +91,37 @@ def _run_for(pid: str) -> Run:
     })
     _RUNS[pid] = run
     return run
+
+
+@app.post("/suggest")
+def suggest(body: SuggestRequest) -> dict[str, Any]:
+    """Autocomplete for the prompt box.
+
+    An accelerator, never a step. It returns an empty list rather than an error on
+    anything going wrong, because a failed completion must not interrupt typing.
+    """
+    from sparrow.agents.interviewer import Interviewer
+
+    return {"suggestions": Interviewer().suggest(body.q, body.limit)}
+
+
+@app.post("/interview")
+def interview(body: InterviewRequest) -> dict[str, Any]:
+    """One sentence in, a structured brief out — plus what had to be assumed.
+
+    Deliberately does NOT create the project. The user sees the brief, corrects the
+    assumptions, and only then commits: CLAUDE.md §2, nothing is generated until the
+    brief exists and is right.
+    """
+    from sparrow.agents.interviewer import BriefDraft
+
+    brief, constraints, assumed, confidence = BriefDraft().interview(body.prompt)
+    return {
+        "brief": brief.model_dump(mode="json"),
+        "constraints": [c.text for c in constraints],
+        "assumed": assumed,
+        "confidence": confidence,
+    }
 
 
 @app.post("/projects")
