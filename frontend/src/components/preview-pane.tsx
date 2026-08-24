@@ -14,12 +14,16 @@ const FRAME_WIDTH: Record<Device, string> = {
   mobile: "390px",
 };
 
-// Same-origin path — never an external host. Swap for the run's
-// `GET /runs/{id}/preview/*` URL once the backend serves one; the iframe
-// mechanism itself doesn't change.
-const PREVIEW_SRC = "/preview/mock";
-
-export function PreviewPane({ ready }: { ready: boolean }) {
+export function PreviewPane({
+  ready,
+  src,
+  waitingLabel = "Building preview…",
+}: {
+  ready: boolean;
+  /** The run's `GET /projects/{id}/preview/` URL — drops straight into an iframe. */
+  src?: string;
+  waitingLabel?: string;
+}) {
   const [device, setDevice] = useState<Device>("desktop");
   const [reloadKey, setReloadKey] = useState(0);
 
@@ -57,7 +61,7 @@ export function PreviewPane({ ready }: { ready: boolean }) {
             variant="ghost"
             size="icon"
             aria-label="Refresh preview"
-            disabled={!ready}
+            disabled={!ready || !src}
             onClick={() => setReloadKey((k) => k + 1)}
           >
             <RefreshCw className="size-3.5" />
@@ -67,13 +71,13 @@ export function PreviewPane({ ready }: { ready: boolean }) {
             variant="ghost"
             size="icon"
             asChild
-            className={cn(!ready && "pointer-events-none opacity-50")}
+            className={cn((!ready || !src) && "pointer-events-none opacity-50")}
           >
             <a
-              href={ready ? PREVIEW_SRC : undefined}
+              href={ready && src ? src : undefined}
               target="_blank"
               rel="noreferrer"
-              aria-disabled={!ready}
+              aria-disabled={!ready || !src}
               aria-label="Open preview in a new tab"
             >
               <ExternalLink className="size-3.5" />
@@ -83,14 +87,14 @@ export function PreviewPane({ ready }: { ready: boolean }) {
       </div>
 
       <div className="flex flex-1 items-center justify-center overflow-auto bg-black/20 p-6">
-        {ready ? (
+        {ready && src ? (
           <div
             className="h-full overflow-hidden rounded-xl border border-border bg-white shadow-2xl shadow-black/50 transition-[width] duration-300"
             style={{ width: FRAME_WIDTH[device] }}
           >
             <iframe
               key={reloadKey}
-              src={PREVIEW_SRC}
+              src={src}
               title="Site preview"
               className="size-full border-0"
             />
@@ -101,7 +105,7 @@ export function PreviewPane({ ready }: { ready: boolean }) {
             style={{ width: FRAME_WIDTH[device] }}
           >
             <div className="size-8 animate-pulse rounded-lg bg-muted" />
-            <p className="text-sm">Building preview…</p>
+            <p className="text-sm">{waitingLabel}</p>
           </div>
         )}
       </div>

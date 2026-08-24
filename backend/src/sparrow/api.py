@@ -79,6 +79,13 @@ app.add_middleware(
 # lands on the same object; losing it costs a re-read of the blackboard, not work.
 _RUNS: dict[str, Run] = {}
 
+# A run continues after the client disconnects, deliberately: the work is already
+# paid for and a closed tab should not throw away eight minutes of extraction. But
+# that makes double-advance reachable — reconnect, press go again, and two
+# generators drive the same stages concurrently, writing the same files and
+# double-charging. One advance per project at a time.
+_ADVANCING: set[str] = set()
+
 
 class SuggestRequest(BaseModel):
     q: str
@@ -285,6 +292,7 @@ def get_project(pid: str) -> dict[str, Any]:
     return {
         "project_id": pid,
         "stage": run.stage.value,
+        "advancing": pid in _ADVANCING,
         "spent": round(run.spent, 4),
         "awaiting_gate": run.pending.gate.value if run.pending else None,
         "blackboard": bb.model_dump(mode="json"),
@@ -295,16 +303,34 @@ def get_project(pid: str) -> dict[str, Any]:
 
 @app.post("/projects/{pid}/advance", tags=["run"], summary="Run until the next gate (SSE stream)")
 def advance(pid: str) -> StreamingResponse:
-    """Run until the next gate. Server-sent events, one per stage transition."""
+    """Run until the next gate. Server-sent events, one per stage transition.
+
+    The run keeps going if the client disconnects — closing a tab should not throw
+    away work already paid for. Reconnect with `GET /projects/{id}` for the current
+    stage and the log so far.
+
+    A second advance while one is in flight is refused rather than queued, because
+    two generators over the same stages write the same files and bill twice.
+    """
     run = _run_for(pid)
+    if pid in _ADVANCING:
+        raise HTTPException(
+            409,
+            "this project is already advancing — reconnect with GET /projects/"
+            f"{pid} to follow it, or wait for it to reach a gate",
+        )
 
     def stream():
-        for ev in run.advance():
-            payload = {"stage": ev.stage.value, "kind": ev.kind,
-                       "message": ev.message, "cost": ev.cost, "data": ev.data,
-                       "spent": round(run.spent, 4)}
-            yield f"data: {json.dumps(payload)}\n\n"
-        yield "event: end\ndata: {}\n\n"
+        _ADVANCING.add(pid)
+        try:
+            for ev in run.advance():
+                payload = {"stage": ev.stage.value, "kind": ev.kind,
+                           "message": ev.message, "cost": ev.cost, "data": ev.data,
+                           "spent": round(run.spent, 4)}
+                yield f"data: {json.dumps(payload)}\n\n"
+            yield "event: end\ndata: {}\n\n"
+        finally:
+            _ADVANCING.discard(pid)
 
     return StreamingResponse(stream(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache",

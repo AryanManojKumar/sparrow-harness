@@ -296,7 +296,26 @@ def extract(
     min_band_height: int = 180,
     shots: bool = True,
     timeout_ms: int = 45000,
+    budget_s: int = 90,
 ) -> SiteExtract:
+    """Extract one site, or give up inside `budget_s` and say so.
+
+    `timeout_ms` only ever covered `page.goto`. The scroll pass and the
+    segmentation evaluate had none, so a site whose JS never settles — stripe.com
+    under bot detection, in practice — blocked the entire run with no error and no
+    progress. A hung source is the worst failure shape available: it looks like
+    slowness right up until someone gives up.
+
+    So every step gets a timeout, and the whole call gets a wall-clock budget. A
+    source that cannot be read in 90 seconds is a source the run continues without.
+    """
+    import time as _time
+
+    deadline = _time.monotonic() + budget_s
+
+    def left_ms(cap: int) -> int:
+        return max(1000, min(cap, int((deadline - _time.monotonic()) * 1000)))
+
     out_dir.mkdir(parents=True, exist_ok=True)
     with sync_playwright() as pw:
         browser = pw.chromium.launch()
@@ -309,20 +328,33 @@ def extract(
             ),
         )
         page = ctx.new_page()
+        # Every evaluate inherits this, so no single step can hang forever.
+        page.set_default_timeout(left_ms(30000))
         try:
-            page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+            page.goto(url, wait_until="domcontentloaded", timeout=left_ms(timeout_ms))
             page.wait_for_timeout(2500)
+            page.set_default_timeout(left_ms(25000))
             page.evaluate(_SCROLL)
             page.wait_for_timeout(1200)
         except Exception as e:
             browser.close()
-            return SiteExtract(url, "", False, f"{type(e).__name__}: {str(e)[:160]}")
+            over = _time.monotonic() >= deadline
+            return SiteExtract(url, "", False,
+                               f"timed out after {budget_s}s — the page never settled "
+                               f"(bot protection or a JS loop)" if over
+                               else f"{type(e).__name__}: {str(e)[:160]}")
 
-        title = page.title()
-        page_h = page.evaluate("document.body.scrollHeight")
-        semantic = page.evaluate("document.querySelectorAll('section').length")
-        mot = page.evaluate(_MOTION)
-        reg = page.evaluate(_REGISTER)
+        try:
+            page.set_default_timeout(left_ms(20000))
+            title = page.title()
+            page_h = page.evaluate("document.body.scrollHeight")
+            semantic = page.evaluate("document.querySelectorAll('section').length")
+            mot = page.evaluate(_MOTION)
+            reg = page.evaluate(_REGISTER)
+        except Exception as e:
+            browser.close()
+            return SiteExtract(url, "", False,
+                               f"unreadable after load: {type(e).__name__}: {str(e)[:120]}")
         register = Register(
             dark=bool(reg["dark"]), dark_share=float(reg["darkShare"]),
             video=int(reg["video"]), canvas=int(reg["canvas"]),
@@ -333,12 +365,20 @@ def extract(
                 properties=list(mot["properties"]), transform=bool(mot["transform"]),
             ),
         )
-        raw = page.evaluate(_SEGMENT, {"minHeight": min_band_height})
+        try:
+            page.set_default_timeout(left_ms(20000))
+            raw = page.evaluate(_SEGMENT, {"minHeight": min_band_height})
+        except Exception as e:
+            browser.close()
+            return SiteExtract(url, title, False,
+                               f"segmentation failed: {type(e).__name__}: {str(e)[:120]}")
 
         bands = [Band(**b) for b in raw]
         if shots:
             host = url.split("//")[-1].split("/")[0].replace(".", "_")
             for b in bands:
+                if _time.monotonic() >= deadline:
+                    break                       # keep the bands, drop the shots
                 try:
                     el = page.evaluate_handle(
                         "([t, h]) => [...document.querySelectorAll('body *')]"

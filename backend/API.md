@@ -132,6 +132,15 @@ POST /projects/{id}/gate   { "choice": 0 }
   flags those rather than failing.
 - **`_RUNS` is in-process.** Restarting the server loses stage position, though nothing on
   the blackboard. Fine for one machine; needs Redis before more than one.
+- **Disconnecting does not stop the run.** Deliberate: closing a tab should not throw away
+  eight minutes of extraction already paid for. Reconnect with `GET /projects/{id}` for
+  the current stage, `advancing`, and the log so far.
+- **A second `/advance` while one is in flight returns 409.** Two generators over the same
+  stages write the same files and bill twice, so it is refused rather than queued.
+- **A source that will not load is skipped, not fatal.** `extract()` has a 90-second
+  wall-clock budget per site; stripe.com intermittently hangs under bot protection rather
+  than erroring, and a hung source used to block the whole run silently. The run continues
+  with whatever sources did load, and needs at least two.
 
 ## Logging and tracing
 

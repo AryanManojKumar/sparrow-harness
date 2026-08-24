@@ -8,13 +8,27 @@ import { ArrowUp, Loader2, Mic } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { suggest, type Suggestion } from "@/lib/suggest";
 import { sourceFor, type Source } from "@/lib/sources";
+import { slugify } from "@/lib/api";
 import { SparrowMark } from "@/components/sparrow-mark";
 import { SourceCard } from "@/components/source-card";
 import { Textarea } from "@/components/ui/textarea";
+import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 
+// The scout stage needs at least two readable reference sites to rank
+// against (backend/src/sparrow/steps.py: step_sources) — there is no way to
+// run for real with fewer. Prefilled with two sites confirmed to extract
+// cleanly through Playwright — stripe.com was tried first and hung
+// indefinitely under scout.extract(), almost certainly its bot detection;
+// these two are what backend/API.md's own example uses.
+const DEFAULT_URLS = ["https://linear.app", "https://kiro.dev"];
+
 const MIN_CHARS = 8;
-const DEBOUNCE_MS = 350;
+// Long enough to clear a normal pause between words/sentences while typing,
+// so a completion fires once per thought instead of once per pause — each
+// call is a real LLM request (~$, ~5-6s), not worth spending on a half-typed
+// idea that's about to change anyway.
+const DEBOUNCE_MS = 900;
 const ATTACH_MS = 550;
 
 export function PromptConsole() {
@@ -24,8 +38,12 @@ export function PromptConsole() {
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
   const [activeIndex, setActiveIndex] = useState(-1);
   const [isSuggesting, setIsSuggesting] = useState(false);
+  const [isDebouncing, setIsDebouncing] = useState(false);
   const [source, setSource] = useState<Source | null>(null);
   const [isAttaching, setIsAttaching] = useState(false);
+  const [urls, setUrls] = useState<string[]>(DEFAULT_URLS);
+  const [urlError, setUrlError] = useState<string | null>(null);
+  const [isStarting, setIsStarting] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const attachTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -41,6 +59,7 @@ export function PromptConsole() {
       skipFetchRef.current = false;
       setSuggestions([]);
       setActiveIndex(-1);
+      setIsDebouncing(false);
       return;
     }
 
@@ -48,13 +67,20 @@ export function PromptConsole() {
       setSuggestions([]);
       setActiveIndex(-1);
       setIsSuggesting(false);
+      setIsDebouncing(false);
       return;
     }
+
+    // Pending the moment a keystroke qualifies, not just once the request is
+    // in flight — Send gates on this too, so it can't fire mid-debounce and
+    // beat the completion that was supposedly about to load.
+    setIsDebouncing(true);
 
     const controller = new AbortController();
     abortRef.current = controller;
 
     const timer = setTimeout(() => {
+      setIsDebouncing(false);
       setIsSuggesting(true);
       suggest(value, controller.signal)
         .then((results) => {
@@ -138,13 +164,26 @@ export function PromptConsole() {
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!value.trim() || isAttaching) return;
-    // Navigates in-app to the workspace — never off to an external host.
-    // Once POST /runs exists this becomes a real run id instead of the raw
-    // prompt in the query string.
-    const params = new URLSearchParams({ p: value.trim() });
-    if (source) params.set("source", JSON.stringify(source));
-    router.push(`/build?${params.toString()}`);
+    if (!value.trim() || isAttaching || isDebouncing || isSuggesting || isStarting) return;
+
+    const cleanUrls = urls.map((u) => u.trim()).filter(Boolean);
+    if (cleanUrls.length < 2 || cleanUrls.some((u) => !/^https?:\/\/.+/.test(u))) {
+      setUrlError("Two full URLs (https://…) are needed to start a real run.");
+      return;
+    }
+    setUrlError(null);
+    setIsStarting(true);
+
+    // The actual interview + project-creation + first run leg happen on the
+    // /build screen, where progress is visible — this just hands off what
+    // it collected. sessionStorage rather than the query string because a
+    // brief + two reference URLs is bigger than a URL comfortably carries.
+    const projectId = slugify(value.trim());
+    sessionStorage.setItem(
+      `sparrow:${projectId}`,
+      JSON.stringify({ prompt: value.trim(), urls: cleanUrls, source })
+    );
+    router.push(`/build?id=${projectId}`);
   }
 
   return (
@@ -188,9 +227,11 @@ export function PromptConsole() {
               {isSuggesting && <Loader2 className="size-3 animate-spin" />}
               {isSuggesting
                 ? "Finding a direction…"
-                : value.trim().length > 0
-                  ? `${value.trim().length} characters`
-                  : "One line is enough to start"}
+                : isDebouncing
+                  ? "Waiting for you to finish typing…"
+                  : value.trim().length > 0
+                    ? `${value.trim().length} characters`
+                    : "One line is enough to start"}
             </span>
             <div className="flex items-center gap-2">
               <Button type="button" variant="ghost" size="icon" aria-label="Voice input">
@@ -199,10 +240,10 @@ export function PromptConsole() {
               <Button
                 type="submit"
                 size="icon"
-                disabled={!value.trim() || isAttaching}
+                disabled={!value.trim() || isAttaching || isDebouncing || isSuggesting || isStarting}
                 aria-label="Start"
               >
-                <ArrowUp />
+                {isStarting ? <Loader2 className="animate-spin" /> : <ArrowUp />}
               </Button>
             </div>
           </div>
@@ -258,6 +299,33 @@ export function PromptConsole() {
             )}
           </div>
         )}
+
+        {/* Scout needs two readable reference sites to rank against — skeleton,
+            rhythm, section order (CLAUDE.md §5). Not the same thing as the
+            citation above: that's where a suggestion's idea came from, this
+            is what the design agent will actually build against. */}
+        <div className="mt-3 rounded-xl border border-border bg-card/40 p-3">
+          <p className="mb-2 text-xs font-medium text-muted-foreground">
+            Reference sites — two needed to design against
+          </p>
+          <div className="flex flex-col gap-2">
+            {urls.map((u, i) => (
+              <Input
+                key={i}
+                value={u}
+                onChange={(e) => {
+                  const next = [...urls];
+                  next[i] = e.target.value;
+                  setUrls(next);
+                  setUrlError(null);
+                }}
+                placeholder="https://…"
+                className="h-8 text-sm"
+              />
+            ))}
+          </div>
+          {urlError && <p className="mt-2 text-xs text-destructive">{urlError}</p>}
+        </div>
       </form>
     </div>
   );
