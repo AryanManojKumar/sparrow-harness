@@ -64,8 +64,22 @@ The levers, in order of effect:
 
 Keeping the four installed is cheap and harmless; they are inert unless named.
 
-## Still broken
+## Correction: the "ten invisible elements" were not a bug
 
-Ten elements at `opacity: 0` in the new hero. The guaranteed-end-state rule is in the
-prompt and this build still shipped `whileInView` without a resolved fallback, so stating
-it once was not enough.
+Reported twice in this session as a defect. Measured properly:
+
+    without scrolling: 10 invisible
+    after scrolling:    0 invisible
+
+The builder had been doing the correct thing all along — `whileInView` with
+`viewport={{ once: true, amount: 0.2 }}`, which is standard practice. A real visitor
+scrolls and sees everything, and `capture.inspect_page` scrolls before it measures, so
+the production pipeline never saw a problem either.
+
+The 10 came from an ad-hoc check I wrote that did not scroll. I then added an audit rule
+against `whileInView`, which would have flagged correct code as drift and sent the
+repairer to "fix" working sections. Reverted.
+
+Worth keeping as the lesson: **a check needs a negative test before it is trusted**, and
+that is now three for three — the contrast parser, the overflow detector, and this. Each
+was confidently wrong in the direction that manufactures work.

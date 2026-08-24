@@ -30,6 +30,7 @@ SHADOW = re.compile(r"\bshadow-(?:2xl|xl|lg|md|sm|none|inner)\b")
 ROUNDED = re.compile(r"\brounded-(?:none|sm|md|lg|xl|2xl|3xl|full)\b")
 GAP = re.compile(r"\bgap-\d+\b")
 BANNED_IMPORT = re.compile(r"""from\s+["']framer-motion["']""")
+
 INLINE_STYLE_COLOR = re.compile(r"style=\{\{[^}]*(?:color|background)[^}]*\}\}")
 
 _WEIGHT_NAMES = {

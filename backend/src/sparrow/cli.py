@@ -256,6 +256,54 @@ def _repair_until_builds(bb, ws: Path, provider_name: str, max_attempts: int = 3
               f"{out.usage.output_tokens:,} out  ${cost:.4f}")
 
 
+def cmd_serve(args) -> int:
+    """Run the HTTP API. The frontend drives everything through this."""
+    import uvicorn
+    print(f"sparrow api on http://{args.host}:{args.port}  (docs at /docs)")
+    uvicorn.run("sparrow.api:app", host=args.host, port=args.port, reload=args.reload)
+    return 0
+
+
+def cmd_run(args) -> int:
+    """Drive a project through the pipeline, stopping at each gate."""
+    import json as _json
+
+    from sparrow.orchestrator import Run, Stage
+    from sparrow import steps as _steps
+
+    urls_file = PROJECTS / args.project / "urls.json"
+    urls = _json.loads(urls_file.read_text()) if urls_file.exists() else args.url
+    run = Run(args.project, ROOT, {
+        Stage.BRIEF: _steps.step_brief,
+        Stage.SOURCES: lambda r: _steps.step_sources(r, urls),
+        Stage.DESIGN: _steps.step_design,
+        Stage.ASSETS: _steps.step_assets,
+        Stage.BUILD: _steps.step_build,
+        Stage.VERIFY: _steps.step_verify,
+    })
+    while True:
+        for ev in run.advance():
+            print(ev.line())
+        if run.pending is None:
+            break
+        r = run.pending
+        print(f"\n  ── {r.gate.value} ──\n  {r.question}")
+        for o in r.options:
+            print(f"    [{o.get('index', o.get('choice'))}] "
+                  f"{o.get('signature') or o.get('label')}")
+        if args.yes and r.gate is Stage.GATE_DESIGN:
+            print("  --yes: taking direction 0")
+            _steps.adopt_direction(run, 0)
+            run.resolve({"choice": 0})
+        elif args.yes:
+            run.resolve({"choice": "approve"})
+        else:
+            print("\n  answer with: sparrow gate {p} <choice>".format(p=args.project))
+            return 0
+    print(f"\n  done · ${run.spent:.4f}")
+    return 0
+
+
 def cmd_scout(args) -> int:
     """Extract reference sites, rank them against the brief, emit the design brief."""
     from sparrow.blueprints import Blueprint  # noqa: F401  (keeps import graph honest)
@@ -502,6 +550,18 @@ def main() -> int:
     b.add_argument("blackboard")
     b.add_argument("--blueprints", required=True)
     b.set_defaults(fn=cmd_build)
+
+    sv = sub.add_parser("serve", help="run the HTTP API for the frontend")
+    sv.add_argument("--host", default="127.0.0.1")
+    sv.add_argument("--port", type=int, default=8000)
+    sv.add_argument("--reload", action="store_true")
+    sv.set_defaults(fn=cmd_serve)
+
+    rn = sub.add_parser("run", help="drive a project through the pipeline")
+    rn.add_argument("project")
+    rn.add_argument("--url", action="append", default=[], help="reference site (repeatable)")
+    rn.add_argument("--yes", action="store_true", help="auto-answer gates with the first option")
+    rn.set_defaults(fn=cmd_run)
 
     sc = sub.add_parser("scout", help="extract and rank reference sites against the brief")
     sc.add_argument("blackboard")
