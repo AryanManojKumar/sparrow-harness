@@ -89,6 +89,26 @@ Two more template answers to avoid unless the subject genuinely calls for them: 
 built from a big number with a small label plus supporting stats plus a gradient accent;
 and purple or violet as a primary, which is the reflex choice for software.
 
+## The motion vocabulary available to you
+
+These are real components in the project. Colour is a prop on every one, so any of them
+can be driven entirely from your palette. Naming one in `motion` is what makes it
+available to the builder; the builder will not reach for a technique your motion spec
+excludes, and it is right not to.
+
+  SplitText     headline revealed per character or word
+  CountUp       a number counting into view
+  SpotlightCard a card lit by a cursor-following highlight
+  DotGrid       an interactive dot field reacting to the pointer
+
+Decide deliberately. A restrained direction that bans ambient motion is a legitimate
+choice, and so is a direction built around one of these. What is not legitimate is
+excluding them without noticing you did — a motion spec reading "no ambient loops, no
+cursor theater" rules out half this list, so write that only if you mean it.
+
+If you want one, say so in `motion` by name and describe how it behaves in YOUR palette
+and at YOUR tempo.
+
 ## Work in two passes
 
 FIRST, plan: atmosphere, signature, palette, type, spacing, motion.
