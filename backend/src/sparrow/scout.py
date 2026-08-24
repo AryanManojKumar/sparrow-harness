@@ -176,6 +176,38 @@ class Band:
 # On a dev-tool run, two of four sources were dark-grounded and the design agent
 # had no way to know, so it defaulted light. Counting "2/4 sources use a dark
 # ground" is the same kind of fact as "4/4 have a hero" — convention, not taste.
+_MOTION = r"""
+() => {
+  const anims = document.getAnimations().map(a => {
+    const t = a.effect?.getTiming?.() || {};
+    return {dur: Math.round(Number(t.duration) || 0), iter: t.iterations,
+            name: String(a.animationName || '')};
+  });
+  const ambient = [...new Set(anims.filter(a => a.iter === Infinity && a.name)
+    .map(a => a.name.replace(/^[\w]{4,10}_/, '').replace(/-\d+(-\d+)*/g, '')))];
+  const dur = {}, ease = {}, props = {};
+  for (const el of document.querySelectorAll('body *')) {
+    const cs = getComputedStyle(el);
+    if (!cs.transitionDuration || cs.transitionDuration === '0s') continue;
+    const d = cs.transitionDuration.split(',')[0].trim();
+    const e = cs.transitionTimingFunction.split(/,(?![^(]*\))/)[0].trim();
+    dur[d] = (dur[d]||0)+1; ease[e] = (ease[e]||0)+1;
+    for (const p of cs.transitionProperty.split(',').map(x=>x.trim())) props[p]=(props[p]||0)+1;
+  }
+  const top = o => (Object.entries(o).sort((a,b)=>b[1]-a[1])[0]||[''])[0];
+  const plist = Object.entries(props).sort((a,b)=>b[1]-a[1]).map(([k])=>k).slice(0,8);
+  return {
+    running: anims.length,
+    ambient: ambient.slice(0, 6),
+    tempoMs: Math.round(parseFloat(top(dur) || '0') * 1000),
+    easing: top(ease),
+    properties: plist,
+    transform: plist.some(p => p === 'transform' || p === 'all'),
+  };
+}
+"""
+
+
 _REGISTER = r"""
 () => {
   const px = (c) => { const cv=document.createElement('canvas'); cv.width=cv.height=1;
@@ -208,6 +240,29 @@ _REGISTER = r"""
 
 
 @dataclass
+class Motion:
+    """Countable facts about how a category moves.
+
+    The design agent was inventing motion from nothing, and the builder was
+    shipping none at all. Both are evidence problems. Everything here is read
+    from the live page: the Web Animations API reports what is actually running,
+    and computed styles report what is declared.
+
+    What is NOT extractable: scroll choreography driven by IntersectionObserver
+    or a JS timeline. Those leave no trace in the DOM. So this measures tempo and
+    register, not sequence — which is the honest limit and worth stating rather
+    than papering over.
+    """
+
+    running: int                       # animations live after a scroll pass
+    ambient: list[str]                 # names of infinite ones — shine, blink, drift
+    tempo_ms: int                      # the dominant declared transition duration
+    easing: str                        # the dominant declared easing curve
+    properties: list[str]              # what is actually transitioned
+    transform: bool                    # does anything move, or only recolour?
+
+
+@dataclass
 class Register:
     """Countable facts about how a category presents itself."""
 
@@ -217,6 +272,7 @@ class Register:
     canvas: int
     code_blocks: int
     product_images: int
+    motion: Motion | None = None
 
 
 @dataclass
@@ -265,11 +321,17 @@ def extract(
         title = page.title()
         page_h = page.evaluate("document.body.scrollHeight")
         semantic = page.evaluate("document.querySelectorAll('section').length")
+        mot = page.evaluate(_MOTION)
         reg = page.evaluate(_REGISTER)
         register = Register(
             dark=bool(reg["dark"]), dark_share=float(reg["darkShare"]),
             video=int(reg["video"]), canvas=int(reg["canvas"]),
             code_blocks=int(reg["codeBlocks"]), product_images=int(reg["productImages"]),
+            motion=Motion(
+                running=int(mot["running"]), ambient=list(mot["ambient"]),
+                tempo_ms=int(mot["tempoMs"]), easing=str(mot["easing"]),
+                properties=list(mot["properties"]), transform=bool(mot["transform"]),
+            ),
         )
         raw = page.evaluate(_SEGMENT, {"minHeight": min_band_height})
 

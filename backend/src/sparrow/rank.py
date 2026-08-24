@@ -233,6 +233,28 @@ def register_report(registers: dict[str, object]) -> str:
     lines.append(f"  pages using canvas:    {canvas}/{n}")
     lines.append(f"  pages showing code:    {code}/{n}")
     lines.append(f"  large product images:  {imgs:.0f} per page on average")
+
+    mots = [r.motion for r in registers.values() if getattr(r, "motion", None)]
+    if mots:
+        ambient = sum(1 for m in mots if m.running > 3)
+        moving = sum(1 for m in mots if m.transform)
+        tempos = sorted(m.tempo_ms for m in mots if m.tempo_ms)
+        names = sorted({a for m in mots for a in m.ambient})[:6]
+        lines.append("")
+        lines.append("  MOTION")
+        lines.append(f"    always-running motion: {ambient}/{n}"
+                     + (f"  — e.g. {', '.join(names)}" if names else ""))
+        lines.append(f"    animate transform/position (not just colour): {moving}/{n}")
+        if tempos:
+            mid = tempos[len(tempos) // 2]
+            lines.append(f"    interaction tempo: {mid}ms typical "
+                         f"(range {tempos[0]}-{tempos[-1]}ms)")
+        eas = sorted({m.easing for m in mots if m.easing})[:3]
+        if eas:
+            lines.append(f"    easing in use: {'; '.join(eas)}")
+        lines.append("    Not measurable from a page: scroll choreography driven by "
+                     "IntersectionObserver or a JS timeline. Tempo and register are "
+                     "evidence; sequence is your decision.")
     lines.append("")
     lines.append("  These are conventions, not requirements. Following one is a choice you")
     lines.append("  should be able to justify; departing from one is also a choice. What you")
