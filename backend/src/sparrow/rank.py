@@ -258,6 +258,20 @@ def register_report(registers: dict[str, object]) -> str:
         lines.append(f"    range {min(vals):.2f}-{max(vals):.2f}, "
                      f"median {sorted(vals)[len(vals)//2]:.2f}")
 
+    grounds = [p for p in registers.values() if getattr(p, "distinct_grounds", None)]
+    if grounds:
+        one = sum(1 for p in grounds if p.distinct_grounds == 1)
+        lines.append("")
+        lines.append("  PAGE GROUND")
+        lines.append(f"    {one}/{len(grounds)} sources use ONE ground for the whole page")
+        for site, p_ in registers.items():
+            if getattr(p_, "distinct_grounds", None):
+                lines.append(f"    {site:<24} {p_.distinct_grounds} ground(s), "
+                             f"{p_.ground_changes} change(s) down the page")
+        if one == len(grounds):
+            lines.append("    None of them alternate. A page banded into alternating "
+                         "blocks reads as separate panels rather than one surface.")
+
     mots = [r.motion for r in registers.values() if getattr(r, "motion", None)]
     if mots:
         ambient = sum(1 for m in mots if m.running > 3)

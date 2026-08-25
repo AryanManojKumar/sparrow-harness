@@ -287,6 +287,23 @@ _PALETTE = r"""
     ink: top(ink, 3),
     accent: accent ? {hex: accent.hex, sat: +accent.s.toFixed(2)} : null,
     ground: hex(px(getComputedStyle(document.body).backgroundColor || '#fff')),
+    ...(() => {
+      // Does this page alternate section grounds, or is it one surface?
+      const secs = [...document.querySelectorAll('section')].filter(s => {
+        const r = s.getBoundingClientRect();
+        return r.height > 200 && r.width > innerWidth * 0.9;
+      });
+      const g = secs.map(s => {
+        let n = s, bg = 'rgba(0, 0, 0, 0)';
+        while (n && /rgba\(0, 0, 0, 0\)/.test(bg)) {
+          bg = getComputedStyle(n).backgroundColor; n = n.parentElement;
+        }
+        return hex(px(bg));
+      });
+      let ch = 0;
+      for (let i = 1; i < g.length; i++) if (g[i] !== g[i - 1]) ch++;
+      return {groundChanges: ch, distinctGrounds: new Set(g).size};
+    })(),
   };
 }
 """
@@ -301,6 +318,8 @@ class Palette:
     ink: list[dict]                   # the most-used text colours
     accent: str | None                # the most-used saturated colour
     dark: bool
+    ground_changes: int = 0           # times the ground changes down the page
+    distinct_grounds: int = 1         # how many grounds the page uses at all
 
     def swatches(self) -> list[str]:
         seen, out = set(), [self.ground]
@@ -440,6 +459,8 @@ def extract(
                 ink=list(pal["ink"]),
                 accent=(pal["accent"] or {}).get("hex"),
                 dark=bool(reg["dark"]),
+                ground_changes=int(pal.get("groundChanges", 0)),
+                distinct_grounds=int(pal.get("distinctGrounds", 1)),
             ),
             motion=Motion(
                 running=int(mot["running"]), ambient=list(mot["ambient"]),

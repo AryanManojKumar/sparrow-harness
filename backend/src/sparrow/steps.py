@@ -159,9 +159,14 @@ def step_sources(run: Run, urls: list[str]) -> Iterator[Event]:
                 target_path=f"src/components/sections/"
                             f"{''.join(w.capitalize() for w in t.replace('-', ' ').split())}.tsx",
                 component_name="".join(w.capitalize() for w in t.replace("-", " ").split()),
-                # Chrome sits on the page ground; content alternates beneath it.
-                ground=Ground.PAGE if t in CHROME else
-                       (Ground.PAGE if content.index(t) % 2 == 0 else Ground.MUTED))
+                # Every section on the page ground by default. Measured: wise,
+                # stripe and linear all use ONE ground for the entire page and
+                # never alternate. Forcing alternation banded our output into
+                # nine visible blocks, which is most of what "it does not flow
+                # like the sources" turned out to mean. If a design direction
+                # wants a ground change it can ask for one; the default no
+                # longer imposes it.
+                ground=Ground.PAGE)
         for i, t in enumerate(sitemap, 1)
     ]
     _save(run, bb)
