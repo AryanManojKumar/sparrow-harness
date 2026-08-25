@@ -89,6 +89,23 @@ class Fidelity:
         return " · ".join(bits)
 
 
+def _as_png(image: bytes) -> bytes:
+    """Whatever the user uploaded, as the one format every path here expects.
+
+    The upload is stored untouched — it is their file — so it may be a JPEG or a
+    WebP. Normalising once, here, means the API contract, the fidelity
+    comparison and the workspace all see the same bytes.
+    """
+    from PIL import Image
+
+    if image[:8] == b"\x89PNG\r\n\x1a\n":
+        return image
+    buf = io.BytesIO()
+    with Image.open(io.BytesIO(image)) as im:
+        im.convert("RGB").save(buf, "PNG")
+    return buf.getvalue()
+
+
 def _words(lines: list[str]) -> set[str]:
     out: set[str] = set()
     for ln in lines:
@@ -134,8 +151,15 @@ class Curator(Agent):
             "truncated at an edge, leave it truncated. Do not add controls that are not "
             "there. Changing what the interface says is a failure, however well it reads."
         )
+        # Sent as a NAMED file, not a bare BytesIO. Without a name the SDK reports
+        # the part as application/octet-stream and the API rejects the whole call
+        # with "unsupported mimetype" — which is what this path did the first time
+        # anything ever reached it. Nothing had, because until the asset gate
+        # existed every image was generated and `restyle` was unreachable code.
         r = OpenAI().images.edit(
-            model=IMAGE_MODEL, image=io.BytesIO(image), prompt=prompt, size=_SIZES[shape]
+            model=IMAGE_MODEL,
+            image=("image.png", io.BytesIO(_as_png(image)), "image/png"),
+            prompt=prompt, size=_SIZES[shape],
         )
         return base64.b64decode(r.data[0].b64_json)
 

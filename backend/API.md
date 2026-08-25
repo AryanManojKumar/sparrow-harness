@@ -16,15 +16,24 @@ not request/response: start it, stream progress, answer gates.
     GET    /projects/{id}/gate         what is being asked, with options
     POST   /projects/{id}/gate         answer it
     GET    /projects/{id}/directions   the design proposals at gate 2
+    GET    /projects/{id}/assets       the per-image plan at the asset gate
+    POST   /projects/{id}/assets/{aid} upload the user's own image (multipart)
     GET    /projects/{id}/preview/*    the built site, served statically
     GET    /projects/{id}/shots/{name} captures
     GET    /health
 
 ## Stages
 
-    brief → [GATE 1] → sources → design → [GATE 2] → assets → build → verify → [GATE 3] → done
+    brief → [GATE 1] → sources → design → [GATE 2] → [ASSET GATE] → assets → build
+          → verify → [GATE 3] → done
 
-Three gates, per CLAUDE.md §8. Everything between them runs without asking.
+Four gates. Each is a decision only a human holds; everything between them runs without
+asking. CLAUDE.md §8's rule is that gates are few, not that they are three — the count
+that matters is "not fifteen", and an approval step that only ever hears yes is what §8
+actually rejects.
+
+The asset gate is the newest and the only one that is not a choice between things the
+system produced. It is the point at which the user's **real material** enters the run.
 
 ## The front of the funnel
 
@@ -180,6 +189,118 @@ POST /projects/{id}/gate   { "choice": 0 }
 
 "Which of these" is answerable by a business owner. "Is this good" is not.
 
+## The asset gate
+
+Every AI-built business site dies on stock imagery. CLAUDE.md §2 makes real material the
+differentiator, and until this gate existed there was no moment in a run at which a user
+could hand the system a file: `curator` read each blueprint's asset briefs and generated
+all of them. `Provenance` carried `user_supplied | restyled | generated` from the start
+and recorded `generated` every time — which is what a missing gate looks like in the data.
+
+The run stops after the design direction is chosen (so the restyle has a design system to
+restyle *to*) and before `assets` runs.
+
+### What the gate asks
+
+```json
+GET /projects/{id}/gate
+{ "awaiting": true, "gate": "gate:assets",
+  "question": "9 image(s) go on this page. For each one: use your own file, have one
+               generated from the description, or leave it out?",
+  "options": [
+    { "asset_id": "product-showcase-1",
+      "section_id": "product-showcase",
+      "brief": "One product capture showing the unified payments control surface…",
+      "prominence": "supporting",
+      "uploaded": false,
+      "choices": [
+        { "choice": "upload",   "label": "Use my own image",
+          "detail": "Restyled to the chosen design direction. Any text it gains that the
+                     original did not have is rejected.",
+          "post_file_to": "/projects/{id}/assets/product-showcase-1" },
+        { "choice": "generate", "label": "Generate one from this description" },
+        { "choice": "skip",     "label": "No image — build the section from type and layout" }
+      ] } ] }
+```
+
+`brief` is the blueprint's own words — show it, because it is what a generated image
+would be made from and what an uploaded one is expected to show. `prominence` is
+`dominant | supporting | thumbnail` and says how large the image lands: a user deciding
+whether to go and find a real screenshot needs to know whether it will be the biggest
+thing on the page or a 200px tile.
+
+The same list is readable on its own at `GET /projects/{id}/assets`, before the gate and
+after it, so the interface never keeps its own copy.
+
+### Answering
+
+**Per asset, not once for the run.** This is the whole point of the gate: a founder has a
+real dashboard screenshot for the hero and nothing at all for the integrations strip. One
+global choice forces them to fabricate the second or lose the first.
+
+```json
+POST /projects/{id}/gate
+{ "assets": { "product-showcase-1": "upload",
+              "feature-grid-1": "generate",
+              "logo-wall-1": "skip", "testimonial-1": "skip" } }
+-> { "stage": "assets", "decisions": { … } }
+```
+
+`choice` is ignored at this gate and `assets` is required. Every asset in the plan must
+appear; a partial answer is a `400` naming the ones still undecided. There is deliberately
+no "do the same for all of them".
+
+### Uploading
+
+```
+POST /projects/{id}/assets/{asset_id}
+Content-Type: multipart/form-data     file=@dashboard.png
+-> { "asset_id": "product-showcase-1", "stored": "product-showcase-1.png",
+     "bytes": 1232923,
+     "next": "answer the asset gate with this asset set to 'upload'" }
+```
+
+PNG, JPEG or WebP, up to 25MB. **Post the file first, then answer the gate.** Answering
+`"upload"` for an asset with no file is a `400`, not a quiet fall back to `generate` — a
+silent fallback is exactly how every site in this category ends up full of pictures nobody
+chose. An upload posted before the gate is answered survives the gate being re-asked, so a
+crash between the two does not lose the file.
+
+### What each choice does
+
+| choice | what runs | recorded provenance |
+|---|---|---|
+| `upload` | the file is restyled to the chosen design system, and the restyle is checked for text fidelity | `restyled`, or `user_supplied` if the check rejects it |
+| `generate` | `curator.generate` from the blueprint's brief — the previous behaviour | `generated` |
+| `skip` | nothing; no asset is recorded and the builder composes the section from type and layout | — |
+
+### The fidelity gate on uploads
+
+Only the upload path is gated, and the asymmetry is deliberate. A generated image invents
+its contents by construction — that is the point, and gating its text would gate the
+mechanism. A restyled image is still a picture of the user's **real product**, so any word
+the model adds is a claim they never made.
+
+Measured in `experiments/image-probe-02`: asked to clean a capture whose copy was truncated
+by a chat widget, the model completed the sentences — "frameworks, adapt", "visibility
+across", "grow with you" — plausibly, well, and entirely invented. The output looked
+flawless.
+
+So both images are transcribed and compared at word level (a restyle legitimately reflows
+text, so line breaks move; a word that was not there before is the defect). A restyle that
+invented words is **discarded in favour of the user's untouched original**, the asset is
+recorded as `user_supplied`, and the reason lands in `Asset.rejected` and in a `blocked`
+event on the stream. Their real screenshot, unstyled, beats a beautiful one that says
+something untrue about their product.
+
+There is one restyle attempt and no retry: the failure mode is the model inventing copy,
+and a second roll of the same prompt is not evidence it will invent less.
+
+### Nothing to decide
+
+If no blueprint asks for imagery, the gate does not stop the run. A project created before
+this gate existed has no plan on disk and generates everything, exactly as it did before.
+
 ## Notes for the frontend
 
 - **SSE, not websockets** — one-way progress is all a run needs.
@@ -200,6 +321,9 @@ POST /projects/{id}/gate   { "choice": 0 }
   the current stage, `advancing`, and the log so far.
 - **A second `/advance` while one is in flight returns 409.** Two generators over the same
   stages write the same files and bill twice, so it is refused rather than queued.
+- **The asset gate answer has a different shape from the others.** Gate 2 takes a
+  `choice`; the asset gate takes an `assets` map and rejects a bare `choice`. Worth a
+  distinct component rather than reusing the gate widget.
 - **A source that will not load is skipped, not fatal.** `extract()` has a 90-second
   wall-clock budget per site; stripe.com intermittently hangs under bot protection rather
   than erroring, and a hung source used to block the whole run silently. The run continues

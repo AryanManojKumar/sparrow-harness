@@ -15,6 +15,8 @@ that works in a browser without a socket.
     GET    /projects/{id}/gate            what is being asked, and the options
     POST   /projects/{id}/gate            answer it
     GET    /projects/{id}/directions      the design proposals at gate 2
+    GET    /projects/{id}/assets          the per-image plan at the asset gate
+    POST   /projects/{id}/assets/{aid}    upload the user's own image (multipart)
     GET    /projects/{id}/preview/*       the built site, served statically
     GET    /projects/{id}/shots/{name}    captures
 """
@@ -26,7 +28,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -57,8 +59,11 @@ app = FastAPI(
         "Builds a business website from a brief and real reference sites.\n\n"
         "A run is not request/response — it takes ~12 minutes and stops twice for a "
         "human. Start it, stream progress, answer the gates.\n\n"
-        "**brief → [GATE 1] → sources → design → [GATE 2] → assets → build → verify "
-        "→ [GATE 3] → done**\n\n"
+        "**brief → [GATE 1] → sources → design → [GATE 2] → [ASSET GATE] → assets "
+        "→ build → verify → [GATE 3] → done**\n\n"
+        "The asset gate is per-image, not per-run: upload your own, generate one, "
+        "or skip it. It is the only point at which the user's real material can "
+        "enter the run.\n\n"
         "A full run costs roughly $1.10. Every event carries its own cost and the "
         "running total."
     ),
@@ -75,6 +80,10 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"],
 )
+
+# Big enough for a 4K dashboard screenshot, small enough that a mistyped upload
+# does not fill the disk. The image model resizes to 1536x1024 anyway.
+MAX_UPLOAD = 25_000_000
 
 # Live runs, by project id. A halted run keeps its place here so the gate answer
 # lands on the same object; losing it costs a re-read of the blackboard, not work.
@@ -138,13 +147,23 @@ class CreateProject(BaseModel):
 
 
 class GateAnswer(BaseModel):
-    """At gate 2 `choice` is a direction index; elsewhere it is approve/revise."""
+    """At gate 2 `choice` is a direction index; elsewhere it is approve/revise.
 
-    choice: str | int
+    At the ASSET gate neither is used: `assets` carries one decision per image.
+    A single `choice` cannot express the answer, and that is the whole point of
+    the gate — a founder has a real dashboard screenshot for the hero and
+    nothing at all for the integrations strip. One global choice would force
+    them to fabricate the second or lose the first.
+    """
+
+    choice: str | int | None = None
     note: str | None = None
+    assets: dict[str, str] | None = None    # asset_id -> upload | generate | skip
 
     model_config = {"json_schema_extra": {"examples": [
         {"choice": 0, "note": "the ledger direction"},
+        {"assets": {"hero-1": "upload", "feature-grid-1": "generate",
+                    "feature-grid-2": "skip"}},
         {"choice": "approve"}]}}
 
 
@@ -159,6 +178,7 @@ def _run_for(pid: str) -> Run:
         Stage.BRIEF: steps.step_brief,
         Stage.SOURCES: lambda r: steps.step_sources(r, urls),
         Stage.DESIGN: steps.step_design,
+        Stage.GATE_ASSETS: steps.step_asset_gate,
         Stage.ASSETS: steps.step_assets,
         Stage.BUILD: steps.step_build,
         Stage.VERIFY: steps.step_verify,
@@ -367,6 +387,14 @@ def answer_gate(pid: str, body: GateAnswer) -> dict[str, Any]:
     run = _run_for(pid)
     if run.pending is None:
         raise HTTPException(409, "no gate is open")
+    if run.pending.gate is Stage.GATE_ASSETS:
+        try:
+            plan = steps.record_asset_decisions(run, body.assets or {})
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        run.resolve({"assets": {a["id"]: a["decision"] for a in plan}})
+        return {"stage": run.stage.value,
+                "decisions": {a["id"]: a["decision"] for a in plan}}
     if run.pending.gate is Stage.GATE_DESIGN:
         # "None of these" sends the run back to DESIGN with the note as guidance,
         # so a rejection produces new directions rather than the same three.
@@ -392,6 +420,53 @@ def directions(pid: str) -> list[dict[str, Any]]:
     if not p.exists():
         raise HTTPException(404, "no directions proposed yet")
     return json.loads(p.read_text())
+
+
+@app.get("/projects/{pid}/assets", tags=["run"],
+         summary="Every image this run needs, and what has been decided for each")
+def asset_plan(pid: str) -> list[dict[str, Any]]:
+    """The per-image plan the asset gate is asking about.
+
+    Available before the gate is answered and after, so an interface can show
+    what was chosen without keeping its own copy.
+    """
+    run = _run_for(pid)
+    plan = steps.load_plan(run)
+    if not plan:
+        raise HTTPException(404, "no asset plan yet — the run has not reached "
+                                 "the asset gate")
+    return plan
+
+
+@app.post("/projects/{pid}/assets/{asset_id}", tags=["run"],
+          summary="Upload the user's own image for one asset")
+async def upload_asset(pid: str, asset_id: str,
+                       file: UploadFile = File(...)) -> dict[str, Any]:
+    """The user's real material, entering the run.
+
+    Post the file FIRST, then answer the gate with `"upload"` for this asset —
+    answering `upload` with no file is refused rather than quietly falling back
+    to a generated image, because a silent fallback is exactly how every site in
+    this category ends up filled with pictures nobody chose.
+
+    The file is stored untouched. `step_assets` restyles a COPY of it to the
+    chosen design direction and checks the restyle for text fidelity; if the
+    model invented words, the restyle is discarded and this original ships
+    instead. CLAUDE.md §7 — it is still a picture of their real product, so text
+    it gains is a claim they never made.
+    """
+    run = _run_for(pid)
+    data = await file.read()
+    if not data:
+        raise HTTPException(400, "empty upload")
+    if len(data) > MAX_UPLOAD:
+        raise HTTPException(413, f"image is larger than {MAX_UPLOAD // 1_000_000}MB")
+    try:
+        entry = steps.record_upload(run, asset_id, file.filename or "upload.png", data)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"asset_id": asset_id, "stored": entry["upload"], "bytes": len(data),
+            "next": "answer the asset gate with this asset set to 'upload'"}
 
 
 @app.get("/projects/{pid}/preview/{path:path}", tags=["artifacts"], summary="The built site, static — drop in an iframe")
