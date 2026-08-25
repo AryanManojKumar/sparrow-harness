@@ -240,6 +240,24 @@ def register_report(registers: dict[str, object]) -> str:
     lines.append(f"  pages showing code:    {code}/{n}")
     lines.append(f"  large product images:  {imgs:.0f} per page on average")
 
+    # Saturation was measured and discarded. Every palette produced before this
+    # came back near-grey (mean chroma 0.05) against sources carrying brand
+    # colours at 0.82-1.00 saturation. The agent could not match a level it was
+    # never shown.
+    accents = [(s, p.accent) for s, p in registers.items() if getattr(p, "accent", None)]
+    if accents:
+        def sat(h: str) -> float:
+            r, g, b = (int(h[i:i + 2], 16) for i in (1, 3, 5))
+            M, m = max(r, g, b), min(r, g, b)
+            return 0.0 if M == 0 else (M - m) / M
+        lines.append("")
+        lines.append("  BRAND COLOUR SATURATION IN THIS CATEGORY")
+        for site, hexv in accents:
+            lines.append(f"    {site:<24} {hexv}   saturation {sat(hexv):.2f}")
+        vals = [sat(h) for _, h in accents]
+        lines.append(f"    range {min(vals):.2f}-{max(vals):.2f}, "
+                     f"median {sorted(vals)[len(vals)//2]:.2f}")
+
     mots = [r.motion for r in registers.values() if getattr(r, "motion", None)]
     if mots:
         ambient = sum(1 for m in mots if m.running > 3)

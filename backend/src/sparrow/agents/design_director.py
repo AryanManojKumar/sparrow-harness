@@ -58,8 +58,14 @@ there for your ideas rather than to a palette generator.
 ## The signature
 
 Name the single element this page will be remembered by, and make it specific to this
-subject. Everything around it stays quiet and disciplined. Spend your boldness in one
-place; cut any decoration that does not serve the brief.
+subject.
+
+How much expression surrounds it is NOT your preference to set — it is read from the
+sources. The register report measures what this category actually does: how saturated its
+brand colours are, whether its pages move, whether they carry video or canvas. Match that
+level. A category that is loud gets a loud page; a category that is quiet gets a quiet
+one. Cut decoration that does not serve the brief, and do not cut character the category
+plainly has.
 
 ## Typography carries the personality
 
@@ -102,8 +108,9 @@ excludes, and it is right not to.
   SpotlightCard a card lit by a cursor-following highlight
   DotGrid       an interactive dot field reacting to the pointer
 
-Decide deliberately. A restrained direction that bans ambient motion is a legitimate
-choice, and so is a direction built around one of these. What is not legitimate is
+Decide from the register, not from preference. If the sources move, this page moves; if
+they do not, it does not. Banning a technique the category plainly uses needs the same
+justification as adopting one it does not. What is not legitimate is
 excluding them without noticing you did — a motion spec reading "no ambient loops, no
 cursor theater" rules out half this list, so write that only if you mean it.
 
@@ -138,8 +145,9 @@ So, as floors rather than taste:
   and it renders as tinted grey.
 - at most **three** colours above L=0.92. Stacked near-white surfaces merge into each other.
 
-A restrained palette is a legitimate choice. One whose grounds are indistinguishable is
-not restrained, it is invisible.
+These are visibility floors, not a target. How saturated to be above them comes from the
+register's measurement of this category, never from preference. A palette whose grounds
+are indistinguishable is invisible in any category.
 
 ## Scales are closed
 
