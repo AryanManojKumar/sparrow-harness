@@ -91,6 +91,13 @@ def step_sources(run: Run, urls: list[str]) -> Iterator[Event]:
     if len(labelled) < 2:
         raise RuntimeError("need at least two readable sources to rank")
 
+    # Keep the measured palettes so the design gate can show them without refetching.
+    from dataclasses import asdict
+    pals = {s: asdict(r.palette) for s, r in registers.items()
+            if getattr(r, "palette", None)}
+    if pals:
+        (out_dir / "palettes.json").write_text(json.dumps(pals, indent=2))
+
     comm = commonality(labelled)
     primary, why, usage = pick_primary(provider, bb.brief, labelled)
     yield Event(Stage.SOURCES, "progress", f"primary reference: {primary}",
@@ -172,6 +179,17 @@ def step_design(run: Run, alternatives: int = 3) -> Iterator[Event]:
 
     bb = _bb(run)
     sources = (run.dir / "sources" / "design-brief.md").read_text()
+
+    # If the last gate was answered "none of these", the note steers this pass.
+    redirect = run.dir / "redirect.txt"
+    if redirect.exists():
+        sources += ("\n\n<the_user_rejected_the_previous_directions>\n"
+                    f"They asked for: {redirect.read_text().strip()}\n"
+                    "Take that seriously and literally. It is a correction to the "
+                    "direction, not a nuance to blend in.\n"
+                    "</the_user_rejected_the_previous_directions>")
+        redirect.unlink()
+
     dd = DesignDirector()
     proposals, seen = [], []
     for i in range(alternatives):
@@ -186,13 +204,52 @@ def step_design(run: Run, alternatives: int = 3) -> Iterator[Event]:
                     cost=u.cost(dd.provider.name, dd.tier))
 
     (run.dir / "directions.json").write_text(json.dumps(proposals, indent=2))
+
+    # Render each direction, and what the sources are actually painted with.
+    # This gate fixes every visual decision downstream, and it was being asked in
+    # language only the design agent understands — "a perforated remittance-advice
+    # ribbon carrying real currency pairs". §8 wants concrete options a business
+    # owner can answer, and swatches are answerable where that sentence is not.
+    from sparrow.specimen import direction_html, render, sources_html
+
+    html = {f"direction-{i}": direction_html(seen[i], i) for i in range(len(seen))}
+    pals = {s: r.palette for s, r in _source_palettes(run).items()}
+    if pals:
+        html["sources"] = sources_html(pals)
+    for r in render(html, run.dir / "specimens"):
+        yield Event(Stage.DESIGN, "progress", f"specimen: {r.name}")
+
+    prefix = f"/projects/{run.project_id}/specimens"
+    dark_count = sum(1 for p in pals.values() if p.dark)
     raise Halt(GateRequest(
         Stage.GATE_DESIGN,
-        "Which direction should the site take?",
-        options=[{k: p[k] for k in ("index", "signature", "atmosphere", "type")}
-                 for p in proposals],
-        artifacts=[str(run.dir / "directions.json")],
+        "Which direction should the site take?"
+        + (f"  ({dark_count} of {len(pals)} of your reference sites use a dark ground.)"
+           if pals else ""),
+        options=[
+            *[{**{k: p[k] for k in ("index", "signature", "atmosphere", "type")},
+               "specimen": f"{prefix}/direction-{p['index']}.png"}
+              for p in proposals],
+            {"index": -1, "choice": "other",
+             "signature": "None of these — describe what you want instead",
+             "atmosphere": "Say what to change (darker, warmer, bolder, less green) "
+                           "and three new directions are proposed against it.",
+             "type": "", "specimen": None},
+        ],
+        artifacts=[str(run.dir / "specimens"),
+                   *( [f"{prefix}/sources.png"] if pals else [] )],
     ))
+
+
+def _source_palettes(run: Run) -> dict:
+    """Re-read the palettes captured during SOURCES, without re-fetching."""
+    p = run.dir / "sources" / "palettes.json"
+    if not p.exists():
+        return {}
+    from sparrow.scout import Palette
+
+    return {site: type("R", (), {"palette": Palette(**d)})()
+            for site, d in json.loads(p.read_text()).items()}
 
 
 def adopt_direction(run: Run, index: int) -> None:

@@ -239,6 +239,80 @@ _REGISTER = r"""
 """
 
 
+# The actual colours a source paints with, weighted by how much of the page each
+# covers. Counted from computed styles rather than guessed from a screenshot: a
+# vision model returns a near-miss hex, and a near-miss is exactly the drift the
+# design system exists to prevent.
+_PALETTE = r"""
+() => {
+  const px = (c) => { const cv=document.createElement('canvas'); cv.width=cv.height=1;
+    const x=cv.getContext('2d',{willReadFrequently:true});
+    x.fillStyle='#fff'; x.fillRect(0,0,1,1); x.fillStyle=c; x.fillRect(0,0,1,1);
+    const d=x.getImageData(0,0,1,1).data; return [d[0],d[1],d[2]]; };
+  const hex = ([r,g,b]) => '#' + [r,g,b].map(v=>v.toString(16).padStart(2,'0')).join('');
+  const lum = ([r,g,b]) => (0.2126*r + 0.7152*g + 0.0722*b) / 255;
+  const sat = ([r,g,b]) => { const M=Math.max(r,g,b), m=Math.min(r,g,b);
+    return M === 0 ? 0 : (M-m)/M; };
+
+  const area = {}, ink = {};
+  for (const el of document.querySelectorAll('body *')) {
+    const r = el.getBoundingClientRect();
+    if (r.width < 4 || r.height < 4) continue;
+    const cs = getComputedStyle(el);
+    const bg = cs.backgroundColor;
+    if (bg && !/rgba\(0, 0, 0, 0\)/.test(bg)) {
+      const k = hex(px(bg));
+      area[k] = (area[k] || 0) + r.width * r.height;
+    }
+    const t = (el.textContent || '').trim();
+    if (t && el.children.length === 0) {
+      const k = hex(px(cs.color));
+      ink[k] = (ink[k] || 0) + t.length;
+    }
+  }
+  const top = (o, n) => Object.entries(o).sort((a,b)=>b[1]-a[1]).slice(0, n)
+    .map(([k,v]) => ({hex: k, weight: Math.round(v)}));
+
+  const surfaces = top(area, 6);
+  const total = surfaces.reduce((a,c)=>a+c.weight, 0) || 1;
+  // The brand colour: the most-used surface that is actually saturated.
+  const accent = Object.entries(area)
+    .map(([k,v]) => ({hex:k, weight:v, s: sat(px(k)), l: lum(px(k))}))
+    .filter(c => c.s > 0.25 && c.l > 0.06 && c.l < 0.94)
+    .sort((a,b)=>b.weight-a.weight)[0] || null;
+
+  return {
+    surfaces: surfaces.map(c => ({...c, share: +(c.weight/total).toFixed(3),
+                                  lum: +lum(px(c.hex)).toFixed(3)})),
+    ink: top(ink, 3),
+    accent: accent ? {hex: accent.hex, sat: +accent.s.toFixed(2)} : null,
+    ground: hex(px(getComputedStyle(document.body).backgroundColor || '#fff')),
+  };
+}
+"""
+
+
+@dataclass
+class Palette:
+    """What a source site is actually painted with."""
+
+    ground: str                       # the page background, as hex
+    surfaces: list[dict]              # the biggest painted areas, by share
+    ink: list[dict]                   # the most-used text colours
+    accent: str | None                # the most-used saturated colour
+    dark: bool
+
+    def swatches(self) -> list[str]:
+        seen, out = set(), [self.ground]
+        seen.add(self.ground)
+        for c in self.surfaces:
+            if c["hex"] not in seen and len(out) < 5:
+                out.append(c["hex"]); seen.add(c["hex"])
+        if self.accent and self.accent not in seen:
+            out.append(self.accent)
+        return out
+
+
 @dataclass
 class Motion:
     """Countable facts about how a category moves.
@@ -273,6 +347,7 @@ class Register:
     code_blocks: int
     product_images: int
     motion: Motion | None = None
+    palette: Palette | None = None
 
 
 @dataclass
@@ -350,6 +425,7 @@ def extract(
             page_h = page.evaluate("document.body.scrollHeight")
             semantic = page.evaluate("document.querySelectorAll('section').length")
             mot = page.evaluate(_MOTION)
+            pal = page.evaluate(_PALETTE)
             reg = page.evaluate(_REGISTER)
         except Exception as e:
             browser.close()
@@ -359,6 +435,12 @@ def extract(
             dark=bool(reg["dark"]), dark_share=float(reg["darkShare"]),
             video=int(reg["video"]), canvas=int(reg["canvas"]),
             code_blocks=int(reg["codeBlocks"]), product_images=int(reg["productImages"]),
+            palette=Palette(
+                ground=str(pal["ground"]), surfaces=list(pal["surfaces"]),
+                ink=list(pal["ink"]),
+                accent=(pal["accent"] or {}).get("hex"),
+                dark=bool(reg["dark"]),
+            ),
             motion=Motion(
                 running=int(mot["running"]), ambient=list(mot["ambient"]),
                 tempo_ms=int(mot["tempoMs"]), easing=str(mot["easing"]),

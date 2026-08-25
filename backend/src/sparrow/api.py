@@ -360,10 +360,20 @@ def answer_gate(pid: str, body: GateAnswer) -> dict[str, Any]:
     if run.pending is None:
         raise HTTPException(409, "no gate is open")
     if run.pending.gate is Stage.GATE_DESIGN:
+        # "None of these" sends the run back to DESIGN with the note as guidance,
+        # so a rejection produces new directions rather than the same three.
+        if str(body.choice) in {"other", "-1"}:
+            if not (body.note or "").strip():
+                raise HTTPException(
+                    400, "say what to change — 'darker', 'warmer', 'less green'")
+            (PROJECTS / pid / "redirect.txt").write_text(body.note.strip())
+            run.pending = None
+            run.stage = Stage.DESIGN
+            return {"stage": run.stage.value, "regenerating": True}
         try:
             steps.adopt_direction(run, int(body.choice))
         except (ValueError, TypeError, IndexError):
-            raise HTTPException(400, "choice must be a direction index")
+            raise HTTPException(400, "choice must be a direction index, or 'other'")
     run.resolve({"choice": body.choice, "note": body.note})
     return {"stage": run.stage.value}
 
@@ -408,6 +418,16 @@ def preview(pid: str, path: str = "") -> Any:
     html = re.sub(r'(\s(?:href|src|action|poster)=")/(?!/)', rf'\1{prefix}/', html)
     html = re.sub(r'(\ssrcset=")/(?!/)', rf'\1{prefix}/', html)
     return HTMLResponse(html)
+
+
+@app.get("/projects/{pid}/specimens/{name}", tags=["artifacts"],
+         summary="A rendered design direction, or the source palettes")
+def specimen(pid: str, name: str) -> FileResponse:
+    base = (PROJECTS / pid / "specimens").resolve()
+    target = (base / name).resolve()
+    if not str(target).startswith(str(base)) or not target.exists():
+        raise HTTPException(404, name)
+    return FileResponse(target)
 
 
 @app.get("/projects/{pid}/shots/{name}", tags=["artifacts"], summary="A capture")

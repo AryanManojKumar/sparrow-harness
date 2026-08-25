@@ -118,6 +118,38 @@ es.addEventListener("end", () => es.close());
 The stream ends when the run hits a gate, finishes, or fails. On `awaiting`, call
 `GET /gate` for the question and options.
 
+## Gate 2 shows pictures, not prose
+
+The gate that fixes every visual decision downstream was asking things like *"a perforated
+remittance-advice ribbon carrying real currency pairs"*. Nobody outside the design agent
+can answer that. §8 requires concrete options a business owner can choose between.
+
+Each direction is now **rendered**: its real palette as named swatches, its real typefaces
+at real sizes, its buttons in its own colours, its signature in plain words. Alongside
+them, a card showing **what the reference sites are actually painted with** — measured
+from computed styles, not guessed from a screenshot.
+
+    GET /projects/{id}/specimens/direction-0.png
+    GET /projects/{id}/specimens/sources.png
+
+The source card answers the real question behind light-versus-dark: *do you want what your
+competitors have, or deliberately not.* Its subtitle counts it — "2 of 3 use a dark
+ground" — so a user who wants the opposite can say so.
+
+Every option carries a `specimen` URL. Show the images, not the text.
+
+### "None of these"
+
+The options include one with `choice: "other"`. Answer it with a `note` and the run goes
+back to DESIGN and proposes three **new** directions against that instruction:
+
+```json
+POST /projects/{id}/gate  { "choice": "other", "note": "darker, not beige" }
+```
+
+The note is passed in as a correction to be taken literally, not a nuance to blend. A
+`note` is required — without one there is nothing to steer by.
+
 ## Gate 2 is a choice, not an approval
 
 The design agent is **deterministic** — three runs on identical inputs produce
