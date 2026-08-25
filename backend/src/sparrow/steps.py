@@ -11,6 +11,7 @@ rather than living in whoever is typing the commands.
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 from collections.abc import Iterator
@@ -166,13 +167,47 @@ def step_design(run: Run, alternatives: int = 3) -> Iterator[Event]:
 
 
 def adopt_direction(run: Run, index: int) -> None:
-    """Write the chosen direction onto the blackboard and prepare the workspace."""
+    """Write the chosen direction onto the blackboard AND into the workspace.
+
+    Writing it to the blackboard alone is what the first real run did, and the
+    design system then never reached the files: no tokens in globals.css, no font
+    families bound in layout.tsx. Adopting a direction has to mean both.
+    """
     from sparrow.blackboard.schema import DesignSystem
 
     proposals = json.loads((run.dir / "directions.json").read_text())
     bb = _bb(run)
     bb.design_system = DesignSystem.model_validate(proposals[index]["design_system"])
     _save(run, bb)
+    apply_design_system(run, bb)
+
+
+def apply_design_system(run: Run, bb: Blackboard) -> None:
+    """Render the design system into globals.css and bind its fonts in layout.tsx."""
+    from sparrow.render.tokens import apply_to_stylesheet, font_imports
+
+    ws = run.workspace
+    css_path = ws / "src/app/globals.css"
+    css_path.write_text(apply_to_stylesheet(css_path.read_text(), bb.design_system))
+
+    imp, consts, rest = font_imports(bb.design_system)
+    cls, theme = rest.split("|||")
+    layout = ws / "src/app/layout.tsx"
+    src = layout.read_text()
+    src = re.sub(r'import \{[^}]*\} from "next/font/google";\n', "", src)
+    src = re.sub(r"const \w+ = \w+\(\s*\{\s*subsets.*?\}\s*\);\n", "", src, flags=re.S)
+    src = src.replace('import "./globals.css";', f'import "./globals.css";\n{imp}\n{consts}')
+    src = re.sub(r"\s*// Font families are bound[^\n]*\n", "\n    ", src)
+    src = re.sub(r'<html lang="en"[^>]*>',
+                 f'<html lang="en" className={{cn("font-body", `{cls}`)}}>', src)
+    if "@/lib/utils" not in src:
+        src = src.replace('import "./globals.css";',
+                          'import "./globals.css";\nimport { cn } from "@/lib/utils";')
+    layout.write_text(src)
+
+    css = css_path.read_text()
+    css = re.sub(r"\n *--font-(display|body|mono): [^;]+;", "", css)
+    css_path.write_text(css.replace("@theme inline {", f"@theme inline {{\n{theme}"))
 
 
 # ------------------------------------------------------------------ build
@@ -250,11 +285,21 @@ def step_verify(run: Run) -> Iterator[Event]:
     from sparrow.capture import inspect_page, serve
 
     bb = _bb(run)
+    out = run.workspace / "out"
+    if not (out / "index.html").exists():
+        # The first real run reported "0 drift findings, 0 visual defects" against
+        # an export that did not exist: inspect_page served an empty directory,
+        # found no sections, and every check passed vacuously. A verification that
+        # cannot fail is worse than none.
+        raise RuntimeError(
+            "no static export at workspace/out — the build did not complete, so "
+            "there is nothing to verify. Check the build stage."
+        )
     findings = audit_dir(run.workspace / "src/components/sections", bb.design_system)
     yield Event(Stage.VERIFY, "progress", summarise(findings).splitlines()[0])
 
     blueprints = load_dir(run.dir / "blueprints")
-    with serve(run.workspace / "out", port=4600) as url:
+    with serve(out, port=4600) as url:
         reports = inspect_page(url, run.dir / "shots" / "sections")
     page_level = deterministic_defects(reports)
     yield Event(Stage.VERIFY, "progress",

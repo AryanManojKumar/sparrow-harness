@@ -12,7 +12,7 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
-    {/* families are bound by `sparrow tokens` from the design system */}
+    // Font families are bound by `sparrow tokens` from the design system.
     <html lang="en">
       <body>{children}</body>
     </html>
