@@ -6,7 +6,6 @@ import { AlertTriangle, Check, CircleDashed, Loader2 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import type { Direction, GateInfo, RunEvent } from "@/lib/api";
-import type { Source } from "@/lib/sources";
 import { SparrowMark } from "@/components/sparrow-mark";
 import { SourceCard } from "@/components/source-card";
 import { Button } from "@/components/ui/button";
@@ -59,7 +58,6 @@ function domainOf(url: string): string {
 export function BuildFeed({
   prompt,
   urls,
-  source,
   phase,
   events,
   spent,
@@ -70,7 +68,6 @@ export function BuildFeed({
 }: {
   prompt: string;
   urls: string[];
-  source: Source | null;
   phase: "loading" | "interview" | "create" | "run" | "gate" | "done" | "error";
   events: RunEvent[];
   spent: number;
@@ -101,13 +98,6 @@ export function BuildFeed({
         <div className="mb-2 rounded-xl bg-secondary/60 px-3.5 py-2.5 text-sm text-foreground">
           {prompt}
         </div>
-
-        {source && (
-          <div className="mb-4">
-            <p className="mb-1.5 text-xs font-medium text-muted-foreground">Inspiration</p>
-            <SourceCard source={source} />
-          </div>
-        )}
 
         {urls.length > 0 && (
           <div className="mb-4">

@@ -7,12 +7,11 @@ import { ArrowUp, Loader2, Mic } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { suggest, type Suggestion } from "@/lib/suggest";
-import { sourceFor, type Source } from "@/lib/sources";
 import { slugify } from "@/lib/api";
+import { extractUrls, isHttpUrl } from "@/lib/urls";
 import { SparrowMark } from "@/components/sparrow-mark";
-import { SourceCard } from "@/components/source-card";
+import { ReferenceSiteRow } from "@/components/reference-site-row";
 import { Textarea } from "@/components/ui/textarea";
-import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 
 // The scout stage needs at least two readable reference sites to rank
@@ -29,7 +28,6 @@ const MIN_CHARS = 8;
 // call is a real LLM request (~$, ~5-6s), not worth spending on a half-typed
 // idea that's about to change anyway.
 const DEBOUNCE_MS = 900;
-const ATTACH_MS = 550;
 
 export function PromptConsole() {
   const router = useRouter();
@@ -39,18 +37,19 @@ export function PromptConsole() {
   const [activeIndex, setActiveIndex] = useState(-1);
   const [isSuggesting, setIsSuggesting] = useState(false);
   const [isDebouncing, setIsDebouncing] = useState(false);
-  const [source, setSource] = useState<Source | null>(null);
-  const [isAttaching, setIsAttaching] = useState(false);
   const [urls, setUrls] = useState<string[]>(DEFAULT_URLS);
   const [urlError, setUrlError] = useState<string | null>(null);
   const [isStarting, setIsStarting] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const attachTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Set right before a suggestion writes `value` programmatically, so the
   // effect below skips the /suggest call that text change would otherwise
   // trigger — the text just came from the API, asking it again is wasted.
   const skipFetchRef = useRef(false);
+  // URLs the user explicitly removed. Without this, a URL still sitting in
+  // the prompt text gets re-added by the extractor on the very next
+  // keystroke, so the remove button appears not to work.
+  const dismissedRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     abortRef.current?.abort();
@@ -100,48 +99,50 @@ export function PromptConsole() {
     };
   }, [value]);
 
+  /** Pull any URL in the prompt into the reference list, minus dismissed ones. */
+  function absorbUrls(text: string) {
+    const found = extractUrls(text).filter(
+      (u) => !dismissedRef.current.has(u.toLowerCase())
+    );
+    if (found.length === 0) return;
+    setUrls((prev) => {
+      const existing = new Set(prev.map((u) => u.trim().toLowerCase()));
+      const additions = found.filter((u) => !existing.has(u.toLowerCase()));
+      if (additions.length === 0) return prev;
+      const withoutEmpty = prev.filter((u) => u.trim() !== "");
+      return [...withoutEmpty, ...additions];
+    });
+  }
+
   function handleChange(next: string) {
     setValue(next);
     if (next.length > 0 && !hasTyped) setHasTyped(true);
+    absorbUrls(next);
+  }
 
-    // A manual edit means the text no longer matches what the attached
-    // reference was picked for — drop it rather than show a stale citation.
-    if (source || isAttaching) {
-      if (attachTimerRef.current) clearTimeout(attachTimerRef.current);
-      setIsAttaching(false);
-      setSource(null);
-    }
+  function removeUrl(index: number) {
+    setUrls((prev) => {
+      const target = prev[index]?.trim().toLowerCase();
+      if (target) dismissedRef.current.add(target);
+      return prev.filter((_, i) => i !== index);
+    });
+    setUrlError(null);
   }
 
   function acceptSuggestion(s: Suggestion) {
     skipFetchRef.current = true;
-    setValue((prev) => {
-      const trimmed = prev.trim();
-      // The suggestion already restates the query as its own prefix (the
-      // backend elaborates on what was typed, it doesn't hand back a bare
-      // continuation) — appending would duplicate it. Replace whenever the
-      // suggestion already contains what's typed so far; only append for
-      // the case where it's a genuine continuation.
-      const startsSame = trimmed.length > 0 && s.text.toLowerCase().startsWith(trimmed.toLowerCase());
-      if (startsSame || trimmed.length === 0) {
-        return s.text.replace(/^a /, "").replace(/^./, (c) => c.toUpperCase());
-      }
-      return /\b(a|an|the)\s*$/i.test(trimmed) ? s.text : `${trimmed} ${s.text}`;
-    });
+    // Every suggestion is a complete, independent elaboration of the idea
+    // (the backend always returns a full restated prompt, never a bare
+    // continuation) — so accepting one replaces the draft outright. Trying
+    // to detect "is this a continuation" and append was the bug: the
+    // suggestion restates the opening in its own words often enough that
+    // heuristic produced visible duplicates instead of catching them.
+    const next = s.text.replace(/^a /i, "").replace(/^./, (c) => c.toUpperCase());
+    setValue(next);
     setSuggestions([]);
     setActiveIndex(-1);
     textareaRef.current?.focus();
-
-    // Attaching the reference is treated as its own brief load — Send stays
-    // disabled until it resolves, same as waiting on any other attachment.
-    if (attachTimerRef.current) clearTimeout(attachTimerRef.current);
-    setSource(null);
-    setIsAttaching(true);
-    const picked = sourceFor(s);
-    attachTimerRef.current = setTimeout(() => {
-      setSource(picked);
-      setIsAttaching(false);
-    }, ATTACH_MS);
+    absorbUrls(next);
   }
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
@@ -164,10 +165,10 @@ export function PromptConsole() {
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!value.trim() || isAttaching || isDebouncing || isSuggesting || isStarting) return;
+    if (!value.trim() || isDebouncing || isSuggesting || isStarting) return;
 
     const cleanUrls = urls.map((u) => u.trim()).filter(Boolean);
-    if (cleanUrls.length < 2 || cleanUrls.some((u) => !/^https?:\/\/.+/.test(u))) {
+    if (cleanUrls.length < 2 || cleanUrls.some((u) => !isHttpUrl(u))) {
       setUrlError("Two full URLs (https://…) are needed to start a real run.");
       return;
     }
@@ -177,11 +178,11 @@ export function PromptConsole() {
     // The actual interview + project-creation + first run leg happen on the
     // /build screen, where progress is visible — this just hands off what
     // it collected. sessionStorage rather than the query string because a
-    // brief + two reference URLs is bigger than a URL comfortably carries.
+    // brief plus several reference URLs is bigger than a URL comfortably carries.
     const projectId = slugify(value.trim());
     sessionStorage.setItem(
       `sparrow:${projectId}`,
-      JSON.stringify({ prompt: value.trim(), urls: cleanUrls, source })
+      JSON.stringify({ prompt: value.trim(), urls: cleanUrls })
     );
     router.push(`/build?id=${projectId}`);
   }
@@ -240,7 +241,7 @@ export function PromptConsole() {
               <Button
                 type="submit"
                 size="icon"
-                disabled={!value.trim() || isAttaching || isDebouncing || isSuggesting || isStarting}
+                disabled={!value.trim() || isDebouncing || isSuggesting || isStarting}
                 aria-label="Start"
               >
                 {isStarting ? <Loader2 className="animate-spin" /> : <ArrowUp />}
@@ -284,46 +285,35 @@ export function PromptConsole() {
           </div>
         </div>
 
-        {/* The reference an accepted suggestion drew from — attaches after a
-            short beat (mocked here; a real lookup later), and is what Send
-            waits on. */}
-        {(source || isAttaching) && (
-          <div className="mt-3">
-            {isAttaching ? (
-              <div className="flex items-center gap-2 rounded-xl border border-dashed border-border px-3 py-2.5 text-xs text-muted-foreground">
-                <Loader2 className="size-3.5 animate-spin" />
-                Attaching reference…
-              </div>
-            ) : (
-              source && <SourceCard source={source} onRemove={() => setSource(null)} />
-            )}
-          </div>
-        )}
-
         {/* Scout needs two readable reference sites to rank against — skeleton,
-            rhythm, section order (CLAUDE.md §5). Not the same thing as the
-            citation above: that's where a suggestion's idea came from, this
-            is what the design agent will actually build against. */}
+            rhythm, section order (CLAUDE.md §5). Any URL typed into the prompt
+            above lands here automatically; removing one keeps it removed. */}
         <div className="mt-3 rounded-xl border border-border bg-card/40 p-3">
           <p className="mb-2 text-xs font-medium text-muted-foreground">
             Reference sites — two needed to design against
           </p>
           <div className="flex flex-col gap-2">
             {urls.map((u, i) => (
-              <Input
+              <ReferenceSiteRow
                 key={i}
                 value={u}
-                onChange={(e) => {
-                  const next = [...urls];
-                  next[i] = e.target.value;
-                  setUrls(next);
+                onChange={(next) => {
+                  const nextUrls = [...urls];
+                  nextUrls[i] = next;
+                  setUrls(nextUrls);
                   setUrlError(null);
                 }}
-                placeholder="https://…"
-                className="h-8 text-sm"
+                onRemove={() => removeUrl(i)}
               />
             ))}
           </div>
+          <button
+            type="button"
+            onClick={() => setUrls((prev) => [...prev, ""])}
+            className="mt-2 text-xs font-medium text-muted-foreground hover:text-foreground"
+          >
+            + Add another site
+          </button>
           {urlError && <p className="mt-2 text-xs text-destructive">{urlError}</p>}
         </div>
       </form>

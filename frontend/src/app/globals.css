@@ -66,17 +66,26 @@
   }
 }
 
-/* Cloud-field backdrop — layered radial gradients, no image asset. Clouds sit
- * in the top third and fade to near-black below, so the page reads as dark
- * sky rather than an evenly-lit gradient panel. */
+/* Backdrop. Base near-black, plus a broad colour wash at the top that the
+ * SVG cloud layer (components/cloud-field.tsx) sits inside — the wash gives
+ * the clouds something to be lit by, the noise gives them shape. */
 .console-sky {
   position: relative;
   background-color: var(--background);
   background-image:
-    radial-gradient(ellipse 55% 32% at 18% 8%, oklch(0.22 0.016 260 / 50%), transparent 60%),
-    radial-gradient(ellipse 45% 28% at 78% 4%, oklch(0.19 0.02 250 / 40%), transparent 60%),
-    radial-gradient(ellipse 65% 38% at 50% 0%, oklch(0.16 0.012 260 / 55%), transparent 65%);
+    radial-gradient(ellipse 70% 45% at 22% 0%, oklch(0.30 0.045 275 / 55%), transparent 62%),
+    radial-gradient(ellipse 60% 40% at 80% 2%, oklch(0.26 0.05 255 / 48%), transparent 62%),
+    radial-gradient(ellipse 100% 55% at 50% -8%, oklch(0.24 0.035 265 / 60%), transparent 70%);
   background-repeat: no-repeat;
+}
+
+.console-clouds {
+  position: fixed;
+  inset: 0 0 auto 0;
+  height: 78vh;
+  pointer-events: none;
+  z-index: -2;
+  mix-blend-mode: screen;
 }
 
 /* Sparse starfield — a handful of soft points, not a galaxy. Two tiled
@@ -95,30 +104,29 @@
   position: absolute;
   inset: 0;
   background-repeat: repeat;
-  opacity: 0.5;
 }
 
 .console-stars::before {
   background-image:
-    radial-gradient(1px 1px at 12% 22%, oklch(0.95 0 0 / 90%), transparent 100%),
-    radial-gradient(1px 1px at 68% 12%, oklch(0.95 0 0 / 75%), transparent 100%),
-    radial-gradient(1.2px 1.2px at 40% 48%, oklch(0.95 0 0 / 85%), transparent 100%),
-    radial-gradient(1px 1px at 85% 38%, oklch(0.95 0 0 / 70%), transparent 100%),
-    radial-gradient(1px 1px at 25% 68%, oklch(0.95 0 0 / 65%), transparent 100%),
-    radial-gradient(1.2px 1.2px at 92% 78%, oklch(0.95 0 0 / 80%), transparent 100%),
-    radial-gradient(1px 1px at 55% 85%, oklch(0.95 0 0 / 60%), transparent 100%);
-  background-size: 560px 560px;
+    radial-gradient(1.6px 1.6px at 12% 22%, oklch(1 0 0 / 100%), transparent 100%),
+    radial-gradient(1.2px 1.2px at 68% 12%, oklch(1 0 0 / 90%), transparent 100%),
+    radial-gradient(1.8px 1.8px at 40% 48%, oklch(1 0 0 / 100%), transparent 100%),
+    radial-gradient(1.2px 1.2px at 85% 38%, oklch(1 0 0 / 85%), transparent 100%),
+    radial-gradient(1.4px 1.4px at 25% 68%, oklch(1 0 0 / 80%), transparent 100%),
+    radial-gradient(1.7px 1.7px at 92% 78%, oklch(1 0 0 / 95%), transparent 100%),
+    radial-gradient(1.2px 1.2px at 55% 85%, oklch(1 0 0 / 75%), transparent 100%);
+  background-size: 620px 620px;
   animation: star-twinkle 7s ease-in-out infinite;
 }
 
 .console-stars::after {
   background-image:
-    radial-gradient(1px 1px at 30% 10%, oklch(0.9 0 0 / 55%), transparent 100%),
-    radial-gradient(1px 1px at 60% 30%, oklch(0.9 0 0 / 60%), transparent 100%),
-    radial-gradient(1px 1px at 8% 55%, oklch(0.9 0 0 / 50%), transparent 100%),
-    radial-gradient(1px 1px at 78% 62%, oklch(0.9 0 0 / 55%), transparent 100%),
-    radial-gradient(1px 1px at 45% 90%, oklch(0.9 0 0 / 45%), transparent 100%);
-  background-size: 420px 420px;
+    radial-gradient(1.1px 1.1px at 30% 10%, oklch(0.95 0.02 265 / 75%), transparent 100%),
+    radial-gradient(1.3px 1.3px at 60% 30%, oklch(1 0 0 / 80%), transparent 100%),
+    radial-gradient(1px 1px at 8% 55%, oklch(0.95 0.02 265 / 65%), transparent 100%),
+    radial-gradient(1.3px 1.3px at 78% 62%, oklch(1 0 0 / 75%), transparent 100%),
+    radial-gradient(1px 1px at 45% 90%, oklch(0.95 0.02 265 / 60%), transparent 100%);
+  background-size: 460px 460px;
   animation: star-twinkle 9s ease-in-out infinite reverse;
   animation-delay: -3s;
 }
@@ -126,10 +134,10 @@
 @keyframes star-twinkle {
   0%,
   100% {
-    opacity: 0.35;
+    opacity: 0.55;
   }
   50% {
-    opacity: 0.75;
+    opacity: 1;
   }
 }
 
@@ -137,6 +145,6 @@
   .console-stars::before,
   .console-stars::after {
     animation: none;
-    opacity: 0.5;
+    opacity: 0.8;
   }
 }

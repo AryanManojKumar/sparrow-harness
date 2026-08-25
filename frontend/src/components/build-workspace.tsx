@@ -15,11 +15,10 @@ import {
   type GateInfo,
   type RunEvent,
 } from "@/lib/api";
-import type { Source } from "@/lib/sources";
 import { BuildFeed } from "@/components/build-feed";
 import { PreviewPane } from "@/components/preview-pane";
 
-type StoredPayload = { prompt: string; urls: string[]; source: Source | null };
+type StoredPayload = { prompt: string; urls: string[] };
 
 type Phase = "loading" | "interview" | "create" | "run" | "gate" | "done" | "error";
 
@@ -162,7 +161,6 @@ export function BuildWorkspace() {
         <BuildFeed
           prompt={stored?.prompt ?? "…"}
           urls={stored?.urls ?? []}
-          source={stored?.source ?? null}
           phase={phase}
           events={events}
           spent={spent}

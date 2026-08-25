@@ -29,16 +29,35 @@ Three gates, per CLAUDE.md §8. Everything between them runs without asking.
 ## The front of the funnel
 
 `POST /suggest` — completions for a half-typed prompt. An accelerator, never a step: it
-returns `{"suggestions": []}` on any failure rather than an error, so a slow or broken
-completion never interrupts typing.
+returns empty on any failure rather than an error, so a slow or broken completion never
+interrupts typing.
+
+**It completes toward what is still unknown about the BUSINESS, not toward a website
+shape.** A page shape chosen before the business is understood is a template, and §2 exists
+so this system does not hand people templates. Four gaps, each with a bar, worked in order:
+
+| gap | closed once | open | closed |
+|---|---|---|---|
+| `offering` | you know what it makes and to whom | "a bakery" | "a bakery supplying sourdough to restaurants" |
+| `audience` | the buyer is named by role or situation | "restaurants" | "head chefs let down by inconsistent delivery" |
+| `specifics` | one concrete checkable fact exists | "high quality" | "the same three loaves for nine years" |
+| `purpose` | — only reachable once the first three clear | | |
+
+A closed gap is left alone. Asking which three loaves deepens a gap instead of closing the
+next one, and turns an interview into an interrogation.
 
 ```json
-POST /suggest   { "q": "a website for my compliance", "limit": 5 }
--> { "suggestions": [
-     { "id": "compliance-software",
-       "text": "a website for my compliance management software — product features, audit …",
-       "category": "Compliance Software" } ] }
+POST /suggest   { "q": "a website for my bakery", "limit": 3 }
+-> { "gap": "offering",
+     "hint": "Say what you make and who buys",
+     "suggestions": [
+       { "id": "business-customers", "category": "business customers",
+         "text": "a website for my bakery that supplies bread and pastries to local cafés" } ] }
 ```
+
+`gap` and `hint` are for the interface: show what the brief still needs, not only what
+could be completed. Each row extends the user's own sentence by one clause, so accepting
+one is progress rather than replacement.
 
 `POST /interview` — the submitted prompt becomes a Brief, **without creating the project**.
 The user sees what was inferred, corrects it, and only then commits. CLAUDE.md §2: nothing

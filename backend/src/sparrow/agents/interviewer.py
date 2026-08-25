@@ -30,21 +30,64 @@ from sparrow.providers import Tier
 
 _JSON = re.compile(r"\{.*\}", re.DOTALL)
 
-SUGGEST_SYSTEM = """You complete a half-typed description of a website someone wants built.
+SUGGEST_SYSTEM = """You extend a half-written description of a business that needs a website.
 
-Return up to five completions. Each is the FULL prompt they probably mean, written as they
-would have written it — not a category label, not a question back.
+You are NOT completing it into a finished prompt. You are drawing out the next thing worth
+knowing, so the person keeps typing and the description gets more specific.
 
-Ground each in what a page of that kind actually contains, so the completion carries
-information rather than adjectives: "a B2B SaaS platform — pricing table, logo wall,
-integration grid" tells them what they are choosing; "a modern SaaS website" does not.
+## Complete toward the FIRST gap that is still open
 
-Stay close to what they typed. If they named an industry, keep it. If they named an
-audience, keep it. Complete the sentence; do not replace it.
+Four gaps, in order. Each has a bar. Work down the list, find the first one that has not
+cleared its bar, and aim there.
+
+1. OFFERING — what the business actually does.
+   CLOSED once you know what it makes or provides and to whom it sells.
+   "a bakery" is open. "a bakery that supplies sourdough to restaurants" is closed.
+
+2. AUDIENCE — who buys, and what they already know, already tried, or fear.
+   CLOSED once the buyer is named by role or situation, not just by market.
+   "restaurants" is open. "head chefs let down by inconsistent delivery" is closed.
+
+3. SPECIFICS — the thing a competitor could not copy into their own copy.
+   CLOSED once there is at least one concrete, checkable fact: a number, a span of years,
+   a refusal, a named practice.
+   "high quality" is open. "the same three loaves for nine years" is closed.
+
+4. PURPOSE — what the site is for: the action it should produce, and what a visitor must
+   believe before taking it. Only reachable once 1–3 have cleared.
+
+ONCE A GAP IS CLOSED, LEAVE IT. Do not ask for more detail on something already concrete —
+which three loaves, how many restaurants exactly, what the pastries are called. That
+deepens a gap instead of closing the next one, and it is how an interview turns into an
+interrogation. If all four have cleared, aim at PURPOSE and offer completions about what
+the site should make happen.
+
+Do not skip ahead either. A page shape chosen before the business is understood is a
+template, and the whole point is not to hand someone a template.
+
+## How to write a completion
+
+Continue their sentence in their own voice. Keep every fact they gave and add ONE more
+clause — the next thing you would ask if you were sitting with them.
+
+Prefer the concrete over the categorical. "…that supplies sourdough to about twenty
+restaurants around Leeds" invites a correction; "…a food and beverage business" invites
+nothing.
+
+Never invent a fact as though they said it. Write the clause so an incorrect guess is
+obviously a guess and cheap to fix.
+
+## Output
+
+`gap` is which of the four you aimed at, so the interface can show what it still needs.
+`hint` is a short nudge shown under the rows — what to say next, in six words or so.
 
 JSON only:
-{"suggestions": [{"id": "kebab-slug", "text": "the full completed prompt",
-                  "category": "2-3 word label"}]}"""
+{"gap": "offering|audience|specifics|purpose",
+ "hint": "six-word nudge for what to add next",
+ "suggestions": [{"id": "kebab-slug", "text": "their sentence, extended by one clause",
+                  "category": "2-3 words naming what the clause adds"}]}"""
+
 
 INTERVIEW_SYSTEM = """You turn one sentence into a structured brief for a website build.
 
@@ -83,23 +126,31 @@ class Interviewer(Agent):
     tier = Tier.CHEAP
     max_tokens = 2000
 
-    def suggest(self, partial: str, limit: int = 5) -> list[dict]:
-        """Autocomplete for the prompt box. Never raises — silence beats a stall."""
+    def suggest(self, partial: str, limit: int = 5) -> dict:
+        """Autocomplete for the prompt box. Never raises — silence beats a stall.
+
+        Returns the gap it aimed at alongside the rows, so the interface can show
+        what the brief still needs rather than only what it could complete.
+        """
+        empty = {"gap": None, "hint": "", "suggestions": []}
         if len(partial.strip()) < 4:
-            return []
+            return empty
         try:
             res = self.call(system=SUGGEST_SYSTEM, user=partial.strip())
             m = _JSON.search(res.text)
             if not m:
-                return []
-            out = json.loads(m.group(0)).get("suggestions", [])
+                return empty
+            d = json.loads(m.group(0))
         except Exception:
-            return []
-        return [
-            {"id": str(s.get("id", f"s{i}")), "text": str(s.get("text", "")).strip(),
-             "category": str(s.get("category", "")).strip()}
-            for i, s in enumerate(out) if str(s.get("text", "")).strip()
+            return empty
+        rows = [
+            {"id": str(x.get("id", f"s{i}")), "text": str(x.get("text", "")).strip(),
+             "category": str(x.get("category", "")).strip()}
+            for i, x in enumerate(d.get("suggestions", []))
+            if str(x.get("text", "")).strip()
         ][:limit]
+        return {"gap": d.get("gap"), "hint": str(d.get("hint", "")).strip(),
+                "suggestions": rows}
 
 
 class BriefDraft(Agent):

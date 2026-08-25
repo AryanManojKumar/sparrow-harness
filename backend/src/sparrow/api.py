@@ -212,12 +212,18 @@ def redoc() -> Any:
 def suggest(body: SuggestRequest) -> dict[str, Any]:
     """Autocomplete for the prompt box.
 
-    An accelerator, never a step. It returns an empty list rather than an error on
-    anything going wrong, because a failed completion must not interrupt typing.
+    Completions aim at what is still UNKNOWN about the business, not at a website
+    shape. A page shape chosen before the business is understood is a template, and
+    the point of §2 is that this system does not hand people templates. `gap` says
+    which of offering / audience / specifics / purpose it aimed at, so the interface
+    can show what the brief still needs.
+
+    An accelerator, never a step: it returns empty rather than an error on anything
+    going wrong, because a failed completion must not interrupt typing.
     """
     from sparrow.agents.interviewer import Interviewer
 
-    return {"suggestions": Interviewer().suggest(body.q, body.limit)}
+    return Interviewer().suggest(body.q, body.limit)
 
 
 @app.post("/interview", tags=["elicitation"], summary="Turn one sentence into a brief (does not create the project)")
