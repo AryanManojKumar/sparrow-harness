@@ -107,8 +107,13 @@ For anything you had to guess, say so in `assumed` in plain language, phrased so
 person can correct it in one line. "I assumed you sell to other businesses rather than
 consumers" is correctable. "audience: B2B" is not.
 
+PRODUCT NAME is the one fact every section must agree on. Use the name they gave. If they
+did not give one, return an empty string and say so in `assumed` — never invent one,
+because a name you made up will be printed across their site as though it were theirs.
+
 JSON only:
 {
+  "product_name": "exactly as they wrote it, or \"\" if they never said",
   "category": "e.g. B2B SaaS landing page, local service site, portfolio",
   "offering": "what it does, concretely, in 1-2 sentences",
   "audience": "who buys it, and what they already know or fear",
@@ -165,6 +170,7 @@ class BriefDraft(Agent):
             raise ValueError("interviewer returned no JSON")
         d = json.loads(m.group(0))
         brief = Brief(
+            product_name=str(d.get("product_name", "")).strip(),
             category=d["category"].strip(),
             offering=" ".join(d["offering"].split()),
             audience=" ".join(d["audience"].split()),

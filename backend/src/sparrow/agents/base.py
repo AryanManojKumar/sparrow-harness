@@ -50,6 +50,12 @@ def context_block(bb: Blackboard) -> str:
 
     b = bb.brief
     brief = "\n".join([
+        *([f"PRODUCT NAME: {b.product_name} — use this exact name everywhere it "
+           f"appears. Do not invent an alternative, do not abbreviate it, and do "
+           f"not vary it between sections."] if b.product_name else
+          ["PRODUCT NAME: not given — do NOT invent one. Refer to the product "
+           "generically ('the platform') rather than naming it, so sections do "
+           "not disagree."]),
         f"Category: {b.category}",
         f"Offering: {b.offering}",
         f"Audience: {b.audience}",

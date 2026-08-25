@@ -26,6 +26,12 @@ def _now() -> datetime:
 class Brief(BaseModel):
     """Small enough to inject whole, always. Never retrieved, never summarised."""
 
+    # The one fact every section must agree on. Without it, nine blind builders
+    # each invent a plausible name and the page ships with a different product
+    # in the nav than in the footer — observed as LedgerRoute vs Railform on the
+    # same page. It is not decoration; it is the thing that makes the sections
+    # look like one site.
+    product_name: str = ""
     category: str
     offering: str
     audience: str

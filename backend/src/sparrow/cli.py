@@ -401,6 +401,9 @@ def cmd_scout(args) -> int:
     return 0
 
 
+CHROME_SKIP_ASSETS = {"nav", "footer"}
+
+
 def cmd_assets(args) -> int:
     """Produce the imagery the blueprints ask for."""
     from sparrow.agents.curator import Curator, derive_variants
@@ -424,6 +427,13 @@ def cmd_assets(args) -> int:
     for section in sorted(bb.sections, key=lambda s: s.order):
         bp = blueprints.get(section.blueprint_id)
         if bp is None or not bp.assets:
+            continue
+        # Chrome asks for a wordmark, which is the user's real brand asset, not
+        # something to invent. Generating one produced a 1536x1024 "logo lockup"
+        # that the nav then rendered at DOMINANT prominence — a full-width blank
+        # box above the hero, which is what "the site looks broken" turned out
+        # to mean. A logo belongs to the client; the harness does not draw it.
+        if section.id in CHROME_SKIP_ASSETS:
             continue
         for i, brief in enumerate(bp.assets, 1):
             if args.limit and len(made) >= args.limit:
