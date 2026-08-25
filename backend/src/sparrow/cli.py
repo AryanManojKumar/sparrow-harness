@@ -277,6 +277,7 @@ def cmd_run(args) -> int:
         Stage.BRIEF: _steps.step_brief,
         Stage.SOURCES: lambda r: _steps.step_sources(r, urls),
         Stage.DESIGN: _steps.step_design,
+        Stage.GATE_ASSETS: _steps.step_asset_gate,
         Stage.ASSETS: _steps.step_assets,
         Stage.BUILD: _steps.step_build,
         Stage.VERIFY: _steps.step_verify,
@@ -289,12 +290,27 @@ def cmd_run(args) -> int:
         r = run.pending
         print(f"\n  ── {r.gate.value} ──\n  {r.question}")
         for o in r.options:
+            if "asset_id" in o:          # the asset gate lists images, not choices
+                print(f"    {o['asset_id']:<22} [{o['prominence']:<10}] "
+                      f"{o['brief'][:60]}")
+                continue
             print(f"    [{o.get('index', o.get('choice'))}] "
                   f"{o.get('signature') or o.get('label')}")
         if args.yes and r.gate is Stage.GATE_DESIGN:
             print("  --yes: taking direction 0")
             _steps.adopt_direction(run, 0)
             run.resolve({"choice": 0})
+        elif args.yes and r.gate is Stage.GATE_ASSETS:
+            # Unattended, so there is nobody to hand over a file. Generating is
+            # the only choice that can be made without a human, and it is stated
+            # rather than defaulted to: the whole point of this gate is that
+            # generated imagery should be a decision, not what happens by
+            # itself. An interactive run answers it properly.
+            plan = _steps.record_asset_decisions(
+                run, {a["asset_id"]: "generate" for a in r.options})
+            print(f"  --yes: generating all {len(plan)} image(s) — no upload possible "
+                  "unattended")
+            run.resolve({"assets": {a["id"]: a["decision"] for a in plan}})
         elif args.yes:
             run.resolve({"choice": "approve"})
         else:
