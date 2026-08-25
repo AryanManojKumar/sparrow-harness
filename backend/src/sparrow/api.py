@@ -420,12 +420,10 @@ def preview(pid: str, path: str = "") -> Any:
     if target.suffix.lower() not in {".html", ".htm"}:
         return FileResponse(target)
 
-    prefix = f"/projects/{pid}/preview"
-    html = target.read_text(encoding="utf-8", errors="replace")
-    # `="/x"` but never `="//host"` — the second is protocol-relative and external.
-    html = re.sub(r'(\s(?:href|src|action|poster)=")/(?!/)', rf'\1{prefix}/', html)
-    html = re.sub(r'(\ssrcset=")/(?!/)', rf'\1{prefix}/', html)
-    return HTMLResponse(html)
+    # No rewriting: the export is built with basePath set to this path, so Next
+    # already emits the prefix everywhere — including inside the RSC payload,
+    # which an HTML rewrite cannot reach.
+    return FileResponse(target)
 
 
 @app.get("/projects/{pid}/specimens/{name}", tags=["artifacts"],

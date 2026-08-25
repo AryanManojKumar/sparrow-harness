@@ -9,7 +9,6 @@ import type { Direction, GateInfo, RunEvent } from "@/lib/api";
 import { SparrowMark } from "@/components/sparrow-mark";
 import { SourceCard } from "@/components/source-card";
 import { GatePanel } from "@/components/gate-panel";
-import { Button } from "@/components/ui/button";
 
 // Matches backend/src/sparrow/orchestrator.py's Stage enum, in order —
 // needed to infer "done" for stages that end via a gate Halt rather than

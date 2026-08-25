@@ -17,6 +17,7 @@ import {
 } from "@/lib/api";
 import { BuildFeed } from "@/components/build-feed";
 import { PreviewPane } from "@/components/preview-pane";
+import { GatePanel } from "@/components/gate-panel";
 
 type StoredPayload = { prompt: string; urls: string[] };
 
@@ -155,9 +156,16 @@ export function BuildWorkspace() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
+  // Before anything is built the preview pane has nothing to show, so the
+  // open gate takes it — three palettes are judged side by side, not stacked
+  // in a 380px column. Once a build exists the preview reclaims the space and
+  // the remaining gate (approve / revise) drops back into the sidebar.
+  const gateOpen = phase === "gate" && Boolean(gate?.awaiting);
+  const gateInMainPane = gateOpen && !previewReady;
+
   return (
     <div className="grid h-screen grid-cols-1 md:grid-cols-[380px_1fr]">
-      <div className="border-r border-border bg-card/30">
+      <div className="border-r border-border bg-card/30 overflow-hidden">
         <BuildFeed
           prompt={stored?.prompt ?? "…"}
           urls={stored?.urls ?? []}
@@ -167,22 +175,35 @@ export function BuildWorkspace() {
           gate={gate}
           directions={directions}
           errorMessage={errorMessage}
+          showGateInline={!gateInMainPane}
           onAnswerGate={answerAndContinue}
         />
       </div>
-      <PreviewPane
-        ready={previewReady}
-        src={id && previewReady ? previewUrl(id) : undefined}
-        waitingLabel={
-          phase === "interview"
-            ? "Drafting the brief…"
-            : phase === "create"
-              ? "Creating the project…"
-              : phase === "error"
-                ? "Run stopped — see the feed"
-                : "Building preview…"
-        }
-      />
+
+      {gateInMainPane && gate ? (
+        <div className="overflow-y-auto px-6 py-8">
+          <GatePanel
+            gate={gate}
+            directions={directions}
+            layout="wide"
+            onAnswerGate={answerAndContinue}
+          />
+        </div>
+      ) : (
+        <PreviewPane
+          ready={previewReady}
+          src={id && previewReady ? previewUrl(id) : undefined}
+          waitingLabel={
+            phase === "interview"
+              ? "Drafting the brief…"
+              : phase === "create"
+                ? "Creating the project…"
+                : phase === "error"
+                  ? "Run stopped — see the feed"
+                  : "Building preview…"
+          }
+        />
+      )}
     </div>
   );
 }

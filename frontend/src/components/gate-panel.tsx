@@ -77,10 +77,16 @@ export function GatePanel({
             Your reference sites
           </p>
           {/* eslint-disable-next-line @next/next/no-img-element */}
+          {/* The specimen is rendered 1800x1400 with the swatch rows in
+              the top third; shown whole it buries the actual choices below
+              the fold. Cap the height and crop from the top. */}
           <img
             src={assetUrl(sourcesSpecimen)}
             alt="Colours measured from the reference sites"
-            className="w-full rounded-lg border border-border"
+            className={cn(
+              "w-full rounded-lg border border-border object-cover object-top",
+              wide ? "max-h-72" : "max-h-44"
+            )}
           />
         </div>
       )}

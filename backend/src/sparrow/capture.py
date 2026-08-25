@@ -80,6 +80,7 @@ class PageReport:
     console_errors: list[str]
     failed_requests: list[str]
     horizontal_overflow: list[str]
+    fold_fade: list[str]
     contrast_failures: list[str]
     sections: list[SectionShot]
 
@@ -122,7 +123,11 @@ def capture(
             page = browser.new_page(
                 viewport={"width": w, "height": h}, device_scale_factor=scale
             )
-            page.goto(url, wait_until="networkidle")
+            page.goto(url, wait_until="domcontentloaded")
+            # Sample BEFORE anything settles — this is what a visitor sees first.
+            page.wait_for_timeout(150)
+            fold_fade = page.evaluate(_FOLD_FADE)
+            page.wait_for_load_state("networkidle")
             page.evaluate(_SCROLL)
             page.wait_for_timeout(600)
 
@@ -212,6 +217,29 @@ _CONTRAST = r"""
 # Only opacity at or near ZERO is a defect. A threshold of 0.9 flagged seven
 # elements that were deliberately dimmed to 0.80 and 0.96 alongside ten that were
 # genuinely invisible — the noise buries the signal.
+# Text above the fold that starts transparent and fades in leaves the first thing
+# a visitor sees unreadable for the first few hundred milliseconds. Measured on a
+# real build: 6 elements at exactly opacity 0 at first paint, settling only after
+# ~1.2s. Every capture in this harness waits 2.5s, so it had never been seen.
+#
+# The sources do carry faint elements above the fold — 48 on kiro.dev — but their
+# counts do not change between 150ms and 2s: that is deliberate dimming, not a
+# reveal. The defect is text that is transparent AT FIRST PAINT.
+_FOLD_FADE = r"""
+() => [...document.querySelectorAll('main *')]
+  .filter(e => {
+    const r = e.getBoundingClientRect();
+    if (r.top > innerHeight || r.height < 8) return false;
+    if (!(e.textContent || '').trim() || e.children.length) return false;
+    return parseFloat(getComputedStyle(e).opacity) < 0.5;
+  })
+  .map(e => {
+    const t = (e.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 44);
+    return `opacity ${getComputedStyle(e).opacity} at first paint — "${t}"`;
+  })
+  .slice(0, 8)
+"""
+
 _INVISIBLE = r"""
 () => [...document.querySelectorAll('section, section *')]
   .filter(e => parseFloat(getComputedStyle(e).opacity) <= 0.05)
@@ -279,7 +307,11 @@ def inspect_page(
             page.on("requestfailed",
                     lambda r: failed.append(f"{r.method} {r.url[:110]}"))
 
-            page.goto(url, wait_until="networkidle")
+            page.goto(url, wait_until="domcontentloaded")
+            # Sample BEFORE anything settles — this is what a visitor sees first.
+            page.wait_for_timeout(150)
+            fold_fade = page.evaluate(_FOLD_FADE)
+            page.wait_for_load_state("networkidle")
             page.evaluate(_SCROLL)
             page.wait_for_timeout(600)
 
@@ -313,6 +345,7 @@ def inspect_page(
                 console_errors=sorted(set(errors))[:10],
                 failed_requests=sorted(set(failed))[:10],
                 horizontal_overflow=page.evaluate(_OVERFLOW),
+                fold_fade=fold_fade,
                 contrast_failures=page.evaluate(_CONTRAST),
                 sections=shots,
             )

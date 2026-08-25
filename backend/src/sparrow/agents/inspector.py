@@ -187,6 +187,9 @@ def deterministic_defects(reports: dict[str, PageReport]) -> list[Defect]:
             out.append(Defect("high", "request-failed", f"request failed: {f}", bp, "computed"))
         for o in r.horizontal_overflow:
             out.append(Defect("high", "viewport-overflow", f"content overflows the viewport: {o}", bp, "computed"))
+        for f in r.fold_fade:
+            out.append(Defect("high", "above-fold-text-fades-in",
+                              f"text is not readable at first paint: {f}", bp, "computed"))
         for c in r.contrast_failures:
             out.append(Defect("medium", "contrast-below-wcag", f"contrast {c}", bp, "computed"))
     return out

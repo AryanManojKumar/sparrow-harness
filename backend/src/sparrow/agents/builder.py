@@ -41,6 +41,13 @@ sections with no animation at all while the design system asked for it by name.
 
 Respect `prefers-reduced-motion`: keep opacity changes, drop translation.
 
+REQUIRED: TEXT ABOVE THE FOLD IS READABLE AT FIRST PAINT.
+Never start headline, body or button text at `opacity: 0` in the first screenful. The
+first thing a visitor sees would be a blank page for as long as the animation runs — a real
+build sat unreadable for 1.2 seconds this way. If you want the first screen to move, animate
+`y` or `x` from a small offset while opacity stays at 1, or start opacity no lower than 0.9.
+Below the fold, fading in from 0 is fine.
+
 REQUIRED: EVERY ENTRANCE ANIMATION MUST HAVE A GUARANTEED END STATE.
 An element starting at opacity 0 and waiting for an observer is invisible if that
 observer never fires — off-screen, in a headless capture, with JS slow or blocked. Four
@@ -80,6 +87,7 @@ Each row is a thought that has actually produced a defect in this harness.
 | "The motion spec mostly says what NOT to do, so this section wants none" | It is telling you what to leave out. A section with zero animation has ignored the spec, not honoured it. |
 | "Animation is polish, the structure matters more" | Motion is a named part of the design system, like the palette. Shipping without it is drift. |
 | "opacity-0 until it scrolls into view is the standard pattern" | It is, and it ships invisible content when the trigger does not fire. Guarantee the end state. |
+| "A fade-in on the hero looks polished" | It means the first thing anyone sees is blank. Move it with transform if you want motion; leave the text readable. |
 | "The image is one element among several, so it can be small" | Check its prominence. A dominant asset carries the section; shrinking it throws away the only real thing on the page. |"""
 
 _CODE = re.compile(r"```(?:tsx|typescript|ts|jsx)?\s*\n(.*?)```", re.DOTALL)
@@ -107,6 +115,7 @@ class Builder(Agent):
         stack: str,
         available_primitives: list[str],
         assets: list | None = None,
+        asset_base: str = "",
     ) -> BuildOutput:
         # Stated as an instruction, not as context. Written as "this section sits
         # on X" it was read as background information and ignored by 4 of 5

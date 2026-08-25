@@ -367,7 +367,8 @@ def step_build(run: Run) -> Iterator[Event]:
             continue
         out = builder.build(bb, section, bp, stack=STACK,
                             available_primitives=primitives,
-                            assets=bb.assets_for(section.id))
+                            assets=bb.assets_for(section.id),
+                            asset_base=f"/projects/{run.project_id}/preview")
         write_section(ws, section, out.code)
         yield Event(Stage.BUILD, "progress",
                     f"{section.id}: {len(out.code.splitlines())} loc",
@@ -517,9 +518,32 @@ def step_verify(run: Run) -> Iterator[Event]:
 
 
 def make_workspace(run: Run, scaffold: Path) -> None:
+    """Copy the scaffold and bind it to the path the preview serves from.
+
+    Rewriting root-absolute URLs in the served HTML is not enough for a Next app.
+    Its RSC payload carries "/_next/static/chunks/..." inside JSON strings, and
+    its client runtime builds more paths at runtime — none of which an HTML
+    rewrite can reach. The scripts then load but the module registry does not
+    match, hydration fails silently with no console error and no 404, and every
+    element stays frozen at its `initial` opacity. Which is what "the page is
+    invisible and there is no animation" turned out to be.
+
+    basePath makes Next generate correct URLs everywhere itself. The export is
+    then bound to this project's preview path, which is what a preview is for.
+    """
     ws = run.workspace
     ws.mkdir(parents=True, exist_ok=True)
     shutil.copytree(scaffold, ws, dirs_exist_ok=True,
                     ignore=shutil.ignore_patterns("node_modules", ".next", "out", "README.md"))
+    cfg = ws / "next.config.ts"
+    base = f"/projects/{run.project_id}/preview"
+    cfg.write_text(cfg.read_text().replace(
+        "  trailingSlash: true,",
+        f'  trailingSlash: true,\n\n'
+        f'  // Bound to the preview path so Next generates correct URLs in the\n'
+        f'  // HTML, the RSC payload and at runtime. Without it hydration fails\n'
+        f'  // silently and nothing animates.\n'
+        f'  basePath: "{base}",\n'
+        f'  assetPrefix: "{base}",'))
     subprocess.run(["pnpm", "install", "--frozen-lockfile"], cwd=ws, check=True,
                    capture_output=True)

@@ -11,6 +11,10 @@
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
 export type Brief = {
+  /** The one fact every section must agree on — without it the builders each
+   *  invent a name and the nav disagrees with the footer. Extracted by
+   *  /interview, so it has to be forwarded here or it is lost. */
+  product_name?: string;
   category: string;
   offering: string;
   audience: string;
@@ -53,6 +57,7 @@ export function createProject(input: {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       project_id: input.project_id,
+      product_name: input.brief.product_name ?? "",
       category: input.brief.category,
       offering: input.brief.offering,
       audience: input.brief.audience,
