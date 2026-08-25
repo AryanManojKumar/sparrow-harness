@@ -418,6 +418,50 @@ def _inspect_once(run: Run, bb, blueprints, port: int = 4600,
     return page_level, per_section, cost
 
 
+def _drift_defects(findings: list, bb: Blackboard) -> dict[str, list]:
+    """Group audit findings by the section whose file they were measured in.
+
+    `audit.Finding` and inspector `Defect` are deliberately different shapes —
+    one is a line in a file, the other is something seen in a browser — so this
+    adapts rather than pretending they are one type. What has to survive the
+    adaptation is what `Fixer.fix` actually reads (`severity`, `what`, `where`)
+    plus `source`, which is how a person reading the log tells a measured
+    finding from a judged one.
+
+    Severity is one value for every category, not a ranking. Drift is a
+    consistency violation, never a rendering break, and deciding that an
+    off-scale radius outranks an off-scale gap would be exactly the unmeasured
+    preference §6 rejects. The fixer is told what is wrong and what the scale
+    permits; it is not told which drift to care about most.
+
+    The permitted set travels WITH the finding, quoted from the same
+    `DesignSystem` the audit derived it from. Without it the fixer knows only
+    that gap-7 is wrong, and a fixer guessing at the remedy replaces one
+    off-scale value with another.
+    """
+    from sparrow.agents.inspector import Defect
+    from sparrow.audit import permitted
+
+    owner = {Path(s.target_path).name: s.id for s in bb.sections}
+    allow = permitted(bb.design_system)
+    out: dict[str, list] = {}
+    for f in findings:
+        sid = owner.get(f.file)
+        if sid is None:
+            # A .tsx no section owns. It is still reported in the count at the
+            # gate; there is simply no section to route a fix to.
+            continue
+        what = f"{f.category}: {f.detail}"
+        ok = allow.get(f.category)
+        if ok:
+            what += f" — the design system declares only {', '.join(sorted(ok))}"
+        out.setdefault(sid, []).append(Defect(
+            severity="medium", code=f.category, what=what,
+            where=f"{f.file}:{f.line}", source="computed",
+        ))
+    return out
+
+
 def step_verify(run: Run) -> Iterator[Event]:
     """Look, fix, look again — until the page is clean or the budget is spent.
 
@@ -429,6 +473,15 @@ def step_verify(run: Run) -> Iterator[Event]:
     That is the missing half of CLAUDE.md §6's build → look → fix loop. Capped at
     3 like every other loop, because critic-refine plateaus at two or three
     iterations and then starts inventing objections to justify itself.
+
+    The DRIFT half stayed discarded after the visual half was wired up.
+    `audit_dir` ran at the top of every round and its findings reached the
+    progress line and the gate question — but only `per_section` was passed to
+    the fixer, so nothing ever acted on them. A real run reported 31
+    off-scale-gap findings in round one, again in round two, and again at the
+    gate, and fixed none of them. Drift now goes to the fixer alongside what the
+    inspector saw, in ONE call per section: two calls would have the second
+    fixing code the first had already rewritten.
     """
     from sparrow.agents.builder import Fixer, write_section
     from sparrow.audit import audit_dir, summarise
@@ -451,12 +504,24 @@ def step_verify(run: Run) -> Iterator[Event]:
         page_level, per_section, cost = _inspect_once(run, bb, blueprints, port,
                                                        disputed)
         port += 1                       # a fresh port each pass; the last may still be closing
+
+        # Drift is NOT suppressed by `disputed` the way a visual defect is.
+        # There is nothing to dispute about arithmetic against a closed scale,
+        # so it is recomputed from the code every round and stays on the list
+        # until the code stops drifting.
+        drift = _drift_defects(findings, bb)
+        work: dict[str, list] = {}
+        for sid in (*drift, *per_section):
+            # Drift first: it names a file and a line, which orients the fixer
+            # before it reads a description of something merely seen.
+            work.setdefault(sid, [*drift.get(sid, []), *per_section.get(sid, [])])
+
         remaining = sum(len(v) for v in per_section.values())
         yield Event(Stage.VERIFY, "progress",
                     f"{summarise(findings).splitlines()[0]} · "
                     f"{len(page_level)} computed · {remaining} visual", cost=cost)
 
-        if not remaining and not findings:
+        if not work:
             rounds.complete("audit clean and no visual defects")
             break
 
@@ -467,11 +532,15 @@ def step_verify(run: Run) -> Iterator[Event]:
 
         fixer = fixer or Fixer()
         fixed_any = False
-        for sid, defects in per_section.items():
+        # Every file this round is about to overwrite, as it stood before the
+        # overwrite. This is what a failed rebuild is restored from.
+        snapshots: dict[Path, str] = {}
+        for sid, defects in work.items():
             section = next(s for s in bb.sections if s.id == sid)
             path = run.workspace / section.target_path
+            before = path.read_text()
             try:
-                out, dispute = fixer.fix(bb, section, path.read_text(), defects)
+                out, dispute = fixer.fix(bb, section, before, defects)
             except Exception as e:
                 yield Event(Stage.VERIFY, "blocked", f"{sid}: fixer failed — {e}")
                 continue
@@ -479,6 +548,7 @@ def step_verify(run: Run) -> Iterator[Event]:
                 disputed.setdefault(sid, []).append(dispute)
                 yield Event(Stage.VERIFY, "progress", f"{sid}: disputed — {dispute[:70]}")
                 continue
+            snapshots.setdefault(path, before)
             write_section(run.workspace, section, out.code)
             fixed_any = True
             yield Event(Stage.VERIFY, "progress",
@@ -493,11 +563,30 @@ def step_verify(run: Run) -> Iterator[Event]:
                         "nothing changed — every defect was disputed")
             break
 
-        rounds.settle(Outcome.ATTEMPTED, f"fixed {remaining} defect(s)")
+        rounds.settle(Outcome.ATTEMPTED,
+                      f"fixed {sum(len(v) for v in work.values())} defect(s)")
         ok, output = _run_build(run.workspace)
         if not ok:
+            # This branch used to emit "reverting to the last good export" and
+            # break, having restored nothing. The workspace was left holding the
+            # code that had just failed to build, behind a message claiming
+            # recovery — one project sat unbuildable for hours that way. The
+            # sentence is now the thing that happens.
+            for target, original in snapshots.items():
+                target.write_text(original)
+            recovered, again = _run_build(run.workspace)
+            if not recovered:
+                # Nothing further in this stage can help, and gate 3 must not
+                # ask a human to ship a workspace that does not compile.
+                raise RuntimeError(
+                    "a fix broke the build and restoring the previous section "
+                    "code did not recover it — the workspace does not build. "
+                    "This needs a look, not another round.\n"
+                    + again.strip()[-1200:]
+                )
             yield Event(Stage.VERIFY, "blocked",
-                        "a fix broke the build — reverting to the last good export")
+                        f"a fix broke the build — reverted {len(snapshots)} "
+                        "section(s) to the last code that built, and rebuilt")
             break
         yield Event(Stage.VERIFY, "progress", f"rebuilt · {rounds.summary()}")
 

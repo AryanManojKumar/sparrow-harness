@@ -25,3 +25,8 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/sparrow"]
 artifacts = ["src/sparrow/static/*"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]

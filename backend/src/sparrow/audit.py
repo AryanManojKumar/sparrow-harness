@@ -28,7 +28,13 @@ FONT_WEIGHT = re.compile(r"\bfont-(thin|extralight|light|normal|medium|semibold|
 TEXT_STEP = re.compile(r"\btext-(xs|sm|base|lg|xl|[2-9]xl)\b")
 SHADOW = re.compile(r"\bshadow-(?:2xl|xl|lg|md|sm|none|inner)\b")
 ROUNDED = re.compile(r"\brounded-(?:none|sm|md|lg|xl|2xl|3xl|full)\b")
-GAP = re.compile(r"\bgap-\d+\b")
+# Captures the SIZE, and tolerates both the fractional steps Tailwind really has
+# and the axis variants. `\bgap-\d+\b` matched "gap-2" inside "gap-2.5" and
+# reported it as off-scale — on the ide-01 run that produced 31 findings, every
+# one of them against `gap-2.5`, which is the exact string the design system
+# declared as `inline_gap`. The builder had followed the spec perfectly and the
+# audit called it drift 31 times.
+GAP = re.compile(r"\bgap(?:-[xy])?-(\d+(?:\.\d+)?|px)\b")
 BANNED_IMPORT = re.compile(r"""from\s+["']framer-motion["']""")
 
 INLINE_STYLE_COLOR = re.compile(r"style=\{\{[^}]*(?:color|background)[^}]*\}\}")
@@ -51,13 +57,15 @@ def _lines(p: Path) -> list[tuple[int, str]]:
     return list(enumerate(p.read_text().splitlines(), 1))
 
 
-def audit_file(path: Path, ds: DesignSystem) -> list[Finding]:
-    allowed_weights = {_WEIGHT_NAMES[w] for w in ds.font_weights}
-    allowed_steps = {
-        m.group(1)
-        for st in ds.type_steps
-        for m in TEXT_STEP.finditer(st.classes)
-    }
+def permitted(ds: DesignSystem) -> dict[str, set[str]]:
+    """What each off-scale category is allowed to contain, keyed by category.
+
+    Two callers read this: the audit, which uses it to decide whether a utility
+    is drift, and `steps._drift_defects`, which quotes it back to the fixer so a
+    finding names its own remedy. Deriving it twice is how a check and its fix
+    end up disagreeing about what the scale is — the schema docstring makes the
+    same point about tokens and CSS.
+    """
     # A declared value is often a responsive set — "gap-6 md:gap-8" is ONE
     # decision expressed as two utilities. Comparing whole strings against
     # individual classes flagged a builder that had followed the spec exactly.
@@ -68,9 +76,25 @@ def audit_file(path: Path, ds: DesignSystem) -> list[Finding]:
                 out.add(part.split(":")[-1])
         return out
 
-    allowed_shadows = utilities(ds.shadow_rest, ds.shadow_hover)
-    allowed_rounded = utilities(ds.radius_card, ds.radius_input) | {"rounded-full"}
-    allowed_gaps = utilities(ds.grid_gap, ds.inline_gap)
+    return {
+        "off-scale-weight": {f"font-{_WEIGHT_NAMES[w]}" for w in ds.font_weights},
+        "off-scale-type": {m.group(0) for st in ds.type_steps
+                           for m in TEXT_STEP.finditer(st.classes)},
+        "off-scale-shadow": utilities(ds.shadow_rest, ds.shadow_hover),
+        "off-scale-radius": utilities(ds.radius_card, ds.radius_input) | {"rounded-full"},
+        "off-scale-gap": utilities(ds.grid_gap, ds.inline_gap),
+    }
+
+
+def gap_size(utility: str) -> str:
+    """"gap-x-2.5" -> "2.5". Both sides of the gap comparison go through this."""
+    m = GAP.search(utility)
+    return m.group(1) if m else utility
+
+
+def audit_file(path: Path, ds: DesignSystem) -> list[Finding]:
+    allow = permitted(ds)
+    allowed_gap_sizes = {gap_size(g) for g in allow["off-scale-gap"]}
 
     out: list[Finding] = []
     name = path.name
@@ -78,19 +102,21 @@ def audit_file(path: Path, ds: DesignSystem) -> list[Finding]:
         for m in LITERAL_COLOR.finditer(line):
             out.append(Finding(name, n, "literal-color", m.group(0)))
         for m in FONT_WEIGHT.finditer(line):
-            if m.group(1) not in allowed_weights:
+            if m.group(0).split(":")[-1] not in allow["off-scale-weight"]:
                 out.append(Finding(name, n, "off-scale-weight", m.group(0)))
         for m in TEXT_STEP.finditer(line):
-            if m.group(1) not in allowed_steps:
+            if m.group(0).split(":")[-1] not in allow["off-scale-type"]:
                 out.append(Finding(name, n, "off-scale-type", m.group(0)))
         for m in SHADOW.finditer(line):
-            if m.group(0).split(":")[-1] not in allowed_shadows:
+            if m.group(0).split(":")[-1] not in allow["off-scale-shadow"]:
                 out.append(Finding(name, n, "off-scale-shadow", m.group(0)))
         for m in ROUNDED.finditer(line):
-            if m.group(0).split(":")[-1] not in allowed_rounded:
+            if m.group(0).split(":")[-1] not in allow["off-scale-radius"]:
                 out.append(Finding(name, n, "off-scale-radius", m.group(0)))
         for m in GAP.finditer(line):
-            if m.group(0).split(":")[-1] not in allowed_gaps:
+            # Compared by size rather than by whole utility, so a declared
+            # `gap-8` also permits `gap-x-8`: same decision, one axis of it.
+            if m.group(1) not in allowed_gap_sizes:
                 out.append(Finding(name, n, "off-scale-gap", m.group(0)))
         if BANNED_IMPORT.search(line):
             out.append(Finding(name, n, "banned-import", "framer-motion — use motion/react"))
