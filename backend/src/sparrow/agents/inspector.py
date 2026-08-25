@@ -34,10 +34,9 @@ You are given the brief, the design system the section was built to, and screens
 of that section as it actually renders at each breakpoint.
 
 WHAT YOU ARE LOOKING AT: an element screenshot of ONE section, cropped out of the page.
-The top and bottom edges are CROP BOUNDARIES, not clipping, not occlusion, and not a
-navigation bar sitting on top of the content. Nothing from any other section is present in
-this image — no header, no nav, no footer, no neighbouring section. If the content appears
-to start or end abruptly at an edge, that is the crop, and it is not a defect.
+Sticky and fixed elements are neutralised before capture, so nothing from another section
+should appear on top of this one. If something DOES appear to cover the content, say so —
+that is a real defect, not a crop artifact.
 
 REPORT ONLY DEFECTS YOU CAN SEE OR POINT AT:
 - text that overflows, clips, wraps badly, or collides with another element
@@ -89,8 +88,7 @@ Each row is a thought that has actually produced a false report from this agent.
 | "The brief mentions X but this section has no X" | Sections divide the brief between them. The blueprint says what THIS one carries; what it omits, it omits deliberately. |
 | "The deterministic pass missed this contrast issue, I should flag it" | If it is not in the findings, it passed. Do not relitigate arithmetic. |
 | "This element might be misaligned" | Might is not a report. Either it visibly is, or you say nothing. |
-| "A navigation bar is overlapping the top of this section" | There is no navigation bar in this image. You are looking at one section, cropped. The top edge is the crop. You reported this across four sections on one page and were wrong every time. |
-| "The content is clipped at the top/bottom edge" | That is where the crop is. Clipping means content cut off INSIDE the section by a container, not content meeting the boundary of the picture. |"""
+| "Content is cut off exactly at the top or bottom boundary" | Check whether something is covering it or whether the picture simply ends. A word hidden behind a bar is a defect; a section that finishes at its own edge is not. |"""
 
 _JSON = re.compile(r"\{.*\}", re.DOTALL)
 

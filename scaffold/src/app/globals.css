@@ -141,3 +141,11 @@
     @apply font-sans;
     }
 }
+/* A sticky header covers the top of whatever an anchor scrolls to, so every
+   section reserves more than the header's height. Observed: a hero with 80px of
+   top padding under a 95px nav lost the first word of its headline. */
+@layer base {
+  section {
+    scroll-margin-top: 7rem;
+  }
+}

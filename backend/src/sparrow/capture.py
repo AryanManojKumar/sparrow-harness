@@ -283,6 +283,21 @@ def inspect_page(
             page.evaluate(_SCROLL)
             page.wait_for_timeout(600)
 
+            # Playwright scrolls an element to the top of the viewport before
+            # capturing it, so a sticky header lands on top of whatever is being
+            # captured. Every section then looks like it has a nav bar over its
+            # first line. Neutralise sticky/fixed for the duration so the
+            # inspector sees the section, not the chrome.
+            page.add_style_tag(content=(
+                "[data-sparrow-unstick]{position:static!important;top:auto!important}"
+            ))
+            page.evaluate("""() => {
+              for (const el of document.querySelectorAll('body *')) {
+                const p = getComputedStyle(el).position;
+                if (p === 'sticky' || p === 'fixed') el.setAttribute('data-sparrow-unstick', '');
+              }
+            }""")
+
             shots: list[SectionShot] = []
             for i, el in enumerate(page.query_selector_all("main > section, main > div > section")):
                 box = el.bounding_box()
