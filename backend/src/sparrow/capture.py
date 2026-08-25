@@ -81,6 +81,7 @@ class PageReport:
     failed_requests: list[str]
     horizontal_overflow: list[str]
     fold_fade: list[str]
+    spill: list[str]
     contrast_failures: list[str]
     sections: list[SectionShot]
 
@@ -240,6 +241,35 @@ _FOLD_FADE = r"""
   .slice(0, 8)
 """
 
+# Content wider than the box that holds it. Distinct from viewport overflow,
+# which only catches things pushing past the page edge: a 45px grid cell holding
+# 116px of text spills over its neighbour without the document ever scrolling.
+# Observed on a real build — "change/retry-policy" and "docs/specs/**" painting
+# outside their cells — and invisible to every check in the harness, which is why
+# three rounds of fixing never touched it.
+#
+# scrollWidth vs clientWidth catches it whether the parent clips or not: if it
+# clips, the text is silently truncated; if it does not, the text spills.
+_SPILL = r"""
+() => [...document.querySelectorAll('main *')]
+  .filter(e => {
+    if (e.children.length) return false;
+    const t = (e.textContent || '').trim();
+    if (!t) return false;
+    const r = e.getBoundingClientRect();
+    if (r.width < 8 || r.height < 6) return false;
+    return e.scrollWidth - e.clientWidth > 8;
+  })
+  .map(e => {
+    const t = (e.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 40);
+    const over = e.scrollWidth - e.clientWidth;
+    const clipped = /hidden|clip/.test(getComputedStyle(e.parentElement).overflow);
+    return `"${t}" needs ${e.scrollWidth}px in a ${e.clientWidth}px box `
+         + `(${over}px ${clipped ? 'truncated' : 'spilling outside it'})`;
+  })
+  .slice(0, 10)
+"""
+
 _UNSTICK = r"""
 () => {
   for (const el of document.querySelectorAll('body *')) {
@@ -358,6 +388,7 @@ def inspect_page(
                 failed_requests=sorted(set(failed))[:10],
                 horizontal_overflow=page.evaluate(_OVERFLOW),
                 fold_fade=fold_fade,
+                spill=page.evaluate(_SPILL),
                 contrast_failures=page.evaluate(_CONTRAST),
                 sections=shots,
             )
