@@ -218,3 +218,67 @@ def write_section(workspace: Path, section: Section, code: str) -> Path:
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(code if code.endswith("\n") else code + "\n")
     return target
+
+
+FIX_SYSTEM = """You are fixing ONE section against defects an inspector found by looking
+at the rendered page. You are given the file, the design system it must still obey, and
+the defect list.
+
+Fix exactly what is listed. Do not redesign, do not restructure, do not improve anything
+the defects did not name. A section that comes back rewritten is a worse outcome than one
+that comes back with three lines changed, because the rewrite has to be re-inspected from
+scratch.
+
+These defects were seen in a browser, not read from the code, so they are about how the
+section RENDERS: text overflowing, elements colliding, something clipped at a breakpoint,
+content longer than the layout assumed, a region coming out empty. Fix the rendering.
+
+{fidelity}
+
+If a defect is wrong — the inspector misread the screenshot, or what it describes is
+deliberate — say so instead of changing the code. A defect you disagree with is better
+argued than silently obeyed.
+
+Output format — exactly this:
+
+```tsx
+<the complete corrected file>
+```
+
+If you are rejecting a defect rather than fixing it, add after the code block:
+
+DISPUTED: <which defect, and why it is not a defect>"""
+
+_DISPUTED = re.compile(r"^DISPUTED:\s*(.+)$", re.MULTILINE)
+
+
+class Fixer(Agent):
+    """Turns inspector defects back into code.
+
+    Separate from Repairer because the inputs differ in kind: a build error names
+    a file and a line and has one correct fix; a visual defect is a description of
+    something seen, which may be wrong. This one is allowed to push back.
+    """
+
+    name = "fixer"
+    tier = Tier.TOP
+    max_tokens = 16000
+
+    def fix(self, bb: Blackboard, section: Section, code: str,
+            defects: list) -> tuple[BuildOutput, str | None]:
+        listed = "\n".join(f"- [{d.severity}] {d.what} — {d.where}" for d in defects)
+        user = "\n\n".join([
+            f"<section>\nid: {section.id}\nfile: {section.target_path}\n</section>",
+            f"<defects>\n{listed}\n</defects>",
+            f'<file path="{section.target_path}">\n{code}\n</file>',
+        ])
+        res = self.call(
+            system=stable_system(FIX_SYSTEM.format(fidelity=FIDELITY_LINE), bb),
+            user=user,
+        )
+        m = _CODE.search(res.text)
+        if not m:
+            raise ValueError(f"fixer returned no code block for {section.id}")
+        disputed = _DISPUTED.search(res.text)
+        return (BuildOutput(m.group(1).strip(), None, res),
+                disputed.group(1).strip() if disputed else None)

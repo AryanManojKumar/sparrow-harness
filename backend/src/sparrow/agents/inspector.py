@@ -33,6 +33,12 @@ and report what is WRONG with it. You do not write code and you cannot edit anyt
 You are given the brief, the design system the section was built to, and screenshots
 of that section as it actually renders at each breakpoint.
 
+WHAT YOU ARE LOOKING AT: an element screenshot of ONE section, cropped out of the page.
+The top and bottom edges are CROP BOUNDARIES, not clipping, not occlusion, and not a
+navigation bar sitting on top of the content. Nothing from any other section is present in
+this image — no header, no nav, no footer, no neighbouring section. If the content appears
+to start or end abruptly at an edge, that is the crop, and it is not a defect.
+
 REPORT ONLY DEFECTS YOU CAN SEE OR POINT AT:
 - text that overflows, clips, wraps badly, or collides with another element
 - elements that overlap, misalign, or break out of their container
@@ -82,7 +88,9 @@ Each row is a thought that has actually produced a false report from this agent.
 | "This would look better as two columns" | You are not redesigning. Report what is broken, not what is different. |
 | "The brief mentions X but this section has no X" | Sections divide the brief between them. The blueprint says what THIS one carries; what it omits, it omits deliberately. |
 | "The deterministic pass missed this contrast issue, I should flag it" | If it is not in the findings, it passed. Do not relitigate arithmetic. |
-| "This element might be misaligned" | Might is not a report. Either it visibly is, or you say nothing. |"""
+| "This element might be misaligned" | Might is not a report. Either it visibly is, or you say nothing. |
+| "A navigation bar is overlapping the top of this section" | There is no navigation bar in this image. You are looking at one section, cropped. The top edge is the crop. You reported this across four sections on one page and were wrong every time. |
+| "The content is clipped at the top/bottom edge" | That is where the crop is. Clipping means content cut off INSIDE the section by a container, not content meeting the boundary of the picture. |"""
 
 _JSON = re.compile(r"\{.*\}", re.DOTALL)
 
@@ -119,6 +127,7 @@ class Inspector(Agent):
         shots: list,
         page_findings: list[Defect],
         blueprint=None,
+        already_disputed: list[str] | None = None,
     ) -> tuple[list[Defect], object]:
         det = (
             "\n".join(f"- {d.what} ({d.where})" for d in page_findings)
@@ -136,6 +145,11 @@ class Inspector(Agent):
             if blueprint is not None else
             "<blueprint>not available — do not report anything as missing</blueprint>",
             f"<deterministic_findings>\n{det}\n</deterministic_findings>",
+            ("<already_disputed>\nThese were reported on an earlier pass and the "
+             "builder rejected them with a reason. Do not report them again unless you "
+             "can point at something new.\n"
+             + "\n".join(f"- {d}" for d in already_disputed)
+             + "\n</already_disputed>") if already_disputed else "",
             "<screenshots>\n"
             + "\n".join(f"- {s.breakpoint} ({s.width}x{s.height})" for s in shots)
             + "\n</screenshots>",

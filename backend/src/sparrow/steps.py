@@ -374,57 +374,139 @@ def step_build(run: Run) -> Iterator[Event]:
     yield Event(Stage.BUILD, "done", "page composed and built")
 
 
-def step_verify(run: Run) -> Iterator[Event]:
+def _inspect_once(run: Run, bb, blueprints, port: int = 4600,
+                  disputed: dict[str, list[str]] | None = None):
+    """One full look at the built page. Returns (page_findings, per_section, cost)."""
     from sparrow.agents.inspector import Inspector, deterministic_defects
-    from sparrow.audit import audit_dir, summarise
-    from sparrow.blueprints import load_dir
     from sparrow.capture import inspect_page, serve
 
-    bb = _bb(run)
     out = run.workspace / "out"
     if not (out / "index.html").exists():
-        # The first real run reported "0 drift findings, 0 visual defects" against
-        # an export that did not exist: inspect_page served an empty directory,
-        # found no sections, and every check passed vacuously. A verification that
-        # cannot fail is worse than none.
         raise RuntimeError(
             "no static export at workspace/out — the build did not complete, so "
             "there is nothing to verify. Check the build stage."
         )
-    findings = audit_dir(run.workspace / "src/components/sections", bb.design_system)
-    yield Event(Stage.VERIFY, "progress", summarise(findings).splitlines()[0])
-
-    blueprints = load_dir(run.dir / "blueprints")
-    with serve(out, port=4600) as url:
+    with serve(out, port=port) as url:
         reports = inspect_page(url, run.dir / "shots" / "sections")
     page_level = deterministic_defects(reports)
-    yield Event(Stage.VERIFY, "progress",
-                f"deterministic: {len(page_level)} finding(s), 0 model calls")
 
     by_index: dict[int, list] = {}
     for r in reports.values():
-        for s in r.sections:
-            by_index.setdefault(s.section_index, []).append(s)
+        for sh in r.sections:
+            by_index.setdefault(sh.section_index, []).append(sh)
 
     inspector = Inspector()
     ordered = sorted(bb.sections, key=lambda s: s.order)
-    total = 0
+    per_section: dict[str, list] = {}
+    cost = 0.0
     for pos, idx in enumerate(sorted(by_index)):
         if pos >= len(ordered):
             break
         sec = ordered[pos]
         defects, usage = inspector.inspect_section(
-            bb, sec, by_index[idx], page_level, blueprints.get(sec.blueprint_id))
-        total += len(defects)
+            bb, sec, by_index[idx], page_level, blueprints.get(sec.blueprint_id),
+            (disputed or {}).get(sec.id))
+        cost += usage.cost(inspector.provider.name, inspector.tier)
+        if defects:
+            per_section[sec.id] = defects
+    return page_level, per_section, cost
+
+
+def step_verify(run: Run) -> Iterator[Event]:
+    """Look, fix, look again — until the page is clean or the budget is spent.
+
+    Until now this stage inspected the page, counted the defects, and threw them
+    away: `total += len(defects)` and nothing more. Gate 3 then asked "ship it?"
+    while holding a list of problems nothing could act on, and the harness was
+    paying about $1.20 a run for findings it discarded.
+
+    That is the missing half of CLAUDE.md §6's build → look → fix loop. Capped at
+    3 like every other loop, because critic-refine plateaus at two or three
+    iterations and then starts inventing objections to justify itself.
+    """
+    from sparrow.agents.builder import Fixer, write_section
+    from sparrow.audit import audit_dir, summarise
+    from sparrow.blueprints import load_dir
+    from sparrow.cli import _run_build
+    from sparrow.loop import Blocked, Outcome, Rounds
+
+    bb = _bb(run)
+    blueprints = load_dir(run.dir / "blueprints")
+    rounds = Rounds("verify", cap=3)
+    fixer: Fixer | None = None
+    # A disputed defect must not come back next round. Without this the inspector
+    # re-reports it, the fixer disputes it again, and the loop spends its whole
+    # budget on one thing nobody is going to change.
+    disputed: dict[str, list[str]] = {}
+    port = 4600
+
+    while True:
+        findings = audit_dir(run.workspace / "src/components/sections", bb.design_system)
+        page_level, per_section, cost = _inspect_once(run, bb, blueprints, port,
+                                                       disputed)
+        port += 1                       # a fresh port each pass; the last may still be closing
+        remaining = sum(len(v) for v in per_section.values())
         yield Event(Stage.VERIFY, "progress",
-                    f"{sec.id}: {len(defects) or 'no'} defect(s)",
-                    cost=usage.cost(inspector.provider.name, inspector.tier))
+                    f"{summarise(findings).splitlines()[0]} · "
+                    f"{len(page_level)} computed · {remaining} visual", cost=cost)
+
+        if not remaining and not findings:
+            rounds.complete("audit clean and no visual defects")
+            break
+
+        slot = rounds.reserve()
+        if isinstance(slot, Blocked):
+            yield Event(Stage.VERIFY, "blocked", f"{slot.code}: {slot.message}")
+            break
+
+        fixer = fixer or Fixer()
+        fixed_any = False
+        for sid, defects in per_section.items():
+            section = next(s for s in bb.sections if s.id == sid)
+            path = run.workspace / section.target_path
+            try:
+                out, dispute = fixer.fix(bb, section, path.read_text(), defects)
+            except Exception as e:
+                yield Event(Stage.VERIFY, "blocked", f"{sid}: fixer failed — {e}")
+                continue
+            if dispute:
+                disputed.setdefault(sid, []).append(dispute)
+                yield Event(Stage.VERIFY, "progress", f"{sid}: disputed — {dispute[:70]}")
+                continue
+            write_section(run.workspace, section, out.code)
+            fixed_any = True
+            yield Event(Stage.VERIFY, "progress",
+                        f"{sid}: fixed {len(defects)} defect(s)",
+                        cost=out.usage.cost(fixer.provider.name, fixer.tier))
+
+        if not fixed_any:
+            # Every defect was disputed, so another pass would look at the same
+            # page and find the same things. Stop rather than burn the budget.
+            rounds.settle(Outcome.SUPERSEDED, "all defects disputed")
+            yield Event(Stage.VERIFY, "progress",
+                        "nothing changed — every defect was disputed")
+            break
+
+        rounds.settle(Outcome.ATTEMPTED, f"fixed {remaining} defect(s)")
+        ok, output = _run_build(run.workspace)
+        if not ok:
+            yield Event(Stage.VERIFY, "blocked",
+                        "a fix broke the build — reverting to the last good export")
+            break
+        yield Event(Stage.VERIFY, "progress", f"rebuilt · {rounds.summary()}")
+
+    findings = audit_dir(run.workspace / "src/components/sections", bb.design_system)
+    _, per_section, _ = _inspect_once(run, bb, blueprints, port + 10, disputed)
+    left = sum(len(v) for v in per_section.values())
 
     raise Halt(GateRequest(
         Stage.GATE_PREVIEW,
-        f"The site is built. {len(findings)} drift finding(s), {total} visual defect(s). Ship it?",
+        f"The site is built. {len(findings)} drift finding(s), {left} visual defect(s)"
+        + (f", {sum(len(v) for v in disputed.values())} disputed" if disputed else "")
+        + f". {rounds.summary()}. Ship it?",
         options=[{"choice": "approve", "label": "Looks good — publish"},
-                 {"choice": "revise", "label": "Send the defects back to be fixed"}],
+                 {"choice": "revise", "label": "Send it back with a note",
+                  "needs_note": True}],
         artifacts=[str(run.workspace / "out")],
     ))
 
