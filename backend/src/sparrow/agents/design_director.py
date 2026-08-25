@@ -35,6 +35,7 @@ import re
 from sparrow.agents.base import Agent, context_block
 from sparrow.blackboard.schema import Blackboard, DesignSystem
 from sparrow.providers import Tier
+from sparrow.palette import check as check_palette, report as palette_report
 from sparrow.render.tokens import validate_fonts
 
 SYSTEM = """You are the design lead at a small studio known for giving every client a
@@ -119,6 +120,26 @@ somewhere similar, that part is a default rather than a choice — revise it, an
 `revised` what you changed and why.
 
 Only output the plan you arrive at after that pass.
+
+## The palette has to be visible on a screen
+
+Measured across every palette this agent has produced: the two section grounds came out
+0.047, 0.050 and 0.055 apart in OKLCH lightness. That is a systematic habit, and below
+about 0.06 the alternation between sections is not perceptible — the page reads as one
+long block and looks washed out however good the individual choices are.
+
+So, as floors rather than taste:
+
+- `background` and `muted` differ by at least **0.07** in L. They are the two grounds the
+  page alternates between; if they cannot be told apart there is no alternation.
+- `border` sits at least **0.08** in L from the page ground, or a hairline-led design has
+  no visible structure.
+- at least one colour carries chroma **≥ 0.11**, or nothing on the page reads as a colour
+  and it renders as tinted grey.
+- at most **three** colours above L=0.92. Stacked near-white surfaces merge into each other.
+
+A restrained palette is a legitimate choice. One whose grounds are indistinguishable is
+not restrained, it is invisible.
 
 ## Scales are closed
 
@@ -231,7 +252,48 @@ class DesignDirector(Agent):
         payload = json.loads(m.group(0))
         revised = payload.pop("revised", "")
         ds = DesignSystem.model_validate(payload)
-        return self._resolve_fonts(ds), revised, res
+        ds = self._resolve_fonts(ds)
+        ds = self._repair_palette(ds, sources=sources, bb=bb)
+        return ds, revised, res
+
+    REPALETTE = """Your palette fails a check that is arithmetic, not taste.
+
+Fix ONLY what is listed. Keep the atmosphere, the signature, the type and every other
+decision exactly as they are — this is a correction, not a new direction. Adjust the
+lightness or chroma of the named colours by the smallest amount that clears each floor,
+and keep their names and roles.
+
+JSON only: {"colors": [{"token": "...", "name": "...", "value": "oklch(L C H)",
+                        "role": "..."}]}
+Return the COMPLETE list of nine, including the ones you did not change."""
+
+    def _repair_palette(self, ds: DesignSystem, *, sources: str = "",
+                        bb=None, attempts: int = 2) -> DesignSystem:
+        """Send measurable palette failures back to be fixed.
+
+        Not a rejection of the direction — the atmosphere, signature and type are
+        kept. Only the numbers move, and only far enough to clear the floor.
+        """
+        for _ in range(attempts):
+            findings = check_palette(ds)
+            if not findings:
+                return ds
+            res = self.call(
+                system=self.REPALETTE,
+                user=(f"<palette>\n"
+                      + "\n".join(f"{c.token}: {c.name} — {c.value}" for c in ds.colors)
+                      + f"\n</palette>\n\n<failures>\n{palette_report(findings)}\n"
+                        "</failures>"),
+            )
+            m = _JSON.search(res.text)
+            if not m:
+                break
+            try:
+                fixed = json.loads(m.group(0))["colors"]
+                ds.colors = [type(ds.colors[0]).model_validate(c) for c in fixed]
+            except Exception:
+                break
+        return ds
 
     SUBSTITUTE = """You picked a typeface that Google Fonts does not serve. Replace it.
 
