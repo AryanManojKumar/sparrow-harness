@@ -84,8 +84,58 @@
   inset: 0 0 auto 0;
   height: 78vh;
   pointer-events: none;
+  z-index: -3;
+  mix-blend-mode: screen;
+  /* Parallax offset, written each frame by components/pointer-glow.tsx. */
+  transform: translate3d(var(--parallax-x, 0px), var(--parallax-y, 0px), 0);
+  will-change: transform;
+}
+
+/* The sky breathing — a very slow drift so the backdrop is alive even when
+ * the pointer is still. Sits on the inner svg because the wrapper's own
+ * transform is owned by the parallax above. */
+.console-clouds > svg {
+  transform-origin: 50% 0%;
+  animation: cloud-drift 42s ease-in-out infinite;
+}
+
+@keyframes cloud-drift {
+  0%,
+  100% {
+    transform: scale(1.04) translate3d(-0.6%, 0, 0);
+  }
+  50% {
+    transform: scale(1.09) translate3d(0.6%, -1.2%, 0);
+  }
+}
+
+/* Light that follows the cursor. Position and strength are custom properties
+ * so the rAF loop never triggers a React render or a layout. */
+.console-glow {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
   z-index: -2;
   mix-blend-mode: screen;
+  opacity: var(--pointer-glow, 0);
+  background: radial-gradient(
+    380px circle at var(--pointer-x, 50%) var(--pointer-y, 30%),
+    oklch(0.66 0.09 278 / 9%),
+    oklch(0.54 0.07 265 / 3.5%) 45%,
+    transparent 72%
+  );
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .console-clouds {
+    transform: none;
+  }
+  .console-clouds > svg {
+    animation: none;
+  }
+  .console-glow {
+    display: none;
+  }
 }
 
 /* Sparse starfield — a handful of soft points, not a galaxy. Two tiled

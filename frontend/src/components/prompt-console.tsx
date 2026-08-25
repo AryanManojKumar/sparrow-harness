@@ -6,7 +6,12 @@ import { AnimatePresence, motion } from "motion/react";
 import { ArrowUp, Loader2, Mic } from "lucide-react";
 
 import { cn } from "@/lib/utils";
-import { suggest, type Suggestion } from "@/lib/suggest";
+import {
+  hasPlaceholder,
+  nextPlaceholder,
+  suggest,
+  type Suggestion,
+} from "@/lib/suggest";
 import { slugify } from "@/lib/api";
 import { extractUrls, isHttpUrl } from "@/lib/urls";
 import { SparrowMark } from "@/components/sparrow-mark";
@@ -34,6 +39,7 @@ export function PromptConsole() {
   const [value, setValue] = useState("");
   const [hasTyped, setHasTyped] = useState(false);
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
+  const [hint, setHint] = useState<string | null>(null);
   const [activeIndex, setActiveIndex] = useState(-1);
   const [isSuggesting, setIsSuggesting] = useState(false);
   const [isDebouncing, setIsDebouncing] = useState(false);
@@ -50,6 +56,9 @@ export function PromptConsole() {
   // the prompt text gets re-added by the extractor on the very next
   // keystroke, so the remove button appears not to work.
   const dismissedRef = useRef<Set<string>>(new Set());
+  // Selection to apply once React has committed a programmatic setValue —
+  // setSelectionRange against the pre-update DOM would land on stale text.
+  const pendingSelectRef = useRef<[number, number] | null>(null);
 
   useEffect(() => {
     abortRef.current?.abort();
@@ -64,6 +73,7 @@ export function PromptConsole() {
 
     if (value.trim().length < MIN_CHARS) {
       setSuggestions([]);
+      setHint(null);
       setActiveIndex(-1);
       setIsSuggesting(false);
       setIsDebouncing(false);
@@ -82,8 +92,9 @@ export function PromptConsole() {
       setIsDebouncing(false);
       setIsSuggesting(true);
       suggest(value, controller.signal)
-        .then((results) => {
-          setSuggestions(results);
+        .then((res) => {
+          setSuggestions(res.suggestions);
+          setHint(res.suggestions.length > 0 ? res.hint : null);
           setActiveIndex(-1);
         })
         .catch(() => {
@@ -97,6 +108,16 @@ export function PromptConsole() {
       clearTimeout(timer);
       controller.abort();
     };
+  }, [value]);
+
+  // Applies a selection queued by acceptSuggestion / Tab, once the new value
+  // is actually in the DOM.
+  useEffect(() => {
+    const sel = pendingSelectRef.current;
+    if (!sel || !textareaRef.current) return;
+    pendingSelectRef.current = null;
+    textareaRef.current.focus();
+    textareaRef.current.setSelectionRange(sel[0], sel[1]);
   }, [value]);
 
   /** Pull any URL in the prompt into the reference list, minus dismissed ones. */
@@ -140,12 +161,26 @@ export function PromptConsole() {
     const next = s.text.replace(/^a /i, "").replace(/^./, (c) => c.toUpperCase());
     setValue(next);
     setSuggestions([]);
+    setHint(null);
     setActiveIndex(-1);
-    textareaRef.current?.focus();
+    // Suggestions arrive with `[blanks]` to fill in — put the cursor on the
+    // first one so typing replaces it, instead of leaving the user to hunt
+    // for the brackets themselves.
+    pendingSelectRef.current = nextPlaceholder(next) ?? [next.length, next.length];
     absorbUrls(next);
   }
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
+    // Tab cycles through the remaining `[blanks]`, whether or not the
+    // suggestion list is still open.
+    if (e.key === "Tab" && hasPlaceholder(value)) {
+      e.preventDefault();
+      const from = (e.currentTarget.selectionEnd ?? 0) + 1;
+      const sel = nextPlaceholder(value, from);
+      if (sel) e.currentTarget.setSelectionRange(sel[0], sel[1]);
+      return;
+    }
+
     if (suggestions.length === 0) return;
 
     if (e.key === "ArrowDown") {
@@ -166,6 +201,9 @@ export function PromptConsole() {
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!value.trim() || isDebouncing || isSuggesting || isStarting) return;
+    // A literal "[what you sell]" reaching /interview would be written into
+    // the brief verbatim, so the blanks are a hard gate, not a nudge.
+    if (hasPlaceholder(value)) return;
 
     const cleanUrls = urls.map((u) => u.trim()).filter(Boolean);
     if (cleanUrls.length < 2 || cleanUrls.some((u) => !isHttpUrl(u))) {
@@ -225,14 +263,20 @@ export function PromptConsole() {
 
           <div className="mt-2 flex items-center justify-between">
             <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
-              {isSuggesting && <Loader2 className="size-3 animate-spin" />}
-              {isSuggesting
-                ? "Finding a direction…"
-                : isDebouncing
-                  ? "Waiting for you to finish typing…"
-                  : value.trim().length > 0
-                    ? `${value.trim().length} characters`
-                    : "One line is enough to start"}
+              {isSuggesting && !hasPlaceholder(value) && (
+                <Loader2 className="size-3 animate-spin" />
+              )}
+              {/* Blanks outrank the loading states: they are the one thing
+                  the user has to act on before anything can start. */}
+              {hasPlaceholder(value)
+                ? "Fill in the [blanks] — Tab to jump between them"
+                : isSuggesting
+                  ? "Finding a direction…"
+                  : isDebouncing
+                    ? "Waiting for you to finish typing…"
+                    : value.trim().length > 0
+                      ? `${value.trim().length} characters`
+                      : "One line is enough to start"}
             </span>
             <div className="flex items-center gap-2">
               <Button type="button" variant="ghost" size="icon" aria-label="Voice input">
@@ -241,7 +285,13 @@ export function PromptConsole() {
               <Button
                 type="submit"
                 size="icon"
-                disabled={!value.trim() || isDebouncing || isSuggesting || isStarting}
+                disabled={
+                  !value.trim() ||
+                  isDebouncing ||
+                  isSuggesting ||
+                  isStarting ||
+                  hasPlaceholder(value)
+                }
                 aria-label="Start"
               >
                 {isStarting ? <Loader2 className="animate-spin" /> : <ArrowUp />}
@@ -257,7 +307,15 @@ export function PromptConsole() {
           style={{ gridTemplateRows: suggestions.length ? "1fr" : "0fr" }}
         >
           <div className="overflow-hidden">
-            <ul className="mt-3 flex flex-col gap-1">
+            {/* What the brief is still missing — the backend picks the gap
+                (offering / audience / specifics / purpose) these completions
+                were aimed at, so the user can see why it is asking. */}
+            {hint && (
+              <p className="mt-3 px-3 text-xs font-medium text-muted-foreground">
+                {hint}
+              </p>
+            )}
+            <ul className="mt-2 flex flex-col gap-1">
               {suggestions.map((s, i) => (
                 <li key={s.id}>
                   <button

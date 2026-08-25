@@ -22,12 +22,13 @@ that works in a browser without a socket.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.openapi.docs import get_redoc_html, get_swagger_ui_html
 from pydantic import BaseModel
@@ -376,7 +377,19 @@ def directions(pid: str) -> list[dict[str, Any]]:
 
 
 @app.get("/projects/{pid}/preview/{path:path}", tags=["artifacts"], summary="The built site, static — drop in an iframe")
-def preview(pid: str, path: str = "") -> FileResponse:
+def preview(pid: str, path: str = "") -> Any:
+    """Serve the static export under a per-project prefix.
+
+    The export is built for a site root, so its HTML asks for `/_next/static/…`
+    and `/assets/…` absolutely. Served at `/projects/{id}/preview/` those all 404
+    and the page renders as unstyled text with no images — which looks like the
+    build failed rather than like the paths are wrong.
+
+    So root-absolute references in HTML are rewritten to the prefix on the way
+    out. Protocol-relative and absolute URLs are left alone. Rewriting on serve
+    rather than setting Next's assetPrefix at build time keeps the export
+    portable: the same `out/` can be dropped on any host without a rebuild.
+    """
     base = (PROJECTS / pid / "workspace" / "out").resolve()
     target = (base / (path or "index.html")).resolve()
     if not str(target).startswith(str(base)):      # no traversal out of the export
@@ -385,7 +398,16 @@ def preview(pid: str, path: str = "") -> FileResponse:
         target = target / "index.html"
     if not target.exists():
         raise HTTPException(404, path)
-    return FileResponse(target)
+
+    if target.suffix.lower() not in {".html", ".htm"}:
+        return FileResponse(target)
+
+    prefix = f"/projects/{pid}/preview"
+    html = target.read_text(encoding="utf-8", errors="replace")
+    # `="/x"` but never `="//host"` — the second is protocol-relative and external.
+    html = re.sub(r'(\s(?:href|src|action|poster)=")/(?!/)', rf'\1{prefix}/', html)
+    html = re.sub(r'(\ssrcset=")/(?!/)', rf'\1{prefix}/', html)
+    return HTMLResponse(html)
 
 
 @app.get("/projects/{pid}/shots/{name}", tags=["artifacts"], summary="A capture")

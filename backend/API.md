@@ -146,7 +146,12 @@ POST /projects/{id}/gate   { "choice": 0 }
 - **SSE, not websockets** — one-way progress is all a run needs.
 - **Costs are live.** Every event carries its own `cost` and the running `spent`. A full
   run is roughly $1.10; worth showing, since users are spending real money per click.
-- **Preview is the real static export**, so it can go straight in an iframe.
+- **Preview is the real static export**, so it can go straight in an iframe. Its HTML is
+  built for a site root, so root-absolute `/_next/…` and `/assets/…` references are
+  rewritten to the `/projects/{id}/preview` prefix on the way out. Without that the page
+  renders as unstyled text with no images, which looks like a failed build rather than
+  wrong paths. The `out/` directory itself stays portable — nothing is baked in at build
+  time.
 - **Old projects may be unreadable.** The schema moved during development; `GET /projects`
   flags those rather than failing.
 - **`_RUNS` is in-process.** Restarting the server loses stage position, though nothing on
