@@ -89,6 +89,7 @@ never paraphrased.
 POST /projects
 {
   "project_id": "acme",
+  "product_name": "Acme Harness",
   "category": "Developer tool landing page",
   "offering": "An agent harness for codebases…",
   "audience": "Staff engineers at teams of 20-200…",
@@ -99,6 +100,12 @@ POST /projects
   "urls": ["https://kiro.dev", "https://cursor.com"]
 }
 ```
+
+`product_name` comes from `/interview` and **must be passed through**. It is injected into
+every agent prompt as "use this exact name everywhere"; without it each builder invents its
+own and the page ships with a different product in the nav than in the footer. Pass an empty
+string only if the user genuinely has no name yet — the prompt then instructs every agent
+to refer to the product generically rather than invent one.
 
 `tone` is the single strongest lever on how the site looks — see
 `experiments/reactbits-01`, where changing that one line moved the design from austere to

@@ -8,6 +8,7 @@ import { cn } from "@/lib/utils";
 import type { Direction, GateInfo, RunEvent } from "@/lib/api";
 import { SparrowMark } from "@/components/sparrow-mark";
 import { SourceCard } from "@/components/source-card";
+import { GatePanel } from "@/components/gate-panel";
 import { Button } from "@/components/ui/button";
 
 // Matches backend/src/sparrow/orchestrator.py's Stage enum, in order —
@@ -64,6 +65,7 @@ export function BuildFeed({
   gate,
   directions,
   errorMessage,
+  showGateInline,
   onAnswerGate,
 }: {
   prompt: string;
@@ -74,6 +76,7 @@ export function BuildFeed({
   gate: GateInfo | null;
   directions: Direction[] | null;
   errorMessage: string | null;
+  showGateInline: boolean;
   onAnswerGate: (choice: string | number, note?: string) => void;
 }) {
   const logRef = useRef<HTMLDivElement>(null);
@@ -166,44 +169,16 @@ export function BuildFeed({
           </div>
         )}
 
-        {phase === "gate" && gate?.awaiting && (
-          <div className="rounded-xl border border-border bg-secondary/40 p-3.5">
-            <p className="mb-3 text-sm text-foreground">{gate.question}</p>
-
-            {gate.gate === "gate:design" && directions ? (
-              <div className="flex flex-col gap-2">
-                {directions.map((d) => (
-                  <button
-                    key={d.index}
-                    type="button"
-                    onClick={() => onAnswerGate(d.index)}
-                    className="rounded-lg border border-border bg-card/40 p-3 text-left transition-colors hover:bg-card"
-                  >
-                    <p className="text-sm font-medium text-foreground">{d.signature}</p>
-                    <p className="mt-1 text-xs text-muted-foreground">{d.atmosphere}</p>
-                    <p className="mt-1 text-xs text-muted-foreground">{d.type}</p>
-                  </button>
-                ))}
-              </div>
-            ) : (
-              <div className="flex flex-wrap gap-2">
-                {(gate.options?.length
-                  ? gate.options
-                  : [{ choice: "approve", label: "Approve" }]
-                ).map((o, i) => (
-                  <Button
-                    key={i}
-                    type="button"
-                    variant={i === 0 ? "default" : "outline"}
-                    size="sm"
-                    onClick={() => onAnswerGate(o.choice ?? "approve")}
-                  >
-                    {String(o.label ?? o.choice ?? "Approve")}
-                  </Button>
-                ))}
-              </div>
-            )}
-          </div>
+        {/* Only when the preview pane isn't already showing it — see
+            build-workspace.tsx, which gives the design gate the main pane
+            while there is nothing built to preview. */}
+        {phase === "gate" && gate?.awaiting && showGateInline && (
+          <GatePanel
+            gate={gate}
+            directions={directions}
+            layout="compact"
+            onAnswerGate={onAnswerGate}
+          />
         )}
 
         {phase === "error" && (

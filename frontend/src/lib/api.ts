@@ -119,13 +119,36 @@ export async function advance(
   }
 }
 
+/**
+ * One choice at a gate. At gate 2 these are design directions and carry a
+ * `specimen` — a rendered PNG of the direction's actual palette and type.
+ * The backend renders those precisely because the prose signature ("a
+ * perforated remittance-advice ribbon") is not something a business owner
+ * can answer; swatches are. Index -1 is the "none of these" escape hatch,
+ * which requires a note saying what to change.
+ */
+export type GateOption = {
+  choice?: string | number;
+  label?: string;
+  index?: number;
+  signature?: string;
+  atmosphere?: string;
+  type?: string;
+  specimen?: string | null;
+};
+
 export type GateInfo = {
   awaiting: boolean;
   gate?: string;
   question?: string;
-  options?: { choice?: string | number; label?: string; [k: string]: unknown }[];
+  options?: GateOption[];
   artifacts?: string[];
 };
+
+/** Absolute URL for a server-relative artifact path the API handed back. */
+export function assetUrl(path: string): string {
+  return path.startsWith("http") ? path : `${API_URL}${path}`;
+}
 
 export function getGate(projectId: string): Promise<GateInfo> {
   return fetch(`${API_URL}/projects/${projectId}/gate`).then((r) => asJson(r, "gate"));

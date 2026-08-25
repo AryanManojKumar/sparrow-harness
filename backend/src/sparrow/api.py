@@ -106,6 +106,12 @@ class InterviewRequest(BaseModel):
 
 class CreateProject(BaseModel):
     project_id: str
+    # Carried from /interview. Without it every builder invents its own name and
+    # the page ships with a different product in the nav than in the footer —
+    # observed as LedgerRoute vs Railform on one page. The Brief field existed;
+    # this request model did not have it, so it was extracted and then dropped
+    # on the floor between the two calls.
+    product_name: str = ""
     category: str
     offering: str
     audience: str
@@ -117,6 +123,7 @@ class CreateProject(BaseModel):
 
     model_config = {"json_schema_extra": {"examples": [{
         "project_id": "acme",
+        "product_name": "Acme Harness",
         "category": "Developer tool landing page",
         "offering": "An agent harness for codebases. Runs a fleet of coding agents "
                     "under a shared plan, every change reviewable as a diff.",
@@ -254,7 +261,8 @@ def create_project(body: CreateProject) -> dict[str, Any]:
     d.mkdir(parents=True, exist_ok=True)
     bb = Blackboard(
         project_id=body.project_id,
-        brief=Brief(category=body.category, offering=body.offering,
+        brief=Brief(product_name=body.product_name.strip(),
+                    category=body.category, offering=body.offering,
                     audience=body.audience, tone=body.tone,
                     primary_action=body.primary_action,
                     secondary_action=body.secondary_action),
