@@ -86,22 +86,58 @@ class PageReport:
     sections: list[SectionShot]
 
 
+def base_path(directory: Path) -> str:
+    """The path prefix this export was built for, read out of the export itself.
+
+    Previews are built with Next's `basePath` so they work under
+    /projects/{id}/preview. That makes every asset URL in the HTML absolute and
+    prefixed. Serving the directory at "/" then 404s all of them: measured on a
+    real export, 24 failed requests, no stylesheet, no JS, Times New Roman, and
+    Motion sections frozen at their initial opacity. The inspector dutifully
+    reports the collisions and faded text it sees, the fixer reads the source,
+    finds nothing wrong, and disputes. The loop cannot converge because the two
+    of them are looking at different pages.
+
+    So ask the HTML where it expects to live rather than assuming root.
+    """
+    index = directory / "index.html"
+    if not index.is_file():
+        return ""
+    for line in index.read_text(errors="ignore").split('"'):
+        marker = line.find("/_next/")
+        if marker > 0:
+            return line[:marker]
+    return ""
+
+
 @contextlib.contextmanager
 def serve(directory: Path, port: int = 4321):
-    """Serve a static export for the duration of a capture run."""
+    """Serve a static export at the path it was built for, for one capture run."""
+    mount = base_path(directory)
 
     class Handler(http.server.SimpleHTTPRequestHandler):
         def __init__(self, *a, **kw):
             super().__init__(*a, directory=str(directory), **kw)
 
+        def translate_path(self, path):
+            if mount and path.startswith(mount):
+                path = path[len(mount):] or "/"
+            return super().translate_path(path)
+
         def log_message(self, *a):  # silence
             pass
 
-    with socketserver.TCPServer(("", port), Handler) as httpd:
+    class Server(socketserver.TCPServer):
+        # Verify runs three rounds back to back on the same port. Without this
+        # the second bind lands on a socket still in TIME_WAIT and the round
+        # dies with EADDRINUSE partway through a paid run.
+        allow_reuse_address = True
+
+    with Server(("", port), Handler) as httpd:
         t = threading.Thread(target=httpd.serve_forever, daemon=True)
         t.start()
         try:
-            yield f"http://localhost:{port}/"
+            yield f"http://localhost:{port}{mount}/"
         finally:
             httpd.shutdown()
 
