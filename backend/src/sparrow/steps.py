@@ -20,6 +20,8 @@ from pathlib import Path
 from sparrow.blackboard.schema import Blackboard, Ground, Section
 from sparrow.orchestrator import Event, GateRequest, Halt, Run, Stage
 
+CHROME_ORDER = ("nav", "footer")
+
 STACK = (
     "Next.js 16 App Router, static export. React 19. TypeScript. Tailwind v4. "
     "Motion 13 from 'motion/react'. Icons from 'lucide-react'. "
@@ -63,6 +65,7 @@ def step_sources(run: Run, urls: list[str]) -> Iterator[Event]:
     provider = get_provider()
     labelled: dict[str, list[tuple[str, int]]] = {}
     by_type: dict[str, list[Candidate]] = {}
+    by_type_all: dict[str, list[Candidate]] = {}   # includes chrome, for blueprints
     registers: dict[str, object] = {}
     out_dir = run.dir / "sources"
 
@@ -78,10 +81,11 @@ def step_sources(run: Run, urls: list[str]) -> Iterator[Event]:
         types = classify(provider, r.bands)
         labelled[site] = [(t, b.index + 1) for t, b in zip(types, r.bands)]
         for t, b in zip(types, r.bands):
+            cand = Candidate(site, t, b.index + 1, b.height, b.words, b.images,
+                             b.buttons, b.listItems, b.headings, b.text, b.unrendered)
+            by_type_all.setdefault(t, []).append(cand)
             if t in RANKABLE:
-                by_type.setdefault(t, []).append(Candidate(
-                    site, t, b.index + 1, b.height, b.words, b.images, b.buttons,
-                    b.listItems, b.headings, b.text, b.unrendered))
+                by_type.setdefault(t, []).append(cand)
         yield Event(Stage.SOURCES, "progress", f"{site}: {len(r.bands)} sections")
 
     if len(labelled) < 2:
@@ -108,6 +112,22 @@ def step_sources(run: Run, urls: list[str]) -> Iterator[Event]:
     bp_dir.mkdir(parents=True, exist_ok=True)
     bper = Blueprinter(provider)
     order = comm.typical_order
+
+    # Chrome gets blueprints too, written from whatever the sources showed even
+    # though it was never ranked.
+    for name in CHROME_ORDER:
+        cands = by_type_all.get(name, [])
+        stub = {"winner": cands[0].site if cands else None,
+                "why": "page chrome — required on every page, not ranked",
+                "adopt": [], "unopposed": True}
+        bp, u = bper.write(bb.brief, name, stub, cands,
+                           [x for x in order if x in rankings])
+        comp = "".join(w.capitalize() for w in name.replace("-", " ").split())
+        (bp_dir / f"{'00' if name == 'nav' else '99'}-{name}.md").write_text(
+            to_markdown(bp, comp))
+        run.spent += u.cost(provider.name, bper.tier)
+        yield Event(Stage.SOURCES, "progress", f"chrome blueprint: {name}")
+
     for i, t in enumerate(order):
         if t not in rankings:
             continue
@@ -117,13 +137,22 @@ def step_sources(run: Run, urls: list[str]) -> Iterator[Event]:
         (bp_dir / f"{i + 1:02d}-{t}.md").write_text(to_markdown(bp, comp))
         run.spent += u.cost(provider.name, bper.tier)
 
+    # Nav first, footer last, content between. Chrome is not ranked — every source
+    # has both, so "which site does a footer best" is not a question — but it is
+    # always built, because a page without navigation is not a page.
+    from sparrow.rank import CHROME
+
+    content = [t for t in order if t in rankings]
+    sitemap = ["nav", *content, "footer"]
     bb.sections = [
         Section(id=t, order=i, blueprint_id=t,
                 target_path=f"src/components/sections/"
                             f"{''.join(w.capitalize() for w in t.replace('-', ' ').split())}.tsx",
                 component_name="".join(w.capitalize() for w in t.replace("-", " ").split()),
-                ground=Ground.PAGE if i % 2 else Ground.MUTED)
-        for i, t in enumerate([t for t in order if t in rankings], 1)
+                # Chrome sits on the page ground; content alternates beneath it.
+                ground=Ground.PAGE if t in CHROME else
+                       (Ground.PAGE if content.index(t) % 2 == 0 else Ground.MUTED))
+        for i, t in enumerate(sitemap, 1)
     ]
     _save(run, bb)
     yield Event(Stage.SOURCES, "done",

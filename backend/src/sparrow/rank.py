@@ -34,11 +34,17 @@ from sparrow.providers import Provider, Tier
 
 _JSON = re.compile(r"\{.*\}", re.DOTALL)
 
-# Page chrome, not sitemap sections. Every site has a nav and a footer; counting
-# them says nothing, and letting them into the order put `nav` second on a real
-# run. `other` is the classifier's "I could not tell" bucket — treating it as a
-# section type makes an extraction failure look like a category convention.
-NOT_SECTIONS = {"nav", "footer", "other"}
+# Page chrome. Every site has a nav and a footer, so COUNTING them says nothing —
+# letting them into the prevalence order once put `nav` second. But excluding them
+# from the count is not the same as excluding them from the PAGE, and conflating
+# the two shipped a site with no navigation and no footer, which reads as half
+# built because it is.
+#
+# So: never ranked, always built. `CHROME` is required and prepended/appended to
+# every sitemap; `other` is the classifier's "I could not tell" bucket and is
+# neither ranked nor built.
+CHROME = ("nav", "footer")
+NOT_SECTIONS = {*CHROME, "other"}
 
 # Types worth ranking.
 RANKABLE = {
