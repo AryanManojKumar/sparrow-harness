@@ -306,19 +306,41 @@ def apply_design_system(run: Run, bb: Blackboard) -> None:
 
 # ------------------------------------------------------------------ build
 
-def step_assets(run: Run) -> Iterator[Event]:
-    from sparrow.agents.curator import Curator, derive_variants
-    from sparrow.blackboard.schema import Asset, Prominence, Provenance
+# ------------------------------------------------------------- the asset gate
+
+ASSET_PLAN = "asset-plan.json"
+DECISIONS = ("upload", "generate", "skip")
+
+
+def _prominence(count: int, index: int):
+    """How large an image sits in its section.
+
+    One image owns the section it is in; after that the first is supporting and
+    the rest are thumbnails. Derived in ONE place because the gate has to tell
+    the user how large their upload will appear, and a gate that promises
+    "dominant" for an image the curator then records as a thumbnail has told
+    them something untrue.
+    """
+    from sparrow.blackboard.schema import Prominence
+
+    if count == 1:
+        return Prominence.DOMINANT
+    return Prominence.SUPPORTING if index == 1 else Prominence.THUMBNAIL
+
+
+def asset_plan(run: Run) -> list[dict]:
+    """Every image the blueprints asked for, as a list that can be decided on.
+
+    Enumerated once, at the gate, and written to disk; `step_assets` then
+    EXECUTES this list rather than re-deriving it from the blueprints. Deriving
+    it twice is how a gate ends up offering a choice about an image the curator
+    never makes, or making one the user was never asked about.
+    """
     from sparrow.blueprints import load_dir
-    from PIL import Image
 
     bb = _bb(run)
     blueprints = load_dir(run.dir / "blueprints")
-    public = run.workspace / "public" / "assets"
-    public.mkdir(parents=True, exist_ok=True)
-    cur = Curator()
-    made: list[Asset] = []
-
+    out: list[dict] = []
     for section in sorted(bb.sections, key=lambda s: s.order):
         bp = blueprints.get(section.blueprint_id)
         if bp is None or not bp.assets:
@@ -331,24 +353,230 @@ def step_assets(run: Run) -> Iterator[Event]:
         if section.id in CHROME_SKIP_ASSETS:
             continue
         for i, brief in enumerate(bp.assets, 1):
-            aid = f"{section.id}-{i}"
-            path = public / f"{aid}.png"
-            path.write_bytes(cur.generate(brief, bb.design_system))
-            with Image.open(path) as im:
-                w, h = im.size
-            prom = (Prominence.DOMINANT if len(bp.assets) == 1
-                    else Prominence.SUPPORTING if i == 1 else Prominence.THUMBNAIL)
-            made.append(Asset(
-                id=aid, section_id=section.id, brief=brief, prominence=prom,
-                provenance=Provenance.GENERATED, path=f"assets/{path.name}",
-                width=w, height=h,
-                variants={k: f"assets/{v}" for k, v in derive_variants(path).items()},
-            ))
-            yield Event(Stage.ASSETS, "progress", f"{aid} [{prom.value}]")
+            out.append({
+                "id": f"{section.id}-{i}", "section_id": section.id, "brief": brief,
+                "prominence": _prominence(len(bp.assets), i).value,
+                "decision": None, "upload": None,
+            })
+    return out
+
+
+def load_plan(run: Run) -> list[dict]:
+    p = run.dir / ASSET_PLAN
+    return json.loads(p.read_text()) if p.exists() else []
+
+
+def save_plan(run: Run, plan: list[dict]) -> None:
+    (run.dir / ASSET_PLAN).write_text(json.dumps(plan, indent=2))
+
+
+def step_asset_gate(run: Run) -> Iterator[Event]:
+    """Ask, per image, whose it is.
+
+    CLAUDE.md §2 names real material as the differentiator, and until this gate
+    existed there was no moment in the run at which a user could hand the system
+    a file. The curator read each blueprint's asset briefs and generated all of
+    them; `Provenance` carried three values and recorded one. A differentiator
+    with no entry point is not a differentiator.
+
+    Per asset rather than once for the whole run, because the answer genuinely
+    differs per asset: a founder has a real dashboard screenshot for the hero and
+    nothing at all for the integrations strip. One global choice forces them to
+    either fabricate the second or lose the first.
+
+    §8 wants concrete options, so each asset carries the brief in the
+    blueprint's own words, the section it lands in, and its prominence — "this
+    one will be the largest thing on the page" is answerable; "asset hero-1" is
+    not.
+    """
+    existing = load_plan(run)
+    plan = asset_plan(run)
+
+    # A file posted before the gate was answered must survive the plan being
+    # re-enumerated, or an upload is silently lost to a retry.
+    uploads = {a["id"]: a.get("upload") for a in existing}
+    for a in plan:
+        a["upload"] = uploads.get(a["id"])
+
+    if not plan:
+        save_plan(run, plan)
+        yield Event(Stage.GATE_ASSETS, "done", "no blueprint asked for imagery")
+        return
+
+    decided = {a["id"]: a.get("decision") for a in existing}
+    if all(decided.get(a["id"]) for a in plan):
+        # Already answered — a resumed run must not ask the same question twice.
+        save_plan(run, existing)
+        yield Event(Stage.GATE_ASSETS, "done",
+                    f"{len(plan)} image(s) already decided")
+        return
+
+    save_plan(run, plan)
+    upload_url = f"/projects/{run.project_id}/assets"
+    raise Halt(GateRequest(
+        Stage.GATE_ASSETS,
+        f"{len(plan)} image(s) go on this page. For each one: use your own file, "
+        "have one generated from the description, or leave it out?",
+        options=[{
+            "asset_id": a["id"],
+            "section_id": a["section_id"],
+            "brief": a["brief"],
+            "prominence": a["prominence"],
+            "uploaded": bool(a["upload"]),
+            "choices": [
+                {"choice": "upload",
+                 "label": "Use my own image",
+                 "detail": "Restyled to the chosen design direction. Any text it "
+                           "gains that the original did not have is rejected.",
+                 "post_file_to": f"{upload_url}/{a['id']}"},
+                {"choice": "generate",
+                 "label": "Generate one from this description"},
+                {"choice": "skip",
+                 "label": "No image — build the section from type and layout"},
+            ],
+        } for a in plan],
+        artifacts=[],
+    ))
+
+
+def record_asset_decisions(run: Run, decisions: dict[str, str]) -> list[dict]:
+    """Write the gate's answer onto the plan. Raises ValueError on a bad answer."""
+    plan = load_plan(run)
+    known = {a["id"] for a in plan}
+    unknown = sorted(set(decisions) - known)
+    if unknown:
+        raise ValueError(f"no such asset(s): {', '.join(unknown)}")
+    for a in plan:
+        choice = decisions.get(a["id"], a.get("decision"))
+        if choice not in DECISIONS:
+            raise ValueError(
+                f"{a['id']} needs one of {', '.join(DECISIONS)} — every image is "
+                "decided individually, there is no answer for all of them")
+        if choice == "upload" and not a.get("upload"):
+            raise ValueError(
+                f"{a['id']} was answered 'upload' but no file has been posted to "
+                f"/projects/{run.project_id}/assets/{a['id']} yet")
+        a["decision"] = choice
+    save_plan(run, plan)
+    return plan
+
+
+def record_upload(run: Run, asset_id: str, filename: str, data: bytes) -> dict:
+    """Store a user's file against one asset in the plan."""
+    plan = load_plan(run)
+    entry = next((a for a in plan if a["id"] == asset_id), None)
+    if entry is None:
+        raise ValueError(f"no such asset {asset_id!r} in this run's plan")
+    from PIL import Image, UnidentifiedImageError
+
+    up = run.dir / "uploads"
+    up.mkdir(parents=True, exist_ok=True)
+    name = f"{asset_id}{Path(filename).suffix.lower() or '.png'}"
+    (up / name).write_bytes(data)
+    try:
+        with Image.open(up / name) as im:
+            im.verify()
+    except (UnidentifiedImageError, OSError) as e:
+        (up / name).unlink(missing_ok=True)
+        raise ValueError(f"{filename} is not a readable image: {e}") from e
+
+    entry["upload"] = name
+    save_plan(run, plan)
+    return entry
+
+
+def step_assets(run: Run) -> Iterator[Event]:
+    """Execute the plan the asset gate decided. One image, one provenance.
+
+    UPLOAD is the only path that can ship a claim the user never made, so it is
+    the only one gated: the restyle is checked for text fidelity, and a restyle
+    that invented words is discarded in favour of the user's untouched original.
+    Their real screenshot, unstyled, beats a beautiful one that says something
+    about their product that is not true. The rejection is recorded on the asset
+    rather than swallowed.
+    """
+    from sparrow.agents.curator import Curator, derive_variants
+    from sparrow.blackboard.schema import Asset, Prominence, Provenance
+    from PIL import Image
+
+    bb = _bb(run)
+    plan = load_plan(run)
+    if not plan:
+        # No gate ran: a project created before the asset gate existed, or a
+        # blueprint set that asks for no imagery. Generating is what this stage
+        # did before the gate, so an old project resumes with its old behaviour
+        # rather than stalling on a question nobody was asked.
+        plan = [dict(a, decision="generate") for a in asset_plan(run)]
+        save_plan(run, plan)
+
+    public = run.workspace / "public" / "assets"
+    public.mkdir(parents=True, exist_ok=True)
+    cur = Curator()
+    made: list[Asset] = []
+
+    for a in plan:
+        aid, decision = a["id"], a.get("decision") or "generate"
+        if decision == "skip":
+            yield Event(Stage.ASSETS, "progress",
+                        f"{aid} skipped — the builder composes this section from "
+                        "type and layout")
+            continue
+
+        path = public / f"{aid}.png"
+        rejected: list[str] = []
+
+        if decision == "upload":
+            original = (run.dir / "uploads" / a["upload"]).read_bytes()
+            restyled = cur.restyle(original, bb.design_system)
+            fidelity = cur.check_fidelity(original, restyled)
+            if fidelity.ok:
+                path.write_bytes(restyled)
+                provenance = Provenance.RESTYLED
+                yield Event(Stage.ASSETS, "progress",
+                            f"{aid} restyled from your file — text fidelity holds")
+            else:
+                # One attempt, no retry. The failure is the model inventing copy,
+                # and a second roll of the same prompt is not evidence it will
+                # invent less — it is another image call against the same odds.
+                _write_png(original, path, Image)
+                provenance = Provenance.USER_SUPPLIED
+                rejected.append(f"restyle rejected — {fidelity.reason()}")
+                yield Event(Stage.ASSETS, "blocked",
+                            f"{aid}: restyle invented text ({fidelity.reason()}) — "
+                            "shipping your original untouched")
+        else:
+            path.write_bytes(cur.generate(a["brief"], bb.design_system))
+            provenance = Provenance.GENERATED
+            yield Event(Stage.ASSETS, "progress", f"{aid} generated")
+
+        with Image.open(path) as im:
+            w, h = im.size
+        made.append(Asset(
+            id=aid, section_id=a["section_id"], brief=a["brief"],
+            prominence=Prominence(a["prominence"]), provenance=provenance,
+            path=f"assets/{path.name}", width=w, height=h,
+            variants={k: f"assets/{v}" for k, v in derive_variants(path).items()},
+            rejected=rejected,
+        ))
 
     bb.assets = made
     _save(run, bb)
-    yield Event(Stage.ASSETS, "done", f"{len(made)} asset(s)")
+    tally = {}
+    for m in made:
+        tally[m.provenance.value] = tally.get(m.provenance.value, 0) + 1
+    skipped = sum(1 for a in plan if a.get("decision") == "skip")
+    yield Event(Stage.ASSETS, "done",
+                f"{len(made)} asset(s)"
+                + (" · " + ", ".join(f"{v} {k}" for k, v in sorted(tally.items())) if tally else "")
+                + (f" · {skipped} skipped" if skipped else ""))
+
+
+def _write_png(data: bytes, path: Path, Image) -> None:
+    """Normalise whatever the user uploaded to the PNG the workspace expects."""
+    import io
+
+    with Image.open(io.BytesIO(data)) as im:
+        im.convert("RGB").save(path, "PNG")
 
 
 def step_build(run: Run) -> Iterator[Event]:
@@ -380,9 +608,42 @@ def step_build(run: Run) -> Iterator[Event]:
     yield Event(Stage.BUILD, "done", "page composed and built")
 
 
+class AssetsNotServed(RuntimeError):
+    """The page's own requests 404'd, so nothing rendered on it is real.
+
+    Worth its own type because the response is different from every other
+    finding: there is nothing to fix in a section file, and no judgement to
+    make about a page that never loaded its stylesheet. A capture taken in
+    this state shows Times New Roman on white with every Motion section frozen
+    at its initial opacity — and the inspector, honestly, reports collisions
+    and faded text. The fixer then reads a source file that is completely
+    fine, disputes, and the loop burns all three rounds arguing about a
+    screenshot of a page nobody will ever see.
+
+    Measured on a real export after previews moved to Next's `basePath`: 24
+    failed requests, no stylesheet, no JS. That was a bug in how the export was
+    served (`capture.base_path`), and it cost three paid rounds before anyone
+    looked at a crop. `failed_requests` was already being collected and nothing
+    read it. This is that check, and it is free.
+    """
+
+    def __init__(self, urls: list[str]) -> None:
+        self.urls = urls
+        super().__init__(
+            f"{len(urls)} request(s) failed while loading the page, so it did not "
+            "render as a visitor would see it and there is nothing worth "
+            "inspecting: " + ", ".join(urls[:5])
+            + (f" (+{len(urls) - 5} more)" if len(urls) > 5 else "")
+        )
+
+
 def _inspect_once(run: Run, bb, blueprints, port: int = 4600,
                   disputed: dict[str, list[str]] | None = None):
-    """One full look at the built page. Returns (page_findings, per_section, cost)."""
+    """One full look at the built page. Returns (page_findings, per_section, cost).
+
+    Raises `AssetsNotServed` BEFORE the first model call if the page could not
+    load its own assets. Everything below this line costs money per section.
+    """
     from sparrow.agents.inspector import Inspector, deterministic_defects
     from sparrow.capture import inspect_page, serve
 
@@ -394,6 +655,11 @@ def _inspect_once(run: Run, bb, blueprints, port: int = 4600,
         )
     with serve(out, port=port) as url:
         reports = inspect_page(url, run.dir / "shots" / "sections")
+
+    failed = sorted({u for r in reports.values() for u in r.failed_requests})
+    if failed:
+        raise AssetsNotServed(failed)
+
     page_level = deterministic_defects(reports)
 
     by_index: dict[int, list] = {}
@@ -493,6 +759,7 @@ def step_verify(run: Run) -> Iterator[Event]:
     blueprints = load_dir(run.dir / "blueprints")
     rounds = Rounds("verify", cap=3)
     fixer: Fixer | None = None
+    unserved: list[str] = []
     # A disputed defect must not come back next round. Without this the inspector
     # re-reports it, the fixer disputes it again, and the loop spends its whole
     # budget on one thing nobody is going to change.
@@ -501,8 +768,17 @@ def step_verify(run: Run) -> Iterator[Event]:
 
     while True:
         findings = audit_dir(run.workspace / "src/components/sections", bb.design_system)
-        page_level, per_section, cost = _inspect_once(run, bb, blueprints, port,
-                                                       disputed)
+        try:
+            page_level, per_section, cost = _inspect_once(run, bb, blueprints, port,
+                                                          disputed)
+        except AssetsNotServed as e:
+            # Stop the round before the inspector is asked anything. Nothing in a
+            # section file explains a 404, so every model call this round would
+            # buy an opinion about a page that never loaded.
+            yield Event(Stage.VERIFY, "blocked",
+                        f"the preview is not serving its own assets — {e}")
+            unserved = e.urls
+            break
         port += 1                       # a fresh port each pass; the last may still be closing
 
         # Drift is NOT suppressed by `disputed` the way a visual defect is.
@@ -591,12 +867,24 @@ def step_verify(run: Run) -> Iterator[Event]:
         yield Event(Stage.VERIFY, "progress", f"rebuilt · {rounds.summary()}")
 
     findings = audit_dir(run.workspace / "src/components/sections", bb.design_system)
-    _, per_section, _ = _inspect_once(run, bb, blueprints, port + 10, disputed)
-    left = sum(len(v) for v in per_section.values())
+    try:
+        _, per_section, _ = _inspect_once(run, bb, blueprints, port + 10, disputed)
+        left = sum(len(v) for v in per_section.values())
+    except AssetsNotServed as e:
+        per_section, left, unserved = {}, 0, e.urls
 
+    # A page that cannot load its own assets is not a page anyone should be asked
+    # to ship, so that leads the question rather than sitting in a log line.
+    headline = (
+        f"The preview is not serving {len(unserved)} of its own files, so what "
+        "you see is unstyled and is not what was built. This needs fixing before "
+        "it can be judged. "
+        if unserved else "The site is built. "
+    )
     raise Halt(GateRequest(
         Stage.GATE_PREVIEW,
-        f"The site is built. {len(findings)} drift finding(s), {left} visual defect(s)"
+        headline
+        + f"{len(findings)} drift finding(s), {left} visual defect(s)"
         + (f", {sum(len(v) for v in disputed.values())} disputed" if disputed else "")
         + f". {rounds.summary()}. Ship it?",
         options=[{"choice": "approve", "label": "Looks good — publish"},

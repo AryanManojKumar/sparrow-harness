@@ -5,8 +5,17 @@ and stops at the three gates. Until now the pipeline was nine CLI commands run b
 hand in the right order — which is how `page.tsx` went uncomposed through two
 whole experiments without anyone noticing.
 
-CLAUDE.md §8: three gates, not fifteen. Brief, design direction, full preview.
-Everything between them runs without asking.
+CLAUDE.md §8: gates are few and each one is a decision only a human holds.
+Brief, design direction, whose imagery, full preview. Everything between them
+runs without asking.
+
+The asset gate is the fourth, and it is not an approval step — it is the only
+point at which the user's REAL material can enter the run. Without it the
+curator silently generated every image a blueprint asked for, which makes §2's
+differentiator ("real content, not filler") unreachable by construction: the
+system had no moment where a file could be handed to it. Provenance had carried
+`user_supplied | restyled | generated` from the start and only ever recorded
+`generated`, which is what a missing gate looks like in the data.
 
 A run is a state machine rather than a function because a gate is a stop, and a
 stop has to survive the process going away. Every transition is written to the
@@ -29,6 +38,7 @@ class Stage(StrEnum):
     SOURCES = "sources"              # extract, classify, rank, blueprint
     DESIGN = "design"                # design system + sitemap
     GATE_DESIGN = "gate:design"      # ── GATE 2 — choose between directions
+    GATE_ASSETS = "gate:assets"      # ── ASSET GATE — per image: upload/generate/skip
     ASSETS = "assets"                # curator
     BUILD = "build"                  # builder, compose, repair
     VERIFY = "verify"                # drift audit + inspector
@@ -37,7 +47,7 @@ class Stage(StrEnum):
 
 
 ORDER: list[Stage] = list(Stage)
-GATES = {Stage.GATE_BRIEF, Stage.GATE_DESIGN, Stage.GATE_PREVIEW}
+GATES = {Stage.GATE_BRIEF, Stage.GATE_DESIGN, Stage.GATE_ASSETS, Stage.GATE_PREVIEW}
 
 
 def next_stage(s: Stage) -> Stage:
