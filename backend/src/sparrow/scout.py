@@ -332,6 +332,58 @@ class Palette:
         return out
 
 
+# What components a category actually builds with. Our blueprints only ever asked
+# for cards with an icon, a title and body text, and the pages came out uniform
+# because of it. The sources use far more: kiro.dev carries 30 pills and 36
+# accordions, linear.app 180 inline SVGs and 7 code blocks. None of that was ever
+# measured, so the blueprinter could not ask for it.
+_CENSUS = r"""
+() => {
+  const n = (sel) => document.querySelectorAll(sel).length;
+  return {
+    tabs: n('[role=tab], [role=tablist] > *'),
+    accordions: n('details, [aria-expanded]'),
+    pills: [...document.querySelectorAll('span,a,div,li')].filter(e => {
+      const r = e.getBoundingClientRect(), cs = getComputedStyle(e);
+      return r.width > 28 && r.width < 190 && r.height > 20 && r.height < 46
+        && parseFloat(cs.borderRadius) > 10
+        && (e.textContent || '').trim().length < 26 && !e.children.length;
+    }).length,
+    codeBlocks: n('pre, code'),
+    tables: n('table'),
+    strikethrough: [...document.querySelectorAll('*')].filter(e =>
+      /line-through/.test(getComputedStyle(e).textDecorationLine)).length,
+    bigNumbers: [...document.querySelectorAll('*')].filter(e =>
+      !e.children.length && parseFloat(getComputedStyle(e).fontSize) > 34
+      && /^[\d$€£%.,+kKmM ]{1,12}$/.test((e.textContent || '').trim())).length,
+    inlineSvg: n('svg'),
+  };
+}
+"""
+
+
+@dataclass
+class Components:
+    """Counted component vocabulary — what this category builds pages out of."""
+
+    tabs: int = 0
+    accordions: int = 0
+    pills: int = 0
+    code_blocks: int = 0
+    tables: int = 0
+    strikethrough: int = 0
+    big_numbers: int = 0
+    inline_svg: int = 0
+
+    def used(self) -> list[str]:
+        names = {"tabs": self.tabs, "accordions": self.accordions, "pills": self.pills,
+                 "code blocks": self.code_blocks, "tables": self.tables,
+                 "strikethrough comparisons": self.strikethrough,
+                 "large stat numbers": self.big_numbers,
+                 "inline SVG / diagrams": self.inline_svg}
+        return [f"{k} ({v})" for k, v in names.items() if v >= 2]
+
+
 @dataclass
 class Motion:
     """Countable facts about how a category moves.
@@ -367,6 +419,7 @@ class Register:
     product_images: int
     motion: Motion | None = None
     palette: Palette | None = None
+    components: Components | None = None
 
 
 @dataclass
@@ -443,6 +496,7 @@ def extract(
             title = page.title()
             page_h = page.evaluate("document.body.scrollHeight")
             semantic = page.evaluate("document.querySelectorAll('section').length")
+            cen = page.evaluate(_CENSUS)
             mot = page.evaluate(_MOTION)
             pal = page.evaluate(_PALETTE)
             reg = page.evaluate(_REGISTER)
@@ -461,6 +515,12 @@ def extract(
                 dark=bool(reg["dark"]),
                 ground_changes=int(pal.get("groundChanges", 0)),
                 distinct_grounds=int(pal.get("distinctGrounds", 1)),
+            ),
+            components=Components(
+                tabs=int(cen["tabs"]), accordions=int(cen["accordions"]),
+                pills=int(cen["pills"]), code_blocks=int(cen["codeBlocks"]),
+                tables=int(cen["tables"]), strikethrough=int(cen["strikethrough"]),
+                big_numbers=int(cen["bigNumbers"]), inline_svg=int(cen["inlineSvg"]),
             ),
             motion=Motion(
                 running=int(mot["running"]), ambient=list(mot["ambient"]),

@@ -258,6 +258,21 @@ def register_report(registers: dict[str, object]) -> str:
         lines.append(f"    range {min(vals):.2f}-{max(vals):.2f}, "
                      f"median {sorted(vals)[len(vals)//2]:.2f}")
 
+    comps = [r.components for r in registers.values() if getattr(r, "components", None)]
+    if comps:
+        from collections import Counter
+        tally: Counter = Counter()
+        for c in comps:
+            for u in c.used():
+                tally[u.split(" (")[0]] += 1
+        if tally:
+            lines.append("")
+            lines.append("  COMPONENTS THIS CATEGORY BUILDS WITH")
+            for name, sites in tally.most_common():
+                lines.append(f"    {name:<28} on {sites}/{len(comps)} sources")
+            lines.append("    Blueprints that ask only for cards with an icon and body "
+                         "text produce uniform pages. Ask for what the category uses.")
+
     grounds = [p for p in registers.values() if getattr(p, "distinct_grounds", None)]
     if grounds:
         one = sum(1 for p in grounds if p.distinct_grounds == 1)

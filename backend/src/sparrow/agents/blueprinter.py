@@ -32,6 +32,16 @@ hierarchy, at what density, and how they reflow on mobile. Never mention colour,
 typeface, spacing values, shadows or radius — those are decided elsewhere, and a
 blueprint that names them removes the builder's judgement as well as the designer's.
 
+USE THE COMPONENT VOCABULARY THE SOURCES USE. The register counts what this category
+actually builds with — tabs, accordions, pill rows, code blocks, stat numbers, inline
+diagrams. If a component appears across the sources and suits this section's job, ask for
+it by name in `structure`. A blueprint that only ever specifies "cards with an icon, a
+title and two lines of body" produces a page of identical cards, which is what a templated
+site looks like.
+
+Do not reach for a component the sources do not use, and do not add one for variety alone —
+it has to do the section's job better than plain type would.
+
 Ground every number in the evidence. "Several features" is a guess; "six features in a
 3-column grid, each with an icon, a title and two to three lines of body" is what a real
 page was measured doing. Where the evidence is thin, say what the section needs for THIS
@@ -47,6 +57,13 @@ when you use one, and leave it out otherwise.
 
 SLOTS are the copy the builder writes: eyebrow, headline, body, cta_label, features[],
 question, answer. Every section has slots — a hero with none is a hero with no words.
+
+An asset is not the only way to show a product. A section can also be built from composed
+markup, inline SVG, a CSS-drawn panel, or an interactive component — and for content that
+is inherently text, like code, logs, diffs, configuration or tabular data, markup carries
+exact values that an image can only approximate. Ask for an asset when the section needs a
+picture of something; describe the alternative in `structure` when it does not. The
+register says which of these the category actually uses.
 
 ASSETS are imagery someone must produce. Describe each one well enough to act on:
 `product_image` is not a brief; "one 16:9 product capture showing the review packet with

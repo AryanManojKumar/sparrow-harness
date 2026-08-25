@@ -29,6 +29,25 @@ LAYOUT, COMPOSITION, DENSITY AND RHYTHM ARE YOURS. Make real design decisions.
 THE TOKEN VOCABULARY IS NOT YOURS. It is fixed, and it is fixed for a reason: five
 sections built independently have to read as one page.
 
+## Ways a section can be built
+
+These all exist. Which one a section uses is decided by its blueprint and by what the
+register measured this category doing — not by preference, and not by habit.
+
+- COMPOSED MARKUP — type, rules, grids, borders. Selectable, crisp at any resolution,
+  and it can carry exact domain content: real identifiers, real timestamps, real code.
+- INLINE SVG — diagrams, connectors, traces, marks. Scales, takes design-system colour
+  as `currentColor` or a token, and animates.
+- CSS-DRAWN INTERFACE — a panel built from divs and borders that resembles product UI.
+- A REAL IMAGE — a supplied or generated capture, via next/image.
+- INTERACTIVE COMPONENTS — tabs, accordions, disclosure, hover states. The shadcn
+  primitives in this project cover most of these.
+- MOTION — the design system's motion line says what moves.
+
+A section listing an asset uses that asset. A section without one is not thereby limited
+to plain text: everything above is still available, and which of it belongs is a question
+the blueprint and the register answer.
+
 REQUIRED: IMPLEMENT THE MOTION THE DESIGN SYSTEM SPECIFIES.
 The MOTION line is an instruction, not a description of a mood. Build it. That means a
 client component ("use client"), `motion` imported from "motion/react", and the entrance,
