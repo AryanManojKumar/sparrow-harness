@@ -240,6 +240,18 @@ _FOLD_FADE = r"""
   .slice(0, 8)
 """
 
+_UNSTICK = r"""
+() => {
+  for (const el of document.querySelectorAll('body *')) {
+    const p = getComputedStyle(el).position;
+    if (p === 'sticky' || p === 'fixed') {
+      el.style.setProperty('position', 'static', 'important');
+      el.style.setProperty('top', 'auto', 'important');
+    }
+  }
+}
+"""
+
 _INVISIBLE = r"""
 () => [...document.querySelectorAll('section, section *')]
   .filter(e => parseFloat(getComputedStyle(e).opacity) <= 0.05)
