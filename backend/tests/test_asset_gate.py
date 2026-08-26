@@ -28,6 +28,8 @@ from sparrow.orchestrator import Stage
 from conftest import drain, make_run
 
 SECTION = 'export default function S() { return <section />; }\n'
+UPLOADED = (200, 180, 120)
+SCRUBBED = (10, 20, 30)
 
 
 def blueprint(sid: str, assets: list[str]) -> str:
@@ -185,20 +187,31 @@ class StubCurator:
         self.generated: list[str] = []
         self.restyled = 0
         self.checked = 0
+        self.scrubs = 0
+        self.saw: list[bytes] = []          # what each downstream call was handed
         self.fidelity_ok = fidelity_ok
 
     def generate(self, brief, _ds, **_kw):
         self.generated.append(brief)
         return png((90, 20, 20))
 
-    def restyle(self, _image, _ds, **_kw):
+    def scrub(self, image):
+        from sparrow.agents.curator import Scrub
+
+        self.scrubs += 1
+        self.saw.append(image)
+        return Scrub(png(SCRUBBED), ["person name x1"], ["a scrubbed line"])
+
+    def restyle(self, image, _ds, **_kw):
         self.restyled += 1
+        self.saw.append(image)
         return png((10, 90, 40))
 
-    def check_fidelity(self, _before, _after):
+    def check_fidelity(self, before, _after):
         from sparrow.agents.curator import Fidelity
 
         self.checked += 1
+        self.before = before
         return (Fidelity(ok=True, invented=[], lost=[]) if self.fidelity_ok
                 else Fidelity(ok=False, invented=["visibility", "frameworks"], lost=[]))
 
@@ -216,7 +229,7 @@ def decided(tmp_path, briefs, decisions, uploads=()):
     run = project(tmp_path, briefs)
     drain(steps.step_asset_gate(run))
     for aid in uploads:
-        steps.record_upload(run, aid, "shot.png", png((200, 180, 120)))
+        steps.record_upload(run, aid, "shot.png", png(UPLOADED))
     steps.record_asset_decisions(run, decisions)
     return run
 
@@ -254,6 +267,63 @@ def test_upload_is_restyled_and_marked_restyled_when_fidelity_holds(tmp_path, mo
         "can ship a claim the user never made"
     assert [a.provenance for a in bb.assets] == [Provenance.RESTYLED]
     assert bb.assets[0].rejected == []
+    assert bb.assets[0].scrubbed == ["person name x1"], \
+        "what the scrub replaced belongs on the asset, so the run stays auditable"
+
+
+# ------------------------------------------------------------------ the scrub
+
+
+def test_the_scrub_runs_before_anything_else_touches_the_upload(tmp_path, monkeypatch):
+    """CLAUDE.md §7. `restyle` posts the file to a third-party image model and
+    the result is published at the preview URL. A scrub after either is a scrub
+    of a copy — the real customer data has already left."""
+    run = decided(tmp_path, {"hero": ["a dashboard"]}, {"hero-1": "upload"},
+                  uploads=["hero-1"])
+    events, _bb, cur = run_assets(run, monkeypatch)
+
+    assert cur.scrubs == 1
+    assert cur.saw[0] != cur.saw[1], "the restyle must not be handed the upload"
+    with Image.open(io.BytesIO(cur.saw[0])) as im:
+        assert im.convert("RGB").getpixel((0, 0)) == UPLOADED   # scrub saw the real file
+    with Image.open(io.BytesIO(cur.saw[1])) as im:
+        assert im.convert("RGB").getpixel((0, 0)) == SCRUBBED   # restyle saw the scrub
+    said = [e.message for e in events if "substituted" in e.message]
+    assert said and "person name x1" in said[0], \
+        "SS8 rules out a fourth gate, so the substitution is REPORTED instead"
+
+
+def test_fidelity_is_measured_against_the_scrub_not_the_upload(tmp_path, monkeypatch):
+    """Against the upload, every substitution the scrub made reads as a word the
+    restyle invented, and every legitimate restyle of a dashboard is rejected.
+    The image model's ground truth is what the image model was given."""
+    run = decided(tmp_path, {"hero": ["a dashboard"]}, {"hero-1": "upload"},
+                  uploads=["hero-1"])
+    _events, _bb, cur = run_assets(run, monkeypatch)
+
+    assert cur.before == ["a scrubbed line"], \
+        "the scrub already read its own output back; buying that transcription " \
+        "a second time is the only alternative"
+
+
+def test_a_rejected_restyle_falls_back_to_the_scrub_not_the_upload(
+        tmp_path, monkeypatch):
+    """The restyle failing is no reason to publish the customer's data."""
+    run = decided(tmp_path, {"hero": ["a dashboard"]}, {"hero-1": "upload"},
+                  uploads=["hero-1"])
+    _events, bb, _cur = run_assets(run, monkeypatch, fidelity_ok=False)
+
+    assert bb.assets[0].provenance is Provenance.USER_SUPPLIED
+    shipped = run.workspace / "public" / "assets" / "hero-1.png"
+    with Image.open(shipped) as im:
+        assert im.convert("RGB").getpixel((0, 0)) == SCRUBBED
+
+
+def test_generation_is_not_scrubbed(tmp_path, monkeypatch):
+    """Nothing generated is a picture of anybody's real customers."""
+    run = decided(tmp_path, {"hero": ["a dashboard"]}, {"hero-1": "generate"})
+    _events, bb, cur = run_assets(run, monkeypatch)
+    assert cur.scrubs == 0 and bb.assets[0].scrubbed == []
 
 
 def test_a_restyle_that_invents_words_falls_back_to_the_untouched_original(
@@ -271,12 +341,12 @@ def test_a_restyle_that_invents_words_falls_back_to_the_untouched_original(
     assert [a.provenance for a in bb.assets] == [Provenance.USER_SUPPLIED]
     assert bb.assets[0].rejected and "invented" in bb.assets[0].rejected[0]
     blocked = [e for e in events if e.kind == "blocked"]
-    assert blocked and "shipping your original untouched" in blocked[0].message
+    assert blocked and "shipping your own screenshot instead" in blocked[0].message
 
-    # The image that shipped is the user's, not the model's.
+    # The image that shipped is the user's, not the image model's.
     shipped = run.workspace / "public" / "assets" / "hero-1.png"
     with Image.open(shipped) as im:
-        assert im.convert("RGB").getpixel((0, 0)) == (200, 180, 120)
+        assert im.convert("RGB").getpixel((0, 0)) == SCRUBBED
 
 
 def test_three_decisions_in_one_run(tmp_path, monkeypatch):

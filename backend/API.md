@@ -270,9 +270,46 @@ crash between the two does not lose the file.
 
 | choice | what runs | recorded provenance |
 |---|---|---|
-| `upload` | the file is restyled to the chosen design system, and the restyle is checked for text fidelity | `restyled`, or `user_supplied` if the check rejects it |
+| `upload` | the file is **scrubbed of personal and customer data**, then restyled to the chosen design system, and the restyle is checked for text fidelity | `restyled`, or `user_supplied` if the check rejects it |
 | `generate` | `curator.generate` from the blueprint's brief — the previous behaviour | `generated` |
 | `skip` | nothing; no asset is recorded and the builder composes the section from type and layout | — |
+
+### The PII scrub on uploads
+
+An uploaded dashboard is full of real customer data. The capture this was built against
+carries a named user, their work email, a merchant id, five card and transaction ids and
+eleven sterling amounts — and before the scrub existed the fidelity gate faithfully
+preserved every one of them into the published page.
+
+**It is not a gate.** There are three gates and a fourth would not get finished; more to
+the point, there is no version of "yes, publish my customer's email address" worth
+stopping the run to ask. It runs automatically and **reports what it changed** on the
+event stream:
+
+```
+{ "stage": "assets", "kind": "progress",
+  "message": "product-showcase-1: real values substituted out of your screenshot before
+              anything else saw it — email ×1, identifier ×10, money ×11, org name ×3,
+              person name ×1" }
+```
+
+The same summary is on the asset as `Asset.scrubbed`. It carries the CATEGORY and the
+count and never the value it replaced: that field is read by agents, written into prompts
+and copied into logs, which are the paths the scrub exists to keep the value off. The
+scrubbed image is written beside the upload as `uploads/{asset_id}--scrubbed.png`, so the
+substitution is the user's to check.
+
+Values are **substituted, not blurred** — same length, same currency symbol, same digit
+count, same ink, same position. A dashboard screenshot is only worth uploading because it
+looks like real software in real use; a scrub that greys out every figure returns
+something worse than the leak, because the user stops uploading. Product UI chrome, menu
+items, column headers, status words, timestamps, counts, code and repository names are
+left alone, and a value that cannot be placed confidently is masked rather than left
+readable.
+
+The scrub runs **before the restyle**, not after. `restyle` posts the file to a
+third-party image model and what comes back is published at the preview URL; after either,
+the data has already left.
 
 ### The fidelity gate on uploads
 
@@ -288,10 +325,17 @@ flawless.
 
 So both images are transcribed and compared at word level (a restyle legitimately reflows
 text, so line breaks move; a word that was not there before is the defect). A restyle that
-invented words is **discarded in favour of the user's untouched original**, the asset is
+invented words is **discarded in favour of the user's own screenshot**, the asset is
 recorded as `user_supplied`, and the reason lands in `Asset.rejected` and in a `blocked`
 event on the stream. Their real screenshot, unstyled, beats a beautiful one that says
 something untrue about their product.
+
+The comparison is **scrubbed-against-restyled**, never upload-against-restyled. The gate
+asks whether the image model invented copy, so the ground truth is what the image model
+was given. Measured against the upload instead, every substitution the scrub made reads as
+a word the restyle invented and every legitimate restyle of a dashboard is rejected. What
+falls back on a rejection is the scrubbed image, not the upload — the restyle failing is
+no reason to publish the customer data.
 
 There is one restyle attempt and no retry: the failure mode is the model inventing copy,
 and a second roll of the same prompt is not evidence it will invent less.

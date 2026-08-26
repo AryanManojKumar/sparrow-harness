@@ -488,6 +488,10 @@ def record_upload(run: Run, asset_id: str, filename: str, data: bytes) -> dict:
 def step_assets(run: Run) -> Iterator[Event]:
     """Execute the plan the asset gate decided. One image, one provenance.
 
+    UPLOAD is also the only path carrying anything real about anybody else, so
+    it is the only one SCRUBBED — and the scrub runs before the restyle, because
+    the restyle is what puts the file in front of a third party.
+
     UPLOAD is the only path that can ship a claim the user never made, so it is
     the only one gated: the restyle is checked for text fidelity, and a restyle
     that invented words is discarded in favour of the user's untouched original.
@@ -524,11 +528,33 @@ def step_assets(run: Run) -> Iterator[Event]:
 
         path = public / f"{aid}.png"
         rejected: list[str] = []
+        scrubbed: list[str] = []
 
         if decision == "upload":
             original = (run.dir / "uploads" / a["upload"]).read_bytes()
-            restyled = cur.restyle(original, bb.design_system)
-            fidelity = cur.check_fidelity(original, restyled)
+            # FIRST, before any other network call. `restyle` posts the file to
+            # a third-party image model and the result is published at the
+            # preview URL; a scrub after either is a scrub of a copy.
+            scrub = cur.scrub(original)
+            scrubbed = list(scrub.changed)
+            if scrubbed:
+                # Written beside their upload so the substitution is theirs to
+                # check. The report says what CATEGORY changed and never the
+                # value it changed from — see `curator.Scrub`.
+                (run.dir / "uploads" / f"{aid}--scrubbed.png").write_bytes(scrub.image)
+                yield Event(Stage.ASSETS, "progress",
+                            f"{aid}: real values substituted out of your screenshot "
+                            f"before anything else saw it — {', '.join(scrubbed)}")
+
+            restyled = cur.restyle(scrub.image, bb.design_system)
+            # Compared SCRUBBED-against-restyled, never original-against-restyled.
+            # The gate asks whether the image model invented copy, so the ground
+            # truth is what the image model was GIVEN. Against the original,
+            # every substitution the scrub made reads as a word the restyle
+            # invented, and every legitimate restyle of a dashboard is rejected.
+            # The lines come from the scrub, which already read its own output
+            # back to verify itself.
+            fidelity = cur.check_fidelity(scrub.lines, restyled)
             if fidelity.ok:
                 path.write_bytes(restyled)
                 provenance = Provenance.RESTYLED
@@ -538,15 +564,18 @@ def step_assets(run: Run) -> Iterator[Event]:
                 # One attempt, no retry. The failure is the model inventing copy,
                 # and a second roll of the same prompt is not evidence it will
                 # invent less — it is another image call against the same odds.
-                _write_png(original, path, Image)
+                # What falls back is the SCRUBBED image, not the upload: the
+                # restyle failing is no reason to publish the customer data.
+                _write_png(scrub.image, path, Image)
                 provenance = Provenance.USER_SUPPLIED
                 rejected.append(f"restyle rejected — {fidelity.reason()}")
                 yield Event(Stage.ASSETS, "blocked",
                             f"{aid}: restyle invented text ({fidelity.reason()}) — "
-                            "shipping your original untouched")
+                            "shipping your own screenshot instead")
         else:
             path.write_bytes(cur.generate(a["brief"], bb.design_system))
             provenance = Provenance.GENERATED
+            scrubbed = []
             yield Event(Stage.ASSETS, "progress", f"{aid} generated")
 
         with Image.open(path) as im:
@@ -556,7 +585,7 @@ def step_assets(run: Run) -> Iterator[Event]:
             prominence=Prominence(a["prominence"]), provenance=provenance,
             path=f"assets/{path.name}", width=w, height=h,
             variants={k: f"assets/{v}" for k, v in derive_variants(path).items()},
-            rejected=rejected,
+            rejected=rejected, scrubbed=scrubbed,
         ))
 
     bb.assets = made

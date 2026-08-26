@@ -198,7 +198,10 @@ class Section(BaseModel):
 class Provenance(StrEnum):
     """Where an asset came from. Decides what may be claimed about it.
 
-    USER_SUPPLIED — their own file, untouched beyond cropping and resizing.
+    USER_SUPPLIED — their own file, untouched beyond the PII scrub, cropping and
+                    resizing. Scrubbing is not a provenance: a scrubbed upload is
+                    still a picture of their real product, and it can be either
+                    restyled or shipped as-is. `Asset.scrubbed` records it.
     RESTYLED      — their file, restyled to the design system. Still a picture of
                     their real product, so invented text inside it is a claim they
                     never made. Text fidelity is gated.
@@ -236,6 +239,10 @@ class Asset(BaseModel):
     height: int = 0
     variants: dict[str, str] = Field(default_factory=dict)
     rejected: list[str] = Field(default_factory=list)
+    # What the PII scrub replaced, by category and count. Never the original
+    # value: this field is read by agents, written into prompts and copied into
+    # logs, which are exactly the paths the scrub exists to keep the value off.
+    scrubbed: list[str] = Field(default_factory=list)
 
 
 class Blueprint(BaseModel):
