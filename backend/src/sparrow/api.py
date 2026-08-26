@@ -337,6 +337,46 @@ def list_projects() -> list[dict[str, Any]]:
     return out
 
 
+class BriefPatch(BaseModel):
+    """A correction to the brief on a project that is already past gate 1."""
+
+    product_name: str
+
+    model_config = {"json_schema_extra": {"examples": [
+        {"product_name": "voiceowl.ai"}]}}
+
+
+@app.patch("/projects/{pid}/brief", tags=["projects"],
+           summary="Correct the brief after gate 1 has closed")
+def patch_brief(pid: str, body: BriefPatch) -> dict[str, Any]:
+    """Settle a name on a project that has already been built.
+
+    Gate 1 is where the name is normally settled, and `record_product_name` is
+    reachable only while that gate is open. Every project built before the name
+    existed is therefore stuck with `product_name: ""` and no way to correct it
+    except a full re-run — which is the wrong price for one string.
+
+    §4 already has the shape for this: a brief is a document that gets revised,
+    and a revision is recorded with what it superseded rather than appended
+    beside the old value. `record_product_name` writes through the store, so the
+    correction lands in the decision log like any other transition.
+
+    Fixing the name is not enough on its own. Imagery generated before the
+    correction still shows whatever the curator guessed, so follow this with
+    /rebuild naming those assets — the response says which ones carry a brand.
+    """
+    run = _run_for(pid)
+    if pid in _ADVANCING:
+        raise HTTPException(409, "this project is advancing — wait for a gate")
+    try:
+        name = steps.record_product_name(run, body.product_name)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"project_id": pid, "product_name": name,
+            "next": "imagery generated before this still shows the old name — "
+                    "POST /projects/{pid}/rebuild with the assets that carry a brand"}
+
+
 @app.get("/projects/{pid}", tags=["projects"], summary="Blackboard, stage, spend and recent log")
 def get_project(pid: str) -> dict[str, Any]:
     run = _run_for(pid)
