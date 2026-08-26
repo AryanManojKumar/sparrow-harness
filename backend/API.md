@@ -24,16 +24,22 @@ not request/response: start it, stream progress, answer gates.
 
 ## Stages
 
-    brief → [GATE 1] → sources → design → [GATE 2] → [ASSET GATE] → assets → build
-          → verify → [GATE 3] → done
+    brief → [GATE 1] → sources → design → [GATE 2] → content → [MATERIAL GATE]
+          → assets → build → verify → [GATE 3] → done
 
 Four gates. Each is a decision only a human holds; everything between them runs without
 asking. CLAUDE.md §8's rule is that gates are few, not that they are three — the count
 that matters is "not fifteen", and an approval step that only ever hears yes is what §8
 actually rejects.
 
-The asset gate is the newest and the only one that is not a choice between things the
-system produced. It is the point at which the user's **real material** enters the run.
+The material gate (`gate:assets`, kept for compatibility) is the only one that is not a
+choice between things the system produced. It is the point at which the user's **real
+material** enters the run — both halves of it: their imagery, and the facts about their
+business that the copy would otherwise have to invent.
+
+`content` runs before it, drafting every slot on every section, so the handful of
+questions the copy raises arrive in the same gate as the image questions rather than
+opening a fifth stop.
 
 ## The front of the funnel
 
@@ -232,6 +238,39 @@ thing on the page or a 200px tile.
 The same list is readable on its own at `GET /projects/{id}/assets`, before the gate and
 after it, so the interface never keeps its own copy.
 
+### The other half: invented facts
+
+The copy is drafted by `content_editor` before this gate, and it reports every line where
+it had to assert something about the business that the brief does not support — a count, a
+price, a customer name, a quotation. Those arrive as options with `"kind": "fact"`:
+
+```json
+{ "kind": "fact",
+  "ask_id": "testimonial-1",
+  "section_id": "testimonial",
+  "slot": "quote",
+  "question": "Can you provide an approved quote from an engineer who uses the IDE?",
+  "draft": "It helps me follow the code before I touch it…",
+  "invented": "the engineer quotation",
+  "source_example": "",
+  "choices": [
+    { "choice": "answer", "label": "Give the real answer",
+      "detail": "Used verbatim, and never redrafted afterwards.", "field": "text" },
+    { "choice": "keep",   "label": "Keep the draft as written" } ] }
+```
+
+Image options carry `"kind": "image"` and are otherwise unchanged, so one pass over
+`options` splits into two lists under one heading.
+
+**Expect few of these, and sometimes none.** The ide blueprints produce 0 asks for a nav,
+0 for a hero and 1 for a testimonial. A section with 39 slots does not produce 39
+questions — §11 is right that nobody fills in a 39-field form, so the agent drafts
+everything and asks only where it invented a checkable fact. The count varies run to run:
+it is a model judgement, not a deterministic check.
+
+Show `draft` as the pre-filled value so the user edits a line rather than facing a blank
+box, and `invented` so they can see what they are being asked to confirm.
+
 ### Answering
 
 **Per asset, not once for the run.** This is the whole point of the gate: a founder has a
@@ -240,15 +279,26 @@ global choice forces them to fabricate the second or lose the first.
 
 ```json
 POST /projects/{id}/gate
-{ "assets": { "product-showcase-1": "upload",
-              "feature-grid-1": "generate",
-              "logo-wall-1": "skip", "testimonial-1": "skip" } }
--> { "stage": "assets", "decisions": { … } }
+{ "assets":  { "product-showcase-1": "upload",
+               "feature-grid-1": "generate",
+               "logo-wall-1": "skip", "testimonial-1": "skip" },
+  "content": { "testimonial-1": "Used by 12 teams at Acme.",
+               "hero-1": "" } }
+-> { "stage": "assets", "decisions": { … }, "content_answered": 1 }
 ```
 
-`choice` is ignored at this gate and `assets` is required. Every asset in the plan must
-appear; a partial answer is a `400` naming the ones still undecided. There is deliberately
-no "do the same for all of them".
+`choice` is ignored at this gate. Every asset in the plan must appear in `assets`; a
+partial answer is a `400` naming the ones still undecided. There is deliberately no "do
+the same for all of them".
+
+`content` is optional and keyed by `ask_id`. An empty string or an omitted id keeps the
+draft — both close the ask, so the gate never asks twice. An answer that is actually typed
+replaces the slot and marks it `user_supplied`, which means nothing downstream will
+rewrite it. An unknown `ask_id` is a `400` rather than a silent no-op: the user typed a
+real fact about their business and must not be left believing it was recorded.
+
+Content answers are applied **before** asset decisions, so a bad asset payload cannot
+discard the facts the user just typed.
 
 ### Uploading
 
