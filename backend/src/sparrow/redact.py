@@ -592,8 +592,11 @@ def _cover(im, box: Box, threshold: int = 40) -> Box:
     bg = _modal(px)
     cols = [any(_dist(px[y * rw + x], bg) > threshold for y in range(rh))
             for x in range(rw)]
-    # Bridge letter spacing so `•••• 4242` is one run, not five.
-    runs = _runs(cols, bridge=max(2, round(box.h * 0.5)))
+    # Bridged at the gap tolerance `_place` itself spans across, so a word the
+    # span stopped short of still counts as part of the same value: the span for
+    # `Greenfield Imports Ltd.` covered `Greenfield Imports` and a 0.5-height
+    # bridge could not reach `Ltd.`, which then survived beside the replacement.
+    runs = _runs(cols, bridge=max(2, round(box.h * 1.2)))
     lo, hi = box.x0 - rx0, box.x1 - rx0
     touched = [(a, b) for a, b in runs if b >= lo and a <= hi]
     if not touched:
@@ -648,6 +651,7 @@ def paint(image: bytes, found: list[dict]) -> tuple[bytes, list[dict]]:
     from PIL import Image, ImageDraw, ImageFont
 
     im = Image.open(io.BytesIO(image)).convert("RGB")
+    pristine = im.copy()
     faces = available_faces()
     ruler = _Ruler(faces)
 
@@ -698,7 +702,13 @@ def paint(image: bytes, found: list[dict]) -> tuple[bytes, list[dict]]:
             font = ImageFont.truetype(path, size)
             l, t, r, b = font.getbbox(f["replacement"])
 
-        draw.rectangle((tight.x0 - 1, tight.y0 - 1, tight.x1, tight.y1), fill=bg)
+        # Clear the whole word the span sits in, not just the span. The model's
+        # text and what is rendered differ at the ends — `Greenfield Imports
+        # Ltd.` matched a span that stopped before `Ltd.`, and the tail survived
+        # beside the replacement as `Silverwood Trading LLCLtd.`; an email one
+        # character shorter left a stray `n`. Same row, bounded reach.
+        fill = _cover(pristine, tight)
+        draw.rectangle((fill.x0 - 1, tight.y0 - 1, fill.x1, tight.y1), fill=bg)
         draw.text((tight.x0 - l, tight.y0 - t), f["replacement"], font=font, fill=ink)
         # `at` is what was actually repainted, against `box` which is where the
         # model said to look. A caller comparing the two can see a placement
