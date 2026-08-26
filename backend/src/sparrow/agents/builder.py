@@ -136,6 +136,7 @@ class Builder(Agent):
         assets: list | None = None,
         asset_base: str = "",
         copy: dict | None = None,
+        identity: str = "",
     ) -> BuildOutput:
         # Stated as an instruction, not as context. Written as "this section sits
         # on X" it was read as background information and ignored by 4 of 5
@@ -177,6 +178,14 @@ class Builder(Agent):
             copy_block = "<section_copy>\n" + "\n".join(lines) + "\n</section_copy>"
 
         user = "\n\n".join(x for x in [
+            # BEFORE the blueprint, deliberately. This is the one part of a
+            # chrome section that is not the blueprint's to decide: the source
+            # site's nav was measured, its structure was written down, and its
+            # BRAND is not transferable. Left to the blueprint and the generic
+            # "use this exact name" line in the brief, every one of eight
+            # measured builds put a lucide icon where the wordmark goes and
+            # labelled it `aria-label="Platform home"`.
+            identity,
             copy_block,
             f"<blueprint>\n"
             f"id: {blueprint.id}\n"

@@ -161,3 +161,48 @@ def render(html_by_name: dict[str, str], out_dir: Path, width: int = 900) -> lis
             made.append(Rendered(name, path))
         browser.close()
     return made
+
+
+def is_svg(data: bytes) -> bool:
+    """Sniffed from the bytes, not from the filename.
+
+    A browser upload arrives with whatever name the user's filesystem had, and
+    `logo.png` that is actually an SVG is a normal thing to receive. The two
+    formats take completely different paths from here — one is recoloured
+    losslessly through `currentColor`, the other is masked — so guessing from
+    the suffix picks the wrong path silently.
+    """
+    head = data[:1024].lstrip()
+    return head[:4] == b"<svg" or (head[:5] == b"<?xml" and b"<svg" in data[:4096])
+
+
+def rasterize_svg(svg: bytes, out: Path, width: int = 512) -> Path:
+    """An SVG as pixels, through the Playwright already in the stack.
+
+    Needed in exactly one place: an uploaded logo is passed to the image model
+    as a reference so a generated product surface carries the user's real mark,
+    and the image API takes PNG/JPEG/WebP — it has no idea what an SVG is. The
+    site itself never uses this; there the SVG is used as an SVG, which is the
+    whole reason SVG is the preferred logo format.
+
+    Rendered on a TRANSPARENT ground. On white, a mark drawn in near-white ink
+    rasterizes to an empty square and the reference tells the image model
+    nothing, which is indistinguishable from passing no reference at all.
+    """
+    from playwright.sync_api import sync_playwright
+
+    out.parent.mkdir(parents=True, exist_ok=True)
+    body = svg.decode("utf-8", "replace")
+    html = ("<html><body style=\"margin:0;background:transparent\">"
+            f"<div style=\"display:inline-block;width:{width}px\">{body}</div>"
+            "</body></html>")
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        page = browser.new_page(viewport={"width": width, "height": width},
+                                device_scale_factor=2)
+        page.set_content(html, wait_until="load")
+        page.wait_for_timeout(150)
+        page.screenshot(path=str(out), omit_background=True,
+                        clip=page.locator("div").first.bounding_box())
+        browser.close()
+    return out

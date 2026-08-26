@@ -143,7 +143,16 @@ def test_the_gate_still_opens_when_no_section_wants_an_image(run, editor):
         _drain(step_asset_gate(run))
 
 
-def test_the_gate_closes_when_the_copy_invented_nothing(run, editor, monkeypatch):
+def test_no_invented_fact_leaves_the_gate_with_no_fact_question(run, editor,
+                                                                monkeypatch):
+    """The gate still opens — this project has a nav, so it has a logo to ask
+    about — but nothing in the copy is up for confirmation.
+
+    It used to CLOSE here. It cannot any more: a nav means the site has a brand
+    entry point, and whose mark goes in it is a question only the user can
+    answer. Asserting "closes" would now pass only by the logo question having
+    been dropped, which is the bug this asks about.
+    """
     monkeypatch.setattr(
         StubEditor, "write",
         lambda self, _b, _c, bp, *, section_id, source_slots=None: Copy(
@@ -151,7 +160,30 @@ def test_the_gate_closes_when_the_copy_invented_nothing(run, editor, monkeypatch
             provenance={s: Source.DRAFTED for s in bp.slots}),
     )
     _drain(step_content(run))
-    events = _drain(step_asset_gate(run))
+    with pytest.raises(Halt) as h:
+        _drain(step_asset_gate(run))
+
+    kinds = [o["kind"] for o in h.value.request.options]
+    assert kinds == ["logo"], "no invented fact, no content imagery — only the mark"
+
+
+def test_a_project_with_no_nav_and_nothing_invented_does_not_stop(
+        run, editor, monkeypatch, tmp_path):
+    """The negative: with no brand entry point and no invented fact there is
+    genuinely nothing to ask, and the run must not stop to say so."""
+    import sparrow.blueprints as blueprints_mod
+
+    solo = make_run(tmp_path, {"hero": "y"}, pid="nonav")
+    monkeypatch.setattr(blueprints_mod, "load_dir",
+                        lambda _d: {"hero": BLUEPRINTS["hero"]})
+    monkeypatch.setattr(
+        StubEditor, "write",
+        lambda self, _b, _c, bp, *, section_id, source_slots=None: Copy(
+            section_id=section_id, slots={s: "x" for s in bp.slots},
+            provenance={s: Source.DRAFTED for s in bp.slots}),
+    )
+    _drain(step_content(solo))
+    events = _drain(step_asset_gate(solo))
     assert events[-1].kind == "done"
 
 

@@ -63,7 +63,7 @@ def test_the_plan_carries_what_the_user_needs_to_answer(tmp_path):
     run = project(tmp_path, {"hero": ["A dashboard showing live control status"]})
     plan = steps.asset_plan(run)
     assert plan == [{
-        "id": "hero-1", "section_id": "hero",
+        "id": "hero-1", "section_id": "hero", "kind": "image",
         "brief": "A dashboard showing live control status",
         "prominence": "dominant", "decision": None, "upload": None,
     }]
@@ -77,13 +77,68 @@ def test_prominence_says_how_large_the_upload_will_appear(tmp_path):
                      "feature-grid-2": "thumbnail", "feature-grid-3": "thumbnail"}
 
 
-def test_chrome_is_never_offered(tmp_path):
-    """A wordmark belongs to the client. The harness does not draw one, and it
-    does not ask the user to choose between drawing one and skipping it."""
-    run = project(tmp_path, {"nav": ["the company wordmark"],
+def test_the_nav_is_offered_as_a_logo_and_never_as_an_image(tmp_path):
+    """Nav came off CHROME_SKIP_ASSETS once the logo had a real path — but its
+    blueprint's own asset briefs must not come back with it.
+
+    The blueprinter reads a source's nav and writes "the company wordmark" into
+    `Assets:`. Enumerated as an ordinary image that is a `generate`, and a
+    generated wordmark is the 1536x1024 lockup that rendered as a full-width
+    blank box above the hero. The entry that replaces it carries the LOGO brief,
+    not the blueprint's.
+    """
+    run = project(tmp_path, {"nav": ["the company wordmark", "a second nav image"],
                              "footer": ["the company wordmark"],
                              "hero": ["a product shot"]})
+    plan = steps.asset_plan(run)
+
+    assert [a["id"] for a in plan] == ["nav-logo", "hero-1"]
+    assert plan[0]["kind"] == "logo"
+    assert "the company wordmark" not in plan[0]["brief"], \
+        "the blueprint's nav briefs are replaced, not merged in"
+    assert plan[1]["kind"] == "image"
+
+
+def test_a_project_with_no_nav_is_asked_for_no_logo(tmp_path):
+    """The negative. The logo is asked for because the page HAS a brand entry
+    point, not unconditionally — a plan that always carried one would ask a
+    landing page with no nav for a mark it has nowhere to put."""
+    run = project(tmp_path, {"hero": ["a product shot"]})
     assert [a["id"] for a in steps.asset_plan(run)] == ["hero-1"]
+
+
+def test_the_logo_gate_offers_exactly_upload_or_wordmark(tmp_path):
+    run = project(tmp_path, {"nav": [], "hero": ["a product shot"]})
+    _events, gate = drain(steps.step_asset_gate(run))
+
+    logo = next(o for o in gate.options if o["kind"] == "logo")
+    assert [c["choice"] for c in logo["choices"]] == ["upload", "wordmark"], \
+        "two options, in this order — there is no generate and no skip"
+    assert logo["choices"][0]["post_file_to"] == "/projects/t/assets/nav-logo"
+
+    image = next(o for o in gate.options if o["kind"] == "image")
+    assert {c["choice"] for c in image["choices"]} == {"upload", "generate", "skip"}
+
+
+def test_a_logo_may_not_be_generated_or_skipped(tmp_path):
+    """The negative for the option list. A gate that OFFERS two choices and then
+    ACCEPTS four has not restricted anything — and `generate` is the single
+    answer this whole path exists to make unreachable."""
+    run = project(tmp_path, {"nav": [], "hero": ["a"]})
+    drain(steps.step_asset_gate(run))
+
+    for refused in ("generate", "skip"):
+        with pytest.raises(ValueError, match="needs one of"):
+            steps.record_asset_decisions(run, {"nav-logo": refused, "hero-1": "skip"})
+
+    # and the mirror: an image may not be answered `wordmark`
+    with pytest.raises(ValueError, match="needs one of"):
+        steps.record_asset_decisions(run, {"nav-logo": "wordmark",
+                                           "hero-1": "wordmark"})
+
+    plan = steps.record_asset_decisions(run, {"nav-logo": "wordmark",
+                                              "hero-1": "skip"})
+    assert plan[0]["decision"] == "wordmark"
 
 
 def test_a_run_whose_blueprints_ask_for_no_imagery_does_not_stop(tmp_path):
@@ -182,18 +237,29 @@ class StubCurator:
     """Records what it was asked for. Returns real PNG bytes, because
     `derive_variants` is not stubbed — that part is deterministic and free."""
 
-    def __init__(self, fidelity_ok: bool = True) -> None:
+    def __init__(self, fidelity_ok: bool = True, branding_ok: bool = True) -> None:
         StubCurator.last = self
         self.generated: list[str] = []
         self.restyled = 0
         self.checked = 0
         self.scrubs = 0
+        self.branded = 0
         self.saw: list[bytes] = []          # what each downstream call was handed
+        self.gen_kwargs: list[dict] = []    # what `generate` was told about identity
         self.fidelity_ok = fidelity_ok
+        self.branding_ok = branding_ok
 
-    def generate(self, brief, _ds, **_kw):
+    def generate(self, brief, _ds, **kw):
         self.generated.append(brief)
+        self.gen_kwargs.append(kw)
         return png((90, 20, 20))
+
+    def check_branding(self, _image, product_name):
+        from sparrow.agents.curator import Branding
+
+        self.branded += 1
+        return Branding(self.branding_ok, product_name, ["Off-Hook", "Overview"],
+                        "ledgerline")
 
     def scrub(self, image):
         from sparrow.agents.curator import Scrub
@@ -216,10 +282,11 @@ class StubCurator:
                 else Fidelity(ok=False, invented=["visibility", "frameworks"], lost=[]))
 
 
-def run_assets(run, monkeypatch, *, fidelity_ok=True):
+def run_assets(run, monkeypatch, *, fidelity_ok=True, branding_ok=True):
     import sparrow.agents.curator as curator_mod
 
-    monkeypatch.setattr(curator_mod, "Curator", lambda: StubCurator(fidelity_ok))
+    monkeypatch.setattr(curator_mod, "Curator",
+                        lambda: StubCurator(fidelity_ok, branding_ok))
     events, _ = drain(steps.step_assets(run))
     bb = Blackboard.model_validate_json(run.blackboard_path.read_text())
     return events, bb, StubCurator.last

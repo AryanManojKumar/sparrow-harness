@@ -175,16 +175,54 @@ def _compose_page(bb, ws: Path) -> None:
         f"  return (\n    <main>\n{body}\n    </main>\n  );\n}}\n"
     )
 
-    # Placeholder metadata so the page is not shipped titleless; content_editor
-    # owns the real copy once it exists.
     layout = ws / "src/app/layout.tsx"
-    src = layout.read_text()
-    if bb.brief and 'title: ""' in src:
-        offer = bb.brief.offering.split(".")[0][:52]
-        src = src.replace('title: ""', f'title: "{offer}"')
-        src = src.replace('description: ""', f'description: "{bb.brief.offering[:150]}"')
-        layout.write_text(src)
+    if bb.brief:
+        layout.write_text(_with_metadata(layout.read_text(), bb.brief))
     print(f"\n  composed page.tsx — {len(ordered)} sections in sitemap order")
+
+
+_TITLE = re.compile(r'title:\s*"(?:[^"\\]|\\.)*"')
+_DESC = re.compile(r'description:\s*"(?:[^"\\]|\\.)*"')
+
+
+def _clip(text: str, limit: int) -> str:
+    """Trim on a word boundary. The previous slice cut mid-word and shipped —
+    a real project's browser tab read "A platform for businesses to build voice
+    AI agents q"."""
+    text = " ".join(text.split())
+    if len(text) <= limit:
+        return text
+    cut = text[:limit].rsplit(" ", 1)[0]
+    return (cut or text[:limit]).rstrip(" ,;:-—·")
+
+
+def _esc(text: str) -> str:
+    return text.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _with_metadata(src: str, brief) -> str:
+    """The browser tab is one of the four places the product's name has to reach.
+
+    Measured across the eight real projects: every one shipped a title made of
+    the offering sentence sliced at 52 characters, so the tab said what the
+    business does and never what it is called. A tab is the site's name in the
+    one place a visitor looks when they have twenty of them open.
+
+    Rewritten unconditionally rather than only when the field is still empty.
+    The old version fired once, on the first compose; a name settled afterwards —
+    which is now the normal case, since gate 1 asks for it — could never reach a
+    layout that had already been written.
+    """
+    name = (getattr(brief, "product_name", "") or "").strip()
+    tagline = _clip(brief.offering.split(".")[0], 60 - len(name) - 3)
+    # The first sentence in both branches. Without a name the whole offering was
+    # sliced at 60 characters, punctuation and all.
+    title = f"{name} — {tagline}" if name else _clip(brief.offering.split(".")[0], 60)
+    desc = _clip(brief.offering, 155)
+    if name and not desc.lower().startswith(name.lower()):
+        desc = _clip(f"{name} — {desc}", 155)
+    src = _TITLE.sub(lambda _m: f'title: "{_esc(title)}"', src, count=1)
+    return _DESC.sub(lambda _m: f'description: "{_esc(desc)}"', src, count=1)
 
 
 def _run_build(ws: Path) -> tuple[bool, str]:

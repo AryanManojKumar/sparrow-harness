@@ -17,11 +17,24 @@ import subprocess
 from collections.abc import Iterator
 from pathlib import Path
 
-from sparrow.blackboard.schema import Blackboard, BuildStatus, Ground, Section
+from sparrow.blackboard.schema import (AssetKind, Blackboard, BuildStatus, Ground,
+                                       Section)
 from sparrow.blackboard.store import Rejected, Store
 from sparrow.orchestrator import Event, GateRequest, Halt, Run, Stage
 
-CHROME_SKIP_ASSETS = {"nav", "footer"}
+# The footer only. `nav` came OFF this list once the logo had a real path
+# through the material gate: the reason nav was skipped was that its blueprint
+# asks for "the company wordmark", the curator generated one, and a 1536x1024
+# "logo lockup" came back and was rendered at DOMINANT prominence — a full-width
+# blank box above the hero, which is what "the site looks broken" turned out to
+# mean. That reason is now handled by ROUTING rather than by exclusion: nav's
+# blueprint asset briefs are replaced by one LOGO entry (see `asset_plan`), and
+# a logo can only be uploaded or set as a wordmark. There is no path from nav to
+# `Curator.generate` at all.
+#
+# The footer stays excluded because it carries the SAME mark as the nav. One
+# logo, one entry, asked once — not the same question twice about one file.
+CHROME_SKIP_ASSETS = {"footer"}
 
 
 CHROME_ORDER = ("nav", "footer")
@@ -195,6 +208,24 @@ def reset_sections(run: Run, section_ids: list[str]) -> list[str]:
 # ------------------------------------------------------------------ gate 1
 
 def step_brief(run: Run) -> Iterator[Event]:
+    """The brief has to be complete before anything is generated — including the
+    name.
+
+    Measured across all eight real projects: `product_name` was `""` on every
+    single one. The interviewer asks for it (INTERVIEW_SYSTEM) and correctly
+    refuses to invent one when the user did not say, and then nothing followed
+    up — so the run carried on and every downstream agent read the "not given"
+    branch of `context_block`. The result is a site with no identity: a lucide
+    phone icon labelled "Platform home" where the wordmark goes, a page title
+    made of the offering sentence truncated mid-word, and a generated hero
+    screenshot advertising a company called "Off-Hook" that appears nowhere
+    else on the page.
+
+    This asks at GATE 1 rather than adding a gate. §8's rule is that gates are
+    few; the name is part of "what are we building", which is the question gate
+    1 already exists to ask. It is only reached when the interviewer could not
+    extract one, so a prompt that named the product never sees this stop.
+    """
     bb = _bb(run)
     if bb.brief is None:
         raise Halt(GateRequest(
@@ -202,8 +233,53 @@ def step_brief(run: Run) -> Iterator[Event]:
             "What are we building, and who is it for?",
             options=[], artifacts=[],
         ))
+    if not bb.brief.product_name.strip():
+        raise Halt(GateRequest(
+            Stage.GATE_BRIEF,
+            "What is it called? The name goes in the navigation, the footer, "
+            "the browser tab, the copy and the product screenshots, and nothing "
+            "downstream is allowed to make one up.",
+            options=[{
+                "kind": "product_name",
+                "question": "What is the product or business called?",
+                "why": "Every section has to agree on it. Without it the nav "
+                       "shows an icon instead of your name and a generated "
+                       "screenshot invents a brand of its own.",
+                "choices": [{"choice": "name",
+                             "label": "Type the name, exactly as you write it",
+                             "field": "product_name"}],
+            }],
+            artifacts=[],
+        ))
     yield Event(Stage.BRIEF, "progress",
-                f"{bb.brief.category} · {len(bb.active_constraints())} constraint(s)")
+                f"{bb.brief.product_name} · {bb.brief.category} · "
+                f"{len(bb.active_constraints())} constraint(s)")
+
+
+def record_product_name(run: Run, name: str) -> str:
+    """Settle the name on the blackboard. Raises ValueError on an empty answer.
+
+    Refused rather than defaulted. A blank here would put the run straight back
+    into the "not given" branch every one of the eight measured projects took,
+    and the point of the gate is that it is the one place the name can be
+    settled by the only party who knows it.
+    """
+    if _bb(run).brief is None:
+        raise ValueError("there is no brief yet — gate 1 is asking for the whole "
+                         "brief, not only the name")
+    name = " ".join(name.split())
+    if not name:
+        raise ValueError(
+            "the name cannot be blank — it is printed in the nav, the footer, "
+            "the browser tab and inside every generated product screenshot, and "
+            "no agent is allowed to invent one")
+    rejected = _replace(run, "/brief/product_name", name,
+                        agent="user@gate:brief",
+                        summary=f"product name settled: {name}")
+    if rejected:
+        telemetry_note(run, "record_product_name", rejected)
+        raise ValueError(f"name not recorded ({rejected.code}): {rejected.message}")
+    return name
 
 
 # ------------------------------------------------------------------ sources
@@ -604,7 +680,25 @@ def record_content_answers(run: Run, answers: dict[str, str]) -> int:
 
 
 ASSET_PLAN = "asset-plan.json"
-DECISIONS = ("upload", "generate", "skip")
+
+# Per KIND, not one flat list. A logo is not an image with a different subject:
+# `generate` is what put a fabricated brand on a real business's site and `skip`
+# is what left the nav showing a lucide phone icon, so neither is offered.
+IMAGE_DECISIONS = ("upload", "generate", "skip")
+
+# `wordmark` is not "skip" wearing a different label. It produces no file, and it
+# is a real answer: the name set in the design system's display typeface is a
+# legitimate identity, and it is the one every company without a mark already
+# uses. There is deliberately no `generate` — asking an image model for a logo is
+# what produced the blank box, and a fabricated logo is a worse failure than
+# none, because it is a fake identity on somebody's real business.
+LOGO_DECISIONS = ("upload", "wordmark")
+
+DECISIONS = IMAGE_DECISIONS          # kept: older callers mean the image list
+
+LOGO_ASSET_ID = "nav-logo"
+LOGO_BRIEF = ("Your logo — the mark that goes in the navigation and the footer, "
+              "and inside any product screenshot we generate for you")
 
 
 def _prominence(count: int, index: int):
@@ -637,23 +731,51 @@ def asset_plan(run: Run) -> list[dict]:
     blueprints = load_dir(run.dir / "blueprints")
     out: list[dict] = []
     for section in sorted(bb.sections, key=lambda s: s.order):
+        # THE LOGO IS NOT BLUEPRINT-DERIVED. It is asked for because the site
+        # has a nav, not because a source site's nav happened to be measured as
+        # carrying an image — the nav blueprint written for the project this was
+        # built against lists no `Assets:` at all, so a plan that only reads
+        # blueprints asks for no logo on the one page that needs one most.
+        #
+        # It also REPLACES whatever nav's blueprint listed rather than being
+        # added to it. Nav is chrome: the only image in it is the mark. Leaving
+        # the blueprint's briefs in alongside would put a `generate` back on the
+        # nav, which is the exact failure removing nav from CHROME_SKIP_ASSETS
+        # has to not reintroduce.
+        if section.id == "nav":
+            out.append({
+                "id": LOGO_ASSET_ID, "section_id": "nav", "kind": "logo",
+                "brief": LOGO_BRIEF,
+                # Named, but it means nothing for a logo — a mark is sized by
+                # the nav bar, not by the "dominant asset owns the section"
+                # rule. `step_build` keeps logos out of the builder's asset
+                # list entirely so that rule cannot fire on one.
+                "prominence": "thumbnail",
+                "decision": None, "upload": None,
+            })
+            continue
         bp = blueprints.get(section.blueprint_id)
         if bp is None or not bp.assets:
             continue
-        # Chrome asks for a wordmark, which is the user's real brand asset, not
-        # something to invent. Generating one produced a 1536x1024 "logo lockup"
-        # that the nav then rendered at DOMINANT prominence — a full-width blank
-        # box above the hero, which is what "the site looks broken" turned out
-        # to mean. A logo belongs to the client; the harness does not draw it.
         if section.id in CHROME_SKIP_ASSETS:
             continue
         for i, brief in enumerate(bp.assets, 1):
             out.append({
-                "id": f"{section.id}-{i}", "section_id": section.id, "brief": brief,
+                "id": f"{section.id}-{i}", "section_id": section.id, "kind": "image",
+                "brief": brief,
                 "prominence": _prominence(len(bp.assets), i).value,
                 "decision": None, "upload": None,
             })
     return out
+
+
+def _kind(entry: dict) -> str:
+    """A plan written before logos existed has no `kind`; those are all images."""
+    return entry.get("kind") or "image"
+
+
+def decisions_for(entry: dict) -> tuple[str, ...]:
+    return LOGO_DECISIONS if _kind(entry) == "logo" else IMAGE_DECISIONS
 
 
 def load_plan(run: Run) -> list[dict]:
@@ -741,26 +863,57 @@ def step_asset_gate(run: Run) -> Iterator[Event]:
                  "label": "Keep the draft as written"},
             ],
         } for f in facts] + [{
-            "kind": "image",
+            "kind": _kind(a),
             "asset_id": a["id"],
             "section_id": a["section_id"],
             "brief": a["brief"],
             "prominence": a["prominence"],
             "uploaded": bool(a["upload"]),
-            "choices": [
-                {"choice": "upload",
-                 "label": "Use my own image",
-                 "detail": "Restyled to the chosen design direction. Any text it "
-                           "gains that the original did not have is rejected.",
-                 "post_file_to": f"{upload_url}/{a['id']}"},
-                {"choice": "generate",
-                 "label": "Generate one from this description"},
-                {"choice": "skip",
-                 "label": "No image — build the section from type and layout"},
-            ],
+            "choices": _image_choices(a, upload_url) if _kind(a) == "image"
+                       else _logo_choices(a, upload_url),
         } for a in plan],
         artifacts=[],
     ))
+
+
+def _image_choices(a: dict, upload_url: str) -> list[dict]:
+    return [
+        {"choice": "upload",
+         "label": "Use my own image",
+         "detail": "Restyled to the chosen design direction. Any text it "
+                   "gains that the original did not have is rejected.",
+         "post_file_to": f"{upload_url}/{a['id']}"},
+        {"choice": "generate",
+         "label": "Generate one from this description"},
+        {"choice": "skip",
+         "label": "No image — build the section from type and layout"},
+    ]
+
+
+def _logo_choices(a: dict, upload_url: str) -> list[dict]:
+    """Two, and only two.
+
+    There is no `generate`: a logo an image model drew is a fake identity on a
+    real business's site, and the one time it was tried the output was a
+    1536x1024 lockup rendered as a full-width blank box above the hero. There is
+    no `skip` either — skipping is what left the nav showing a lucide phone icon
+    with `aria-label="Platform home"` on all eight measured projects. A site has
+    a name whether or not it has a mark, so the fallback is the name.
+    """
+    return [
+        {"choice": "upload",
+         "label": "Upload our logo",
+         "detail": "Used as it is. Recoloured or placed on a neutral chip if it "
+                   "needs it, never redrawn — an image model asked to restyle a "
+                   "logo redraws the letterforms, and that is your trademark "
+                   "coming back subtly wrong.",
+         "accepts": "PNG, JPEG, WebP or SVG",
+         "post_file_to": f"{upload_url}/{a['id']}"},
+        {"choice": "wordmark",
+         "label": "No logo file — set the name as a wordmark",
+         "detail": "The product name in the design direction's display "
+                   "typeface. No file, nothing invented."},
+    ]
 
 
 def record_asset_decisions(run: Run, decisions: dict[str, str]) -> list[dict]:
@@ -771,11 +924,18 @@ def record_asset_decisions(run: Run, decisions: dict[str, str]) -> list[dict]:
     if unknown:
         raise ValueError(f"no such asset(s): {', '.join(unknown)}")
     for a in plan:
+        allowed = decisions_for(a)
         choice = decisions.get(a["id"], a.get("decision"))
-        if choice not in DECISIONS:
+        if choice not in allowed:
+            # Refused, never coerced. `generate` on a logo is the single answer
+            # this gate exists to make unreachable, and quietly reading it as
+            # `wordmark` would hide from the caller that it asked for something
+            # the system will not do.
             raise ValueError(
-                f"{a['id']} needs one of {', '.join(DECISIONS)} — every image is "
-                "decided individually, there is no answer for all of them")
+                f"{a['id']} needs one of {', '.join(allowed)} — every image is "
+                "decided individually, there is no answer for all of them"
+                + (" · a logo is never generated and never skipped: it is your "
+                   "mark or it is your name" if _kind(a) == "logo" else ""))
         if choice == "upload" and not a.get("upload"):
             raise ValueError(
                 f"{a['id']} was answered 'upload' but no file has been posted to "
@@ -799,16 +959,54 @@ def record_asset_decisions(run: Run, decisions: dict[str, str]) -> list[dict]:
 
 
 def record_upload(run: Run, asset_id: str, filename: str, data: bytes) -> dict:
-    """Store a user's file against one asset in the plan."""
+    """Store a user's file against one asset in the plan.
+
+    SVG is accepted for a LOGO and only for a logo. It is the format the hard
+    rule actually wants — an SVG mark recolours through `currentColor` or a CSS
+    filter with no pixels touched at all, which is the strongest possible
+    version of "recoloured, never redrawn". Pillow cannot open one, so it is
+    validated as XML with an <svg> root instead of being handed to `Image.open`,
+    which would reject every logo worth having.
+
+    It is NOT accepted for a content image: everything downstream of an image
+    upload — the scrub's vision pass, the restyle, `derive_variants` — is raster
+    work, and an SVG would fail at whichever of them ran first, several minutes
+    and one gate later than here.
+    """
     plan = load_plan(run)
     entry = next((a for a in plan if a["id"] == asset_id), None)
     if entry is None:
         raise ValueError(f"no such asset {asset_id!r} in this run's plan")
-    from PIL import Image, UnidentifiedImageError
 
     up = run.dir / "uploads"
     up.mkdir(parents=True, exist_ok=True)
-    name = f"{asset_id}{Path(filename).suffix.lower() or '.png'}"
+    suffix = Path(filename).suffix.lower() or ".png"
+
+    from sparrow.specimen import is_svg
+
+    if is_svg(data):
+        if _kind(entry) != "logo":
+            raise ValueError(
+                f"{filename} is an SVG. SVG is accepted for your logo, but a "
+                "content image is scrubbed, restyled and resized as pixels — "
+                "send a PNG, JPEG or WebP for this one")
+        import xml.etree.ElementTree as ET
+
+        try:
+            root = ET.fromstring(data.decode("utf-8", "strict"))
+        except (ET.ParseError, UnicodeDecodeError) as e:
+            raise ValueError(f"{filename} is not readable SVG: {e}") from e
+        if not root.tag.endswith("svg"):
+            raise ValueError(f"{filename} is XML but its root is not <svg>")
+        name = f"{asset_id}.svg"
+        (up / name).write_bytes(data)
+        entry["upload"] = name
+        save_plan(run, plan)
+        return entry
+
+    from PIL import Image, UnidentifiedImageError
+
+    name = f"{asset_id}{suffix}"
     (up / name).write_bytes(data)
     try:
         with Image.open(up / name) as im:
@@ -820,6 +1018,74 @@ def record_upload(run: Run, asset_id: str, filename: str, data: bytes) -> dict:
     entry["upload"] = name
     save_plan(run, plan)
     return entry
+
+
+def _logo_size(path: Path) -> tuple[int, int]:
+    """Intrinsic size, for both formats a logo may arrive in.
+
+    `next/image` needs width and height even for an SVG, so an SVG's viewBox is
+    read rather than defaulted — a 0x0 asset makes the component throw at build
+    time, which is a broken page rather than a slightly wrong one.
+    """
+    if path.suffix.lower() == ".svg":
+        import xml.etree.ElementTree as ET
+
+        root = ET.fromstring(path.read_text(encoding="utf-8", errors="replace"))
+        box = (root.get("viewBox") or "").replace(",", " ").split()
+        if len(box) == 4:
+            try:
+                return round(float(box[2])), round(float(box[3]))
+            except ValueError:
+                pass
+
+        def dim(attr: str, fallback: int) -> int:
+            raw = "".join(c for c in (root.get(attr) or "") if c.isdigit() or c == ".")
+            try:
+                return round(float(raw)) or fallback
+            except ValueError:
+                return fallback
+
+        return dim("width", 240), dim("height", 64)
+
+    from PIL import Image
+
+    with Image.open(path) as im:
+        return im.size
+
+
+def reset_assets(run: Run, asset_ids: list[str]) -> list[str]:
+    """Drop named assets so a re-advance produces them again.
+
+    The counterpart of `reset_sections`, and needed for the same reason one
+    level down: `step_assets` now KEEPS an asset it has already produced, so
+    without this there is no way to say "make the hero again" — which is exactly
+    what uploading a logo asks for, because every generated product surface is
+    given the logo as a reference and the ones made before it was uploaded carry
+    invented branding.
+
+    The record and the file are removed together. A record without a file
+    resumes into a 404; a file without a record is published by nothing and
+    quietly takes disk.
+    """
+    bb = _bb(run)
+    known = {a.id for a in bb.assets}
+    unknown = sorted(set(asset_ids) - known)
+    if unknown:
+        raise ValueError(f"no such asset(s) on this blackboard: {', '.join(unknown)}")
+
+    dropped = [a for a in bb.assets if a.id in set(asset_ids)]
+    kept = [a for a in bb.assets if a.id not in set(asset_ids)]
+    for a in dropped:
+        for rel in [a.path, *a.variants.values()]:
+            (run.workspace / "public" / rel).unlink(missing_ok=True)
+
+    rejected = _replace(run, "/assets", [a.model_dump(mode="json") for a in kept],
+                        agent="user@reset",
+                        summary=f"{len(dropped)} asset(s) dropped for re-making: "
+                                + ", ".join(a.id for a in dropped))
+    if rejected:
+        telemetry_note(run, "reset_assets", rejected)
+    return [a.id for a in dropped]
 
 
 def step_assets(run: Run) -> Iterator[Event]:
@@ -837,7 +1103,7 @@ def step_assets(run: Run) -> Iterator[Event]:
     rather than swallowed.
     """
     from sparrow.agents.curator import Curator, derive_variants
-    from sparrow.blackboard.schema import Asset, Prominence, Provenance
+    from sparrow.blackboard.schema import Asset, AssetKind, Prominence, Provenance
     from PIL import Image
 
     bb = _bb(run)
@@ -855,12 +1121,81 @@ def step_assets(run: Run) -> Iterator[Event]:
     cur = Curator()
     made: list[Asset] = []
 
+    # THE LOGO IS PRODUCED FIRST, because two later things need the file: the
+    # builder puts it in the nav and the footer, and every GENERATED product
+    # screenshot is given it as a reference so the branding inside the image is
+    # the user's own. Measured on the eight real projects: with no logo and no
+    # name, a generated hero invented a company called "Off-Hook" that appears
+    # nowhere else, so the uploaded mark and the generated imagery advertised
+    # two different businesses.
+    logo_entry = next((a for a in plan if _kind(a) == "logo"), None)
+    logo_bytes: bytes | None = None
+
+    # A section already produced, with its file still on disk, is KEPT. Same
+    # rule as `step_build`, for the same reason and a larger bill: re-running
+    # this stage on a project that already has seven assets is seven image calls
+    # and several vision passes, paid again to produce what is already there.
+    # A deliberate re-make goes through `reset_assets`, which removes the record
+    # and the file together.
+    prior = {a.id: a for a in bb.assets if (run.workspace / "public" / a.path).exists()}
+
     for a in plan:
         aid, decision = a["id"], a.get("decision") or "generate"
+        kind = _kind(a)
+
+        if kind == "logo" and decision == "wordmark":
+            yield Event(Stage.ASSETS, "progress",
+                        "no logo file — the nav and footer set your name as a "
+                        "wordmark in the display typeface")
+            continue
+
         if decision == "skip":
             yield Event(Stage.ASSETS, "progress",
                         f"{aid} skipped — the builder composes this section from "
                         "type and layout")
+            continue
+
+        keep = prior.get(aid)
+        if keep is not None and keep.kind.value == kind:
+            made.append(keep)
+            if kind == "logo":
+                logo_bytes = (run.workspace / "public" / keep.path).read_bytes()
+            yield Event(Stage.ASSETS, "progress",
+                        f"{aid}: already produced ({keep.provenance.value}) — kept")
+            continue
+
+        if kind == "logo":
+            # RECOLOURED, NEVER REDRAWN. The file is copied through untouched.
+            # It does not go to `Curator.restyle` — an image model asked to
+            # restyle a mark redraws the letterforms, and unlike a redrawn
+            # dashboard that is a trademark come back subtly wrong, published on
+            # the owner's own site. Everything that makes it sit on the design
+            # system's ground is CSS and SVG over the file, decided by
+            # `logo_placement` from measured luminance and carried out by the
+            # builder.
+            #
+            # It is not SCRUBBED either. The scrub substitutes person names and
+            # org names, and a logo is very often exactly that — a founder's
+            # name is the mark. There is no customer data in a logo to protect
+            # and a great deal of trademark to destroy.
+            src = run.dir / "uploads" / a["upload"]
+            logo_bytes = src.read_bytes()
+            path = public / f"{aid}{src.suffix.lower()}"
+            path.write_bytes(logo_bytes)
+            w, h = _logo_size(path)
+            made.append(Asset(
+                id=aid, section_id=a["section_id"], kind=AssetKind.LOGO,
+                brief=a["brief"], prominence=Prominence(a["prominence"]),
+                provenance=Provenance.USER_SUPPLIED,
+                path=f"assets/{path.name}", width=w, height=h,
+                # No variants. `derive_variants` centre-crops to 1600x900,
+                # 800x800 and 720x900 — on a wordmark that is three pictures of
+                # the middle four letters.
+                variants={}, rejected=[], scrubbed=[],
+            ))
+            yield Event(Stage.ASSETS, "progress",
+                        f"{aid}: your logo, used as it is — never sent to the "
+                        f"image model, never redrawn")
             continue
 
         path = public / f"{aid}.png"
@@ -910,15 +1245,43 @@ def step_assets(run: Run) -> Iterator[Event]:
                             f"{aid}: restyle invented text ({fidelity.reason()}) — "
                             "shipping your own screenshot instead")
         else:
-            path.write_bytes(cur.generate(a["brief"], bb.design_system))
+            # The name and the mark both go in. A generated product surface
+            # shows branding somewhere — a sidebar header, a window title, a
+            # browser tab — and with nothing given it invents one, which is
+            # where "Off-Hook" came from on a site whose owner never used that
+            # word.
+            made_bytes = cur.generate(
+                a["brief"], bb.design_system,
+                product_name=bb.brief.product_name, logo=logo_bytes)
+            path.write_bytes(made_bytes)
             provenance = Provenance.GENERATED
             scrubbed = []
-            yield Event(Stage.ASSETS, "progress", f"{aid} generated")
+            yield Event(Stage.ASSETS, "progress",
+                        f"{aid} generated"
+                        + (" · your logo passed as a reference for the branding "
+                           "inside it" if logo_bytes else ""))
+
+            # ASSERT THE BRAND, do not assume the prompt worked. Transcribed
+            # across one real project's seven generated assets: four render a
+            # brand, two say `voiceowl` and two say `Off-Hook` — and the two that
+            # invented it are the hero and the product showcase, the largest
+            # images on the page. Naming the product in the prompt makes that
+            # much less likely; only reading the image back makes it visible when
+            # it happens anyway.
+            brand = cur.check_branding(made_bytes, bb.brief.product_name)
+            if not brand.ok:
+                rejected.append(f"branding not confirmed — {brand.reason()}")
+                yield Event(Stage.ASSETS, "blocked",
+                            f"{aid}: this image does not show your name. "
+                            f"{brand.reason()}. It is kept — a generated surface "
+                            f"has no original to fall back to — but upload a real "
+                            f"capture for this one if the brand matters here.")
 
         with Image.open(path) as im:
             w, h = im.size
         made.append(Asset(
-            id=aid, section_id=a["section_id"], brief=a["brief"],
+            id=aid, section_id=a["section_id"], kind=AssetKind.IMAGE,
+            brief=a["brief"],
             prominence=Prominence(a["prominence"]), provenance=provenance,
             path=f"assets/{path.name}", width=w, height=h,
             variants={k: f"assets/{v}" for k, v in derive_variants(path).items()},
@@ -949,6 +1312,76 @@ def _write_png(data: bytes, path: Path, Image) -> None:
 
     with Image.open(io.BytesIO(data)) as im:
         im.convert("RGB").save(path, "PNG")
+
+
+def identity_block(run: Run, bb: Blackboard, section: Section) -> str:
+    """What the nav and the footer must say the site IS.
+
+    Only for chrome. A content section already has the name in its brief block
+    and does not carry the brand mark, so giving it this text would have every
+    section drawing a wordmark.
+
+    It exists because the generic line was measurably not enough. `context_block`
+    has said "PRODUCT NAME: X — use this exact name everywhere it appears" from
+    the beginning, and across eight real projects the nav still came out as
+    `<PhoneCall />` from lucide with `aria-label="Platform home"` — a link to the
+    home page with no name on it at all. "Everywhere it appears" does not tell a
+    builder that the brand entry point is a place it appears; this does.
+    """
+    if section.id not in CHROME_ORDER:
+        return ""
+
+    name = (bb.brief.product_name or "").strip()
+    if not name:
+        # Unreachable through the API — gate 1 refuses a blank name — but a
+        # project created before that gate existed still resumes through here.
+        return ""
+
+    lines = [
+        "This section is page chrome. It carries the site's identity, and that "
+        "is not the blueprint's to decide — the blueprint describes the nav a "
+        "SOURCE site has, and a source site's brand is not transferable.",
+        "",
+        f'REQUIRED: THE BRAND ENTRY POINT READS "{name}".',
+        f'It is a link to the top of the page, and the visitor must be able to '
+        f'read the name "{name}" from it. A generic icon — a lucide glyph, an '
+        f'abbreviation, a coloured square with an initial — is NOT a brand '
+        f'entry point. Neither is an aria-label: a screen reader is not the '
+        f'only visitor. Set the name as type in the display typeface, at a '
+        f'weight and size that make it read as a wordmark rather than as a nav '
+        f'link.',
+    ]
+
+    logo = bb.logo()
+    if logo is None:
+        lines += [
+            "",
+            "There is no logo file — the user chose a wordmark at the material "
+            "gate. The name set in type IS the mark. Do not draw a mark to sit "
+            "beside it, do not add an icon as a stand-in, and do not put it in "
+            "a box to make it look like a logo.",
+        ]
+    else:
+        from sparrow.agents.curator import logo_placement
+
+        src = f"/projects/{run.project_id}/preview/{logo.path}"
+        lines += [
+            "",
+            f"THE USER'S OWN LOGO IS AT `{src}` "
+            f"({logo.width}x{logo.height}). Use it in both the nav and the "
+            f"footer, beside the name or in place of the name's type if the "
+            f"mark already contains the name.",
+            "",
+            "HARD RULE — THE MARK IS RECOLOURED, NEVER REDRAWN. It is a "
+            "trademark. Do not trace it, do not rebuild it out of divs or SVG "
+            "paths you write, do not re-letter it in a webfont, do not "
+            "substitute an icon that looks like it, and do not stretch it — "
+            "constrain one dimension and let the other follow.",
+            "",
+            logo_placement(run.workspace / "public" / logo.path, bb.design_system),
+        ]
+
+    return "<identity>\n" + "\n".join(lines) + "\n</identity>"
 
 
 def step_build(run: Run) -> Iterator[Event]:
@@ -996,9 +1429,18 @@ def step_build(run: Run) -> Iterator[Event]:
 
         out = builder.build(bb, section, bp, stack=STACK,
                             available_primitives=primitives,
-                            assets=bb.assets_for(section.id),
+                            # The logo is EXCLUDED here and passed through
+                            # `identity` instead. The <assets> block carries the
+                            # prominence rules — "a dominant asset is at least
+                            # 60% of the section's height" — which are written
+                            # for content imagery. Those firing on a nav asset
+                            # is precisely what produced the full-width blank
+                            # box above the hero.
+                            assets=[a for a in bb.assets_for(section.id)
+                                    if a.kind is not AssetKind.LOGO],
                             asset_base=f"/projects/{run.project_id}/preview",
-                            copy=(content.get(section.id) or {}).get("slots"))
+                            copy=(content.get(section.id) or {}).get("slots"),
+                            identity=identity_block(run, bb, section))
         write_section(ws, section, out.code,
                       asset_base=f"/projects/{run.project_id}/preview")
         # Immediately, per section. The file and the record of the file are one

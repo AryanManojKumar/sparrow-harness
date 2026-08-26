@@ -158,14 +158,22 @@ class GateAnswer(BaseModel):
 
     choice: str | int | None = None
     note: str | None = None
+    # At GATE 1, when the interviewer could not extract a name from the prompt.
+    # It is the only field that gate takes, and it is required there: measured
+    # across eight real projects, `product_name` was "" on every one and the
+    # sites shipped anonymous while their generated screenshots invented brands
+    # of their own.
+    product_name: str | None = None
     assets: dict[str, str] | None = None    # asset_id -> upload | generate | skip
+                                            # nav-logo -> upload | wordmark
     content: dict[str, str] | None = None   # ask_id -> the user's real answer
                                             # (omit or empty to keep the draft)
 
     model_config = {"json_schema_extra": {"examples": [
+        {"product_name": "Acme Harness"},
         {"choice": 0, "note": "the ledger direction"},
-        {"assets": {"hero-1": "upload", "feature-grid-1": "generate",
-                    "feature-grid-2": "skip"}},
+        {"assets": {"nav-logo": "upload", "hero-1": "upload",
+                    "feature-grid-1": "generate", "feature-grid-2": "skip"}},
         {"choice": "approve"}]}}
 
 
@@ -180,6 +188,13 @@ def _run_for(pid: str) -> Run:
         Stage.BRIEF: steps.step_brief,
         Stage.SOURCES: lambda r: steps.step_sources(r, urls),
         Stage.DESIGN: steps.step_design,
+        # CONTENT was missing from this map while the CLI had it, so every run
+        # driven through the API skipped the copy stage entirely: no drafted
+        # slots, no provenance, and `content_asks` empty at the material gate,
+        # which made half of that gate silently unreachable. A stage absent from
+        # this dict is not an error — `_advance` treats it as a gate with
+        # nothing pending and steps over it.
+        Stage.CONTENT: steps.step_content,
         Stage.GATE_ASSETS: steps.step_asset_gate,
         Stage.ASSETS: steps.step_assets,
         Stage.BUILD: steps.step_build,
@@ -389,6 +404,13 @@ def answer_gate(pid: str, body: GateAnswer) -> dict[str, Any]:
     run = _run_for(pid)
     if run.pending is None:
         raise HTTPException(409, "no gate is open")
+    if run.pending.gate is Stage.GATE_BRIEF:
+        try:
+            name = steps.record_product_name(run, body.product_name or "")
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        run.resolve({"product_name": name})
+        return {"stage": run.stage.value, "product_name": name}
     if run.pending.gate is Stage.GATE_ASSETS:
         try:
             # Content first: an asset error must not silently discard the real
@@ -418,6 +440,67 @@ def answer_gate(pid: str, body: GateAnswer) -> dict[str, Any]:
             raise HTTPException(400, "choice must be a direction index, or 'other'")
     run.resolve({"choice": body.choice, "note": body.note})
     return {"stage": run.stage.value}
+
+
+class Rebuild(BaseModel):
+    """Re-make named parts of a finished project, without re-running the run."""
+
+    sections: list[str] = []
+    assets: list[str] = []
+    # Where the next /advance picks up. Only the three stages that consume what
+    # is ALREADY on the blackboard are allowed: `sources` re-fetches every
+    # reference site and `design` re-proposes directions, which is a whole run's
+    # cost and a gate the user already answered.
+    stage: str = "build"
+
+    model_config = {"json_schema_extra": {"examples": [
+        {"sections": ["nav", "footer"], "stage": "build"},
+        {"assets": ["hero-1"], "sections": ["hero"], "stage": "assets"}]}}
+
+
+REBUILDABLE = {Stage.ASSETS, Stage.BUILD, Stage.VERIFY}
+
+
+@app.post("/projects/{pid}/rebuild", tags=["run"],
+          summary="Re-make named sections or assets, then advance from a later stage")
+def rebuild(pid: str, body: Rebuild) -> dict[str, Any]:
+    """The user-facing half of resume.
+
+    `step_build` keeps a section it has already built and `step_assets` keeps an
+    asset it has already produced — both deliberately, because re-running either
+    stage on a finished project pays again for what is already on disk. Neither
+    had any way to say "but re-make this one", so a correction to a single
+    section meant either a full re-run or hand-editing the workspace, and
+    hand-editing the workspace puts the blackboard and the site out of sync with
+    nothing to detect it.
+
+    This is also the smallest correct path for identity landing on a project
+    that is already built: settle the name at gate 1, upload the logo at the
+    material gate, then reset the two chrome sections and rebuild from `build`.
+    Two builder calls rather than a pipeline.
+    """
+    run = _run_for(pid)
+    if pid in _ADVANCING:
+        raise HTTPException(409, "this project is advancing — wait for a gate")
+    if run.pending is not None:
+        raise HTTPException(409, f"answer the open gate first ({run.pending.gate.value})")
+    try:
+        stage = Stage(body.stage)
+    except ValueError:
+        raise HTTPException(400, f"unknown stage {body.stage!r}")
+    if stage not in REBUILDABLE:
+        raise HTTPException(
+            400, f"{stage.value} re-derives from the sources and costs a whole run. "
+                 f"Rebuild from one of: {', '.join(sorted(s.value for s in REBUILDABLE))}")
+    try:
+        assets = steps.reset_assets(run, body.assets) if body.assets else []
+        sections = steps.reset_sections(run, body.sections) if body.sections else []
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    run.stage = stage
+    return {"stage": stage.value, "sections_reset": sections,
+            "assets_reset": assets,
+            "next": f"POST /projects/{pid}/advance"}
 
 
 @app.get("/projects/{pid}/directions", tags=["run"], summary="The three design directions proposed at gate 2")

@@ -15,9 +15,10 @@ not request/response: start it, stream progress, answer gates.
     POST   /projects/{id}/advance      run until the next gate — SSE stream
     GET    /projects/{id}/gate         what is being asked, with options
     POST   /projects/{id}/gate         answer it
+    POST   /projects/{id}/rebuild      re-make named sections or assets, then advance
     GET    /projects/{id}/directions   the design proposals at gate 2
-    GET    /projects/{id}/assets       the per-image plan at the asset gate
-    POST   /projects/{id}/assets/{aid} upload the user's own image (multipart)
+    GET    /projects/{id}/assets       the per-image plan at the material gate
+    POST   /projects/{id}/assets/{aid} upload the user's own image or logo (multipart)
     GET    /projects/{id}/preview/*    the built site, served statically
     GET    /projects/{id}/shots/{name} captures
     GET    /health
@@ -116,11 +117,25 @@ POST /projects
 }
 ```
 
-`product_name` comes from `/interview` and **must be passed through**. It is injected into
-every agent prompt as "use this exact name everywhere"; without it each builder invents its
-own and the page ships with a different product in the nav than in the footer. Pass an empty
-string only if the user genuinely has no name yet — the prompt then instructs every agent
-to refer to the product generically rather than invent one.
+`product_name` comes from `/interview` and **must be passed through**. Pass an empty string
+if the interviewer could not extract one; **GATE 1 then asks for it** and the run does not
+reach a generating stage until it is answered. Do not send a placeholder — the gate is the
+only place the name can be settled by the one party who knows it.
+
+Measured across all eight real projects built before that gate existed: `product_name` was
+`""` on every single one, and the consequences were visible on every page.
+
+| where | what shipped without the name |
+|---|---|
+| nav brand mark | `<PhoneCall />` from lucide, `aria-label="Platform home"` |
+| `<title>` | `"A platform for businesses to build voice AI agents q"` — the offering, cut mid-word |
+| generated hero | a company called **Off-Hook**, invented by the image model and appearing nowhere else |
+| generated showcase | **Off-Hook** again, but a different asset in the same run said **voiceowl** |
+
+Two different companies on one page. The name now reaches four places, and each is tested:
+the nav wordmark and the footer, the page title and description, `content_editor`'s copy,
+and **the curator's asset briefs** — a generated dashboard is told what the product is
+called so it renders the user's name instead of guessing one per call.
 
 `tone` is the single strongest lever on how the site looks — see
 `experiments/reactbits-01`, where changing that one line moved the design from austere to

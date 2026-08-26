@@ -7,6 +7,11 @@ attached to it, which makes it the regression baseline for the audit.
 from sparrow.blackboard.schema import Brief, Color, Constraint, DesignSystem, TypeStep
 
 BRIEF = Brief(
+    # Named, because every stage downstream now has to agree on it and a fixture
+    # with `product_name=""` silently exercises the "not given" branch — which
+    # is the branch all eight real projects took and the reason this fixture
+    # gained the field.
+    product_name="Ledgerline",
     category="B2B SaaS landing page",
     offering=(
         "Continuous SOC 2 compliance automation. Connects to a company's cloud "

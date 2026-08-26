@@ -228,9 +228,30 @@ class Prominence(StrEnum):
     THUMBNAIL = "thumbnail"
 
 
+class AssetKind(StrEnum):
+    """What an asset IS, which decides what may be done to it.
+
+    IMAGE — content imagery. May be generated from a brief, or restyled from an
+            upload, because what it shows is a picture of a thing.
+    LOGO  — the client's mark. It is a trademark, so it is RECOLOURED, NEVER
+            REDRAWN: it never reaches `Curator.restyle` or `Curator.generate`.
+            An image model asked to restyle a logo redraws the letterforms, and
+            unlike a redrawn dashboard that is somebody's registered mark come
+            back subtly wrong. It also never carries a `prominence` that means
+            anything — see `step_build`, which keeps it out of the builder's
+            asset list entirely so the "dominant asset owns the section" rule
+            cannot fire on it. That rule firing on a nav asset is what produced
+            the full-width blank box above the hero.
+    """
+
+    IMAGE = "image"
+    LOGO = "logo"
+
+
 class Asset(BaseModel):
     id: str
     section_id: str
+    kind: AssetKind = AssetKind.IMAGE
     brief: str                       # what it must show, from the blueprint
     prominence: Prominence = Prominence.SUPPORTING
     provenance: Provenance
@@ -288,6 +309,16 @@ class Blackboard(BaseModel):
 
     def assets_for(self, section_id: str) -> list[Asset]:
         return [a for a in self.assets if a.section_id == section_id]
+
+    def logo(self) -> Asset | None:
+        """The client's mark, if they gave us one.
+
+        Not `assets_for("nav")`: the logo is site-wide identity, not a nav
+        image. It goes in the nav AND the footer, and it must never be handed to
+        a builder as one of a section's images — that path carries prominence
+        rules written for content imagery.
+        """
+        return next((a for a in self.assets if a.kind is AssetKind.LOGO), None)
 
     def next_pending(self) -> Section | None:
         pending = [s for s in self.sections if s.status is BuildStatus.PENDING]

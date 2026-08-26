@@ -176,6 +176,36 @@ output {"found": []}."""
 _JSON = re.compile(r"\{.*\}", re.S)
 
 
+def _norm(text: str) -> str:
+    """Letters and digits only, lowercased.
+
+    So a mark rendered as "Voice Owl", "VOICEOWL" or "voice-owl" all match the
+    name written as "voiceowl.ai". The failure being checked for is a DIFFERENT
+    company's name, not a different capitalisation of the right one.
+    """
+    return "".join(c for c in text.lower() if c.isalnum())
+
+
+@dataclass
+class Branding:
+    """Whether a generated product surface names the right product."""
+
+    ok: bool
+    name: str
+    lines: list[str]
+    distinctive: str
+
+    def reason(self) -> str:
+        if self.ok:
+            return ""
+        # What it said INSTEAD, so the finding is checkable rather than an
+        # assertion. Generated content has no PII by construction, so quoting it
+        # back is safe in a way quoting a scrubbed upload would not be.
+        shown = "; ".join(repr(ln) for ln in self.lines[:6]) or "no legible text"
+        return (f"the image never says {self.name!r} (looked for {self.distinctive!r}); "
+                f"it reads: {shown}")
+
+
 @dataclass
 class Scrub:
     """A scrubbed image and what changed in it.
@@ -273,19 +303,70 @@ class Curator(Agent):
 
     # --------------------------------------------------------------- generate
 
-    def generate(self, brief: str, ds: DesignSystem, *, shape: str = "wide") -> bytes:
+    def generate(self, brief: str, ds: DesignSystem, *, shape: str = "wide",
+                 product_name: str = "", logo: bytes | None = None) -> bytes:
+        """A product surface, branded as the user's — not as its own.
+
+        The name and the mark are both passed in because a generated screenshot
+        of software SHOWS BRANDING whether or not the brief mentions any. It has
+        a sidebar header, a window title, a browser tab, and with nothing given
+        the model fills them with something plausible. Measured across the eight
+        real projects: a hero generated for a voice-AI platform invented a
+        company called "Off-Hook" which appears nowhere else in the run, while
+        the same page's nav showed a lucide phone icon. The uploaded material and
+        the generated material advertised two different businesses.
+
+        With a logo, this switches from `images.generate` to `images.edit` with
+        the mark as a reference image and `input_fidelity="high"` — the only way
+        gpt-image-2 is told what a specific mark looks like. The prompt has to
+        say the reference is a reference: given one image and an edit endpoint,
+        the obvious reading is "modify this logo", and the output would be a
+        picture of a logo where a dashboard belongs.
+        """
         from openai import OpenAI
+
+        naming = (
+            f"THE PRODUCT SHOWN IS CALLED \"{product_name}\". Wherever this "
+            f"interface names itself — a sidebar header, a top bar, a window "
+            f"title, a browser tab, an empty state — it reads exactly "
+            f"\"{product_name}\". Do not invent a different product name, do not "
+            f"abbreviate it, and do not add a tagline under it.\n\n"
+            if product_name else
+            "This interface does not name itself. Leave the sidebar header, "
+            "window title and browser tab free of any product name rather than "
+            "inventing one.\n\n"
+        )
 
         prompt = (
             f"{brief}\n\n"
             "Render this as a realistic screenshot of real working software — not an "
             "illustration, not a mockup with placeholder boxes, not a diagram.\n\n"
+            f"{naming}"
             f"Match this design system:\n{_style_clause(ds)}\n\n"
             "Text must be legible and plausible. Any code, identifiers or timestamps must "
             "look like real values a working system would produce."
         )
-        r = OpenAI().images.generate(
-            model=IMAGE_MODEL, prompt=prompt, size=_SIZES[shape]
+
+        if logo is None:
+            r = OpenAI().images.generate(
+                model=IMAGE_MODEL, prompt=prompt, size=_SIZES[shape]
+            )
+            return base64.b64decode(r.data[0].b64_json)
+
+        prompt = (
+            "The attached image is a REFERENCE, not the thing to edit. It is the "
+            "product's logo. Do not output the logo, do not enlarge it, do not "
+            "redraw it and do not place it on a background as a composition. "
+            "Output the screenshot described below, and use the reference mark "
+            "exactly as drawn wherever that interface shows its branding — "
+            "typically small, in the top-left of a sidebar or top bar. Reproduce "
+            "its shapes and proportions; recolour it only if the design system "
+            "demands it.\n\n" + prompt
+        )
+        r = OpenAI().images.edit(
+            model=IMAGE_MODEL,
+            image=[("logo.png", io.BytesIO(_as_png(logo)), "image/png")],
+            prompt=prompt, size=_SIZES[shape], input_fidelity="high",
         )
         return base64.b64decode(r.data[0].b64_json)
 
@@ -442,6 +523,45 @@ class Curator(Agent):
         )
         return [ln.strip() for ln in res.text.splitlines() if ln.strip()]
 
+    def check_branding(self, image: bytes, product_name: str) -> Branding:
+        """Did the generated surface actually come back wearing the right name?
+
+        Cheap, and it is the only check that would have caught the failure that
+        started this. Measured by transcribing all seven generated assets of one
+        real project: four of them render a brand, two say `voiceowl` and two say
+        `Off-Hook` — and the two that invented it are the hero and the product
+        showcase, the two largest images on the page. `brief.product_name` was
+        `""` for that run, so nothing told the curator what the product was
+        called and it guessed, differently, per call.
+
+        Passing the name in the prompt makes that much less likely. It does not
+        make it impossible, and a prompt instruction with no assertion behind it
+        is how the last one failed silently. `transcribe` already exists and is
+        already bought on the restyle path; on the generate path it is one extra
+        vision call against an image that will otherwise be the biggest thing on
+        somebody's home page.
+
+        NOT A RETRY GATE. Unlike the restyle there is no untouched original to
+        fall back to — a generated image is invented by construction — so the
+        finding is recorded on the asset and surfaced, and the user decides
+        whether to upload something real instead. Re-rolling the same prompt is
+        another image call at the same odds, which is the rule every other loop
+        in this harness already follows.
+        """
+        if not product_name.strip():
+            return Branding(True, product_name, [], "")
+        lines = self.transcribe(image)
+        flat = _norm(" ".join(lines))
+        joined = _norm(product_name)
+        tokens = [t for t in re.findall(r"[A-Za-z0-9]+", product_name.lower())
+                  if len(t) >= 3]
+        # The longest token is the distinctive one: "voiceowl.ai" is recognisable
+        # from "voiceowl" and not at all from "ai", which also matches the middle
+        # of a hundred ordinary words.
+        distinctive = max(tokens, key=len) if tokens else ""
+        ok = bool(joined and joined in flat) or bool(distinctive and distinctive in flat)
+        return Branding(ok, product_name, lines, distinctive)
+
     def check_fidelity(self, before: bytes | list[str], after: bytes) -> Fidelity:
         """Reject a restyle that says anything the original did not.
 
@@ -460,6 +580,132 @@ class Curator(Agent):
         invented = sorted(b - a)
         lost = sorted(a - b)
         return Fidelity(ok=not invented, invented=invented, lost=lost)
+
+
+# ----------------------------------------------------------------------- logo
+#
+# A LOGO IS RECOLOURED, NEVER REDRAWN. There is no path from here to `restyle`
+# or to `generate`, and that is the point: an image model asked to restyle a
+# mark redraws the letterforms. On a dashboard capture that is an invented
+# label, which the fidelity gate catches; on a logo it is a registered
+# trademark come back subtly wrong, published on the owner's own site, with
+# nothing downstream able to tell.
+#
+# What is allowed is everything that leaves the drawing alone: recolour through
+# `currentColor` or a CSS filter, mask, knock out, or set the file on a neutral
+# chip. Which of those applies is MEASURED — the mark's own ink against the
+# design system's ground — rather than guessed at by an agent looking at it.
+
+
+def _srgb_luminance(rgb: tuple[int, int, int]) -> float:
+    """WCAG relative luminance."""
+    def chan(v: int) -> float:
+        c = v / 255
+        return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+
+    r, g, b = (chan(v) for v in rgb)
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+
+def _contrast(a: float, b: float) -> float:
+    hi, lo = max(a, b), min(a, b)
+    return (hi + 0.05) / (lo + 0.05)
+
+
+# WCAG 1.4.11, non-text contrast: 3:1 for a graphical object that has to be
+# perceivable. A logo below this against the page ground is not "a bit subtle",
+# it is a mark nobody can see — and the fix for it must not be "redraw it".
+GRAPHIC_CONTRAST = 3.0
+
+
+def logo_placement(path: Path, ds: DesignSystem) -> str:
+    """How this specific mark may be made to sit on this specific ground.
+
+    Deterministic — no model, no cost. The mark's ink luminance is measured off
+    the file and compared with the design system's background; the instruction
+    the builder gets follows from the number, and the number is quoted so a
+    wrong-looking result is traceable to the measurement that caused it.
+
+    Every branch preserves the drawing. When the numbers say the mark cannot be
+    made to work on the ground, the answer is a neutral chip behind it — never
+    an alteration of the mark.
+    """
+    from sparrow.palette import parse
+
+    ground_L = parse({c.token: c for c in ds.colors}["background"].value)[0]
+    # oklab L is roughly the cube root of relative luminance for a neutral, and
+    # page grounds in this system are neutral or near it. Good enough to decide
+    # between "visible" and "invisible", which is all this has to decide.
+    ground_Y = ground_L ** 3
+    dark_ground = ground_Y < 0.18
+
+    if path.suffix.lower() == ".svg":
+        return (
+            "The logo is an SVG. Recolour it LOSSLESSLY: strip its hard-coded "
+            "fill/stroke to `currentColor` ONLY IF the mark is a single flat "
+            "colour, and set the colour with a design-system token. If it is "
+            "multi-colour, leave every colour exactly as drawn and place it "
+            "as-is. Inline it or use next/image; either way do not trace it, do "
+            "not re-letter it, do not rebuild it out of divs and do not "
+            "substitute a lucide icon for it."
+        )
+
+    from PIL import Image
+
+    with Image.open(path) as im:
+        rgba = im.convert("RGBA")
+        w, h = rgba.size
+        raw = rgba.tobytes()
+    # Read out of the buffer rather than through `getdata()`, which Pillow 14
+    # removes. Same pixels, no per-pixel Python object.
+    px = [raw[i:i + 4] for i in range(0, len(raw), 4) if raw[i + 3] > 32]
+    if not px:
+        return ("The logo file is fully transparent. Set the product name as a "
+                "wordmark in the display typeface instead and report it.")
+
+    alpha = len(px) / max(1, w * h)
+    ys = sorted(_srgb_luminance((p[0], p[1], p[2])) for p in px)
+    # The INK, not the average. A wordmark is mostly its own background; the
+    # mean of the whole file is the background's luminance and says nothing
+    # about whether the letters can be seen.
+    ink = ys[len(ys) // 10]
+    ratio = _contrast(ink, ground_Y)
+    numbers = (f"measured: the mark's ink sits at luminance {ink:.3f}, the page "
+               f"ground at {ground_Y:.3f} — contrast {ratio:.2f}:1")
+
+    if alpha < 0.92:
+        # Transparent around the mark: it can sit directly on the ground, and a
+        # single-colour mark can be knocked out to a token colour with a CSS
+        # mask, which moves no pixel of the drawing.
+        if ratio >= GRAPHIC_CONTRAST:
+            return (f"The logo has a transparent background and reads on the page "
+                    f"ground as it is ({numbers}). Place it directly, at its own "
+                    f"colours, with no chip, no border and no filter.")
+        return (
+            f"The logo has a transparent background but does NOT read on the page "
+            f"ground ({numbers}, below the {GRAPHIC_CONTRAST}:1 floor for a "
+            f"graphic). KNOCK IT OUT rather than altering it: render it as a CSS "
+            f"mask-image over a design-system colour "
+            f"(`mask-image:url(...);mask-size:contain;background-color:<token>`), "
+            f"which recolours the mark without touching a pixel of its shape. If "
+            f"the mark is multi-colour and a knockout would destroy that, set it "
+            f"on a small neutral chip"
+            + (" in a light surface colour" if dark_ground else
+               " in a white or near-white surface colour")
+            + " with the design system's card radius, and leave the mark itself "
+              "exactly as it is.")
+
+    if ratio >= GRAPHIC_CONTRAST:
+        return (f"The logo is opaque, and its own ground is far enough from the "
+                f"page ground to read as a mark rather than a floating rectangle "
+                f"({numbers}). Place it as it is. Do not try to key out its "
+                f"background — that erodes the edges of the drawing.")
+    return (
+        f"The logo is opaque and its own ground is close to the page ground "
+        f"({numbers}), so placed bare it will read as a rectangle with a seam. "
+        f"Set it on an explicit chip: the design system's card surface, card "
+        f"radius, hairline border, small padding. Do NOT key out its background, "
+        f"do not apply a blend mode, and do not redraw it.")
 
 
 # ------------------------------------------------------------------- variants

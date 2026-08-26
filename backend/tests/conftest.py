@@ -115,11 +115,17 @@ class RecordingBuilder:
     def __init__(self, code: str = "export default function S() { return null; }\n",
                  on_build=None) -> None:
         self.calls: list[str] = []
+        # Everything `step_build` hands over, per section. Identity and the
+        # asset list are both computed in the step and consumed in the agent,
+        # which is exactly the "computed and then not handed on" seam this file
+        # exists to keep visible.
+        self.kwargs: dict[str, dict] = {}
         self.code = code
         self.on_build = on_build
 
     def build(self, _bb, section, _bp, **_kw):
         self.calls.append(section.id)
+        self.kwargs[section.id] = _kw
         if self.on_build is not None:
             self.on_build(section)
         return _Output(self.code.replace("function S", f"function {section.component_name}"))
