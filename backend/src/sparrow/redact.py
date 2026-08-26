@@ -4,23 +4,30 @@ A dashboard screenshot is only worth uploading because it looks like real
 software in real use. That rules out the obvious scrub: blurring every name and
 figure returns a grey smear, and a user who gets one back stops uploading. So
 this module SUBSTITUTES — same character shape, same width, same ink colour,
-same position — and blurs only where there is nothing to substitute (a face).
+same position — and masks only where there is nothing to substitute (a face, or
+a value that could not be placed).
 
-Two things had to be solved to make substitution work at the pixel level.
+Three things had to be solved to make substitution work at the pixel level, and
+each of them is a defect that happened first.
 
 BOXES FROM A VISION MODEL ARE SHORT. Measured against a real payments dashboard
-carrying 25 findings: every box the model returned was left-accurate and
-right-short by roughly one character — "Sarah Ree|d", "acmemarket|s.com",
-"£12,843.2|1". Filling exactly those boxes would leave the last digit of a
-balance and the last letter of a surname standing. So the model's box is treated
-as a POINTER, not a boundary: `_snap` pads it, finds the actual ink, and grows
-the fill to the real extent of the drawn characters.
+carrying 25 findings, every box was left-accurate and right-short by one to two
+characters — "Sarah Ree|d", "acmemarket|s.com", "£12,843.2|1". One swallowed a
+leading `MID:` label; two sat a whole table row out. Filling exactly those boxes
+leaves the last digit of a balance standing. So the box is a POINTER, not a
+boundary: `_place` searches around it and measures which ink to repaint.
+
+WIDTH ALONE IS NOT ENOUGH TO IDENTIFY A STRING. `Apple Pay •••• 1010` and
+`Foo Food Suppliers Ltd` render within 3px of the same width at the same line
+height, and the model had put the second one's box on the first one's row — so a
+width-only match repainted the wrong row and left the beneficiary standing. The
+ink PROFILE (`_buckets`) separates them.
 
 THE FONT IS NOT KNOWN. It is measured rather than assumed: each candidate face
 is rendered at every plausible size and scored on how closely it reproduces the
-ORIGINAL string's measured ink box. The face and size that reproduce it best are
-the ones used to draw the replacement. That is why a monospace transaction id
-comes back monospace without anyone declaring it.
+ORIGINAL string's ink. The face and size that reproduce it best draw the
+replacement — which is why a monospace transaction id comes back monospace
+without anyone declaring it.
 """
 
 from __future__ import annotations
