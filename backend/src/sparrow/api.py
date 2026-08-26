@@ -204,13 +204,43 @@ def _run_for(pid: str) -> Run:
     # sends every project back to `brief`, and the next /advance re-extracts
     # every reference site — a whole run's cost, spent silently, for nothing.
     try:
-        saved = Blackboard.model_validate_json(
-            (PROJECTS / pid / "blackboard.json").read_text()).stage
-        run.stage = Stage(saved)
+        bb = Blackboard.model_validate_json(
+            (PROJECTS / pid / "blackboard.json").read_text())
+        run.stage = Stage(bb.stage)
+        if run.stage is Stage.BRIEF:
+            run.stage = _infer_stage(PROJECTS / pid, bb)
     except (ValueError, KeyError):
         pass          # an unknown stage string: start from the top, as before
     _RUNS[pid] = run
     return run
+
+
+def _infer_stage(d: Path, bb: Blackboard) -> Stage:
+    """Where a project got to, for one written before the stage was recorded.
+
+    `Blackboard.stage` defaults to "brief", and every project built before it
+    existed carries that default — nine finished sites all reporting they had
+    not started. Clicking one made the next /advance re-extract every reference
+    site and re-run the whole pipeline: a full run's cost, for a project that
+    was already built.
+
+    Read from artifacts on disk rather than trusting the default, and only ever
+    when the recorded stage IS the default — a project genuinely sitting at
+    brief has none of these.
+    """
+    if (d / "workspace/out/index.html").is_file():
+        # It has a built, exported site. Whatever else is true, the pipeline is
+        # past the point where re-running it is free.
+        return Stage.GATE_PREVIEW
+    if bb.sections and bb.design_system is not None:
+        return Stage.BUILD
+    if bb.design_system is not None:
+        return Stage.GATE_DESIGN
+    if (d / "blueprints").is_dir() and any((d / "blueprints").iterdir()):
+        return Stage.DESIGN
+    if bb.brief is not None:
+        return Stage.SOURCES
+    return Stage.BRIEF
 
 
 @app.middleware("http")
@@ -360,7 +390,12 @@ def list_projects() -> list[dict[str, Any]]:
             "readable": True,
             "product_name": (brief.product_name if brief else "") or "",
             "category": brief.category if brief else "",
-            "stage": bb.stage,
+            # The stage the run would actually RESUME at, not the raw field.
+            # A project written before the stage was recorded carries the
+            # default "brief" while having a finished site on disk, and a UI
+            # that believes it offers to start a run that is already done.
+            "stage": (bb.stage if bb.stage != Stage.BRIEF.value
+                      else _infer_stage(d, bb).value),
             "version": bb.version,
             "sections": len(bb.sections),
             "built": sum(1 for x in bb.sections if x.status is BuildStatus.BUILT),
