@@ -80,3 +80,28 @@ def test_rebinding_twice_changes_nothing_the_second_time(run):
 
 def test_preview_base_is_the_path_the_api_serves_from(run):
     assert preview_base(run) == BASE
+
+
+def test_a_bound_config_with_root_relative_images_is_not_bound(run):
+    """The false negative the first version of this check shipped with.
+
+    `base_path` reads the `_next/` prefix, which comes from next.config.ts. Next
+    prefixes its own chunks and leaves an unoptimized <Image> src exactly as
+    written, so a project can have a correct config and 404 every image. The ide
+    project was in exactly that state and this check called it healthy.
+    """
+    out = run.workspace / "out"
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "index.html").write_text(
+        f'<link href="{BASE}/_next/static/chunks/a.css">'
+        f'<img src="/assets/hero-1.png">')
+    assert preview_bound(run) is False
+
+
+def test_an_export_prefixed_in_both_halves_is_bound(run):
+    out = run.workspace / "out"
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "index.html").write_text(
+        f'<link href="{BASE}/_next/static/chunks/a.css">'
+        f'<img src="{BASE}/assets/hero-1.png">')
+    assert preview_bound(run) is True

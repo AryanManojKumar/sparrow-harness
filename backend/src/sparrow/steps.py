@@ -2023,7 +2023,20 @@ def preview_bound(run: Run) -> bool:
     out = run.workspace / "out"
     if not (out / "index.html").is_file():
         return True                      # nothing built yet is not "unbound"
-    return base_path(out) == preview_base(run)
+    if base_path(out) != preview_base(run):
+        return False
+
+    # And the asset srcs, which the config does NOT govern. The first version of
+    # this checked only `base_path`, which reads the `_next/` prefix — that comes
+    # from next.config.ts. It reported the ide project as bound while every one
+    # of its images was root-relative and 404ing, because Next prefixes its own
+    # chunks and leaves an unoptimized <Image> src exactly as written.
+    #
+    # Read from the EXPORT rather than the sources: the export is what is served,
+    # and it is the only place both halves have been resolved.
+    html = "\n".join(f.read_text(errors="ignore")
+                     for f in out.rglob("*.html"))
+    return '"/assets/' not in html and "'/assets/" not in html
 
 
 def rebind_preview(run: Run) -> dict:
