@@ -1573,6 +1573,14 @@ def _inspect_once(run: Run, bb, blueprints, port: int = 4600,
     return page_level, per_section, cost
 
 
+_ASSET_REF = re.compile(r"assets/[A-Za-z0-9._-]+")
+
+
+def _assets_lost(before: str, after: str) -> list[str]:
+    """Which images the section used to render and no longer does."""
+    return sorted(set(_ASSET_REF.findall(before)) - set(_ASSET_REF.findall(after)))
+
+
 def _drift_defects(findings: list, bb: Blackboard) -> dict[str, list]:
     """Group audit findings by the section whose file they were measured in.
 
@@ -1779,6 +1787,22 @@ def step_verify(run: Run) -> Iterator[Event]:
                                 f"{sid} dispute not recorded ({rejected.code}): "
                                 f"{rejected.message}")
                 yield Event(Stage.VERIFY, "progress", f"{sid}: disputed — {dispute[:70]}")
+                continue
+            # A fix may not throw away imagery. Measured on the voice-ai run:
+            # the fixer repaired three defects in integration-grid and one in
+            # feature-grid, and in doing so removed the <Image> for
+            # integration-grid-1 and feature-grid-1 — both of them the user's
+            # OWN uploaded files, still on disk and on the blackboard, referenced
+            # by nothing. The section rendered without them and no check noticed,
+            # so the repair loop quietly deleted the one thing §2 calls the
+            # differentiator. Dropping an asset is never the fix for a visual
+            # defect; if the layout cannot hold the image, that is an escalation,
+            # not a deletion.
+            lost = _assets_lost(before, out.code)
+            if lost:
+                yield Event(Stage.VERIFY, "blocked",
+                            f"{sid}: fix rejected — it removed {', '.join(lost)}, "
+                            "which the section is built to show")
                 continue
             snapshots.setdefault(path, before)
             write_section(run.workspace, section, out.code,

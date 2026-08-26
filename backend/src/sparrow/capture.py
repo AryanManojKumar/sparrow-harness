@@ -382,8 +382,13 @@ def inspect_page(
             failed: list[str] = []
             page.on("console", lambda m: errors.append(m.text[:200])
                     if m.type == "error" else None)
+            # GET only. A HEAD that fails is not a missing asset — nothing on
+            # the page is rendered from one — and a stray `HEAD .../preview/`
+            # was enough to make the verify guard refuse to inspect a page whose
+            # every stylesheet, script and image had loaded fine.
             page.on("requestfailed",
-                    lambda r: failed.append(f"{r.method} {r.url[:110]}"))
+                    lambda r: failed.append(f"{r.method} {r.url[:110]}")
+                    if r.method == "GET" else None)
 
             page.goto(url, wait_until="domcontentloaded")
             # Sample BEFORE anything settles — this is what a visitor sees first.
