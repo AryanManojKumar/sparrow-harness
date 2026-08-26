@@ -105,6 +105,20 @@ class Store:
         self._write(bb)
         return Applied(bb.version)
 
+    def set_stage(self, stage: str) -> None:
+        """Move the run pointer. Deliberately not an `apply`.
+
+        Every stage transition going through `apply` would append a Decision
+        per step — eleven rows of "now at build" that bury the decisions a human
+        would actually want to read. The pointer is bookkeeping, not a decision;
+        the decisions are what happened INSIDE each stage.
+        """
+        bb = self.load()
+        if bb.stage == stage:
+            return
+        bb.stage = stage
+        self._write(bb)
+
     def _write(self, bb: Blackboard) -> None:
         """Serialise, flush, rename. A half-written blackboard loses the project.
 

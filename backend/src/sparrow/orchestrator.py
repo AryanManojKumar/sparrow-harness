@@ -177,6 +177,7 @@ class Run:
                 return
 
             self.stage = next_stage(self.stage)
+            self._save_stage()
 
         yield self._emit(Event(Stage.DONE, "done", f"run complete · ${self.spent:.4f}"))
 
@@ -186,7 +187,15 @@ class Run:
             raise RuntimeError("no gate is open")
         self.pending = None
         self.stage = next_stage(self.stage)
+        self._save_stage()
         self.log.append(Event(self.stage, "progress", f"gate resolved: {choice}"))
+
+    def _save_stage(self) -> None:
+        """Persist the pointer so a restart resumes rather than re-runs."""
+        from sparrow.blackboard.store import Store
+
+        if self.blackboard_path.exists():
+            Store(self.blackboard_path).set_stage(self.stage.value)
 
     def _emit(self, ev: Event) -> Event:
         from sparrow import telemetry

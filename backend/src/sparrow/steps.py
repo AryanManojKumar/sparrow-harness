@@ -309,8 +309,12 @@ def step_sources(run: Run, urls: list[str]) -> Iterator[Event]:
             continue
         if r.register is not None:
             registers[site] = r.register
-        if r.components is not None:
-            vocabulary[site] = r.components
+        # On the Register, not on the extract. Reading `r.components` raised
+        # AttributeError and killed the whole sources stage on a live run — the
+        # unit test for this passed because it handed the blueprinter a dict
+        # directly and never exercised this seam.
+        if r.register is not None and r.register.components is not None:
+            vocabulary[site] = r.register.components
         types = classify(provider, r.bands)
         labelled[site] = [(t, b.index + 1) for t, b in zip(types, r.bands)]
         for t, b in zip(types, r.bands):

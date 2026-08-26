@@ -317,8 +317,10 @@ class Curator(Agent):
         the generated material advertised two different businesses.
 
         With a logo, this switches from `images.generate` to `images.edit` with
-        the mark as a reference image and `input_fidelity="high"` — the only way
-        gpt-image-2 is told what a specific mark looks like. The prompt has to
+        the mark as a reference image — the only way gpt-image-2 is told what a
+        specific mark looks like. `input_fidelity` is NOT sent: gpt-image-2
+        rejects it outright ("does not support the 'input_fidelity' parameter"),
+        which failed the whole assets stage on a live run. The prompt has to
         say the reference is a reference: given one image and an edit endpoint,
         the obvious reading is "modify this logo", and the output would be a
         picture of a logo where a dashboard belongs.
@@ -366,7 +368,7 @@ class Curator(Agent):
         r = OpenAI().images.edit(
             model=IMAGE_MODEL,
             image=[("logo.png", io.BytesIO(_as_png(logo)), "image/png")],
-            prompt=prompt, size=_SIZES[shape], input_fidelity="high",
+            prompt=prompt, size=_SIZES[shape],
         )
         return base64.b64decode(r.data[0].b64_json)
 

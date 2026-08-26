@@ -296,6 +296,15 @@ class Decision(BaseModel):
 class Blackboard(BaseModel):
     project_id: str
     version: int = 0
+    # Where the run got to. Held as a plain string rather than the Stage enum
+    # because that lives in the orchestrator and importing it here is a cycle.
+    #
+    # It is here because it was nowhere: `Run.stage` lived only in memory, so
+    # restarting the server sent every project back to `brief` and re-ran the
+    # sources stage — three site extractions, real money, silently. The
+    # orchestrator's own docstring claimed a run resumes from where it halted;
+    # sections and decisions persisted, the pointer to the current stage did not.
+    stage: str = "brief"
     brief: Brief | None = None
     constraints: list[Constraint] = Field(default_factory=list)
     design_system: DesignSystem | None = None

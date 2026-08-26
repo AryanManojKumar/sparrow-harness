@@ -200,6 +200,15 @@ def _run_for(pid: str) -> Run:
         Stage.BUILD: steps.step_build,
         Stage.VERIFY: steps.step_verify,
     })
+    # Resume where the project actually got to. Without this a server restart
+    # sends every project back to `brief`, and the next /advance re-extracts
+    # every reference site — a whole run's cost, spent silently, for nothing.
+    try:
+        saved = Blackboard.model_validate_json(
+            (PROJECTS / pid / "blackboard.json").read_text()).stage
+        run.stage = Stage(saved)
+    except (ValueError, KeyError):
+        pass          # an unknown stage string: start from the top, as before
     _RUNS[pid] = run
     return run
 

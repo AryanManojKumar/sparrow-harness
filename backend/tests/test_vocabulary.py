@@ -66,3 +66,19 @@ def test_a_source_with_nothing_counted_is_omitted_but_others_survive(monkeypatch
                                  "linear.app": Components(pills=8, code_blocks=11)})
     assert "empty.com" not in user
     assert "pills (8)" in user and "code blocks (11)" in user
+
+
+def test_the_census_is_read_from_the_register_not_the_extract():
+    """The seam the unit tests above did not cover.
+
+    `Components` hangs off `Register`, not off `SiteExtract`. Reading it from
+    the extract raised AttributeError and killed the entire sources stage on a
+    live run, while every test in this file still passed — because they hand the
+    blueprinter a dict and never touch the code that builds it.
+    """
+    from sparrow.scout import Register, SiteExtract
+
+    assert not hasattr(SiteExtract(url="u", title="t", ok=True), "components")
+    reg = Register(dark=False, dark_share=0.0, video=0, canvas=0,
+                   code_blocks=0, product_images=0, components=Components(pills=4))
+    assert reg.components.used() == ["pills (4)"]
