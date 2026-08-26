@@ -142,8 +142,12 @@ class Run:
         """
         from sparrow import telemetry
 
-        with telemetry.trace(self.project_id):
-            yield from self._advance()
+        # bind, not trace: this is a generator, so a `with` here would create
+        # its tokens on the first next() and unwind them in whatever Context
+        # the consumer closes it in. Under SSE that is a different Context and
+        # it raised on a real run.
+        telemetry.bind(self.project_id)
+        yield from self._advance()
 
     def _advance(self) -> Iterator[Event]:
         while self.stage is not Stage.DONE:
@@ -187,6 +191,10 @@ class Run:
     def _emit(self, ev: Event) -> Event:
         from sparrow import telemetry
 
+        # Re-bound per event: an SSE consumer can resume this generator in a
+        # fresh Context, where the labels bound in advance() are simply absent
+        # and every line would log with no project.
+        telemetry.bind(self.project_id, stage=ev.stage.value)
         self.log.append(ev)
         telemetry.log_stage(ev.stage.value, ev.kind, ev.message, ev.cost, **ev.data)
         return ev

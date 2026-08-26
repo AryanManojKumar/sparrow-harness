@@ -55,9 +55,41 @@ def current_trace() -> str | None:
     return _trace.get()
 
 
+def bind(project: str, trace_id: str | None = None,
+         stage: str | None = None) -> str:
+    """Bind the labels with no token and no unwind. Safe across contexts.
+
+    A ContextVar token may only be reset in the Context that created it, and
+    two things here routinely cross one:
+
+      * `Run.advance` is a generator. Its `with` body spans every `yield`, so
+        the tokens are created on the first `next()` and unwound whenever the
+        consumer happens to close it — often a different Context under an SSE
+        response.
+      * ASGI middleware returns before a StreamingResponse body runs, so a
+        `with` around `call_next` has already exited by the time the run
+        streams anything.
+
+    Both produced `Token ... was created in a different Context` in a live run.
+    These vars are labels on log lines: the correct behaviour when a context is
+    re-entered is to overwrite them, which is exactly what a plain `set` does.
+    """
+    tid = trace_id or _trace.get() or new_trace_id()
+    _trace.set(tid)
+    _project.set(project)
+    if stage is not None:
+        _stage.set(stage)
+    return tid
+
+
 @contextmanager
 def trace(project: str, trace_id: str | None = None, stage: str | None = None) -> Iterator[str]:
-    """Bind a project (and optionally a stage) for everything logged inside."""
+    """Bind a project (and optionally a stage) for everything logged inside.
+
+    Use `bind` instead wherever the scope can span a `yield` or an `await` that
+    hands control to another Context; the unwind here is best-effort for that
+    reason and never raises.
+    """
     tid = trace_id or _trace.get() or new_trace_id()
     tokens = [_trace.set(tid), _project.set(project)]
     if stage is not None:
@@ -66,7 +98,13 @@ def trace(project: str, trace_id: str | None = None, stage: str | None = None) -
         yield tid
     finally:
         for t in reversed(tokens):
-            t.var.reset(t)
+            try:
+                t.var.reset(t)
+            except ValueError:
+                # Reset in a foreign Context. The label is per-context anyway,
+                # so leaving it is correct and raising here would replace a
+                # real error with a bookkeeping one.
+                pass
 
 
 @contextmanager
