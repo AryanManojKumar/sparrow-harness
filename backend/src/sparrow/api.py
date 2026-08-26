@@ -36,7 +36,7 @@ from fastapi.openapi.docs import get_redoc_html, get_swagger_ui_html
 from pydantic import BaseModel
 
 from sparrow import telemetry
-from sparrow.blackboard.schema import Blackboard, Brief, Constraint
+from sparrow.blackboard.schema import Blackboard, BuildStatus, Brief, Constraint
 from sparrow.orchestrator import Run, Stage
 from sparrow import steps
 
@@ -331,18 +331,46 @@ def list_projects() -> list[dict[str, Any]]:
     reports the record as unreadable.
     """
     out = []
-    for p in sorted(PROJECTS.glob("*/blackboard.json")):
+    for f in PROJECTS.glob("*/blackboard.json"):
+        d = f.parent
+        # The DIRECTORY name, never bb.project_id. Every URL in this API is
+        # keyed by the directory, and a project copied from another carries the
+        # original's id inside its blackboard — `_assetgate-live` says
+        # "crossborder-e2e" and the listing showed two rows with one id, either
+        # of which navigated to the wrong project.
+        row: dict[str, Any] = {
+            "project_id": d.name,
+            "updated_at": f.stat().st_mtime,
+            # What the UI needs to decide whether a card is clickable at all.
+            "has_preview": (d / "workspace/out/index.html").is_file(),
+        }
         try:
-            bb = Blackboard.model_validate_json(p.read_text())
+            bb = Blackboard.model_validate_json(f.read_text())
         except Exception as e:
-            out.append({"project_id": p.parent.name, "readable": False,
-                        "reason": f"{type(e).__name__}: schema drift — "
-                                  f"written by an older version"})
+            # Blackboards written before a schema change do not validate against
+            # the current models. A listing that 500s because one old record
+            # exists is worse than one that reports the record as unreadable.
+            row |= {"readable": False,
+                    "reason": f"{type(e).__name__}: schema drift — "
+                              f"written by an older version"}
+            out.append(row)
             continue
-        out.append({"project_id": bb.project_id, "readable": True,
-                    "version": bb.version, "sections": len(bb.sections),
-                    "has_design_system": bb.design_system is not None,
-                    "assets": len(bb.assets)})
+        brief = bb.brief
+        row |= {
+            "readable": True,
+            "product_name": (brief.product_name if brief else "") or "",
+            "category": brief.category if brief else "",
+            "stage": bb.stage,
+            "version": bb.version,
+            "sections": len(bb.sections),
+            "built": sum(1 for x in bb.sections if x.status is BuildStatus.BUILT),
+            "has_design_system": bb.design_system is not None,
+            "assets": len(bb.assets),
+        }
+        out.append(row)
+    # Most recently touched first: a list of a dozen projects in directory order
+    # buries the one the user was just working on.
+    out.sort(key=lambda r: r["updated_at"], reverse=True)
     return out
 
 

@@ -99,6 +99,39 @@ POST /interview  { "prompt": "a site for my SOC 2 compliance startup, we sell to
 rows, not as a disclosure. `constraints` are the user's own words, extracted verbatim and
 never paraphrased.
 
+## Listing projects
+
+```json
+GET /projects
+[ { "project_id": "i-want-to-make-a-site-for-my-voice-ai-ag-txgfb",
+    "readable": true,
+    "product_name": "voiceowl.ai",
+    "category": "B2B SaaS landing page",
+    "stage": "verify",
+    "version": 7,
+    "sections": 11,
+    "built": 9,
+    "assets": 8,
+    "has_design_system": true,
+    "has_preview": true,
+    "updated_at": 1787755412.7 } ]
+```
+
+Newest first, by blackboard mtime — a dozen projects in directory order buries the
+one that was just being worked on.
+
+**`project_id` is the directory name and it is the only navigable id.** It used to
+report the id written INSIDE the blackboard, which a copied project inherits from
+its original: `_assetgate-live` listed itself as `crossborder-e2e`, two rows shared
+one id, and either one opened the wrong project.
+
+**`has_preview`** says whether `workspace/out/index.html` exists. A project with
+`false` has nothing to show yet — don't link its card to the preview.
+
+**`readable: false`** means the blackboard predates a schema change. The row still
+carries `project_id`, `updated_at` and `has_preview`, because those are read
+without parsing it. Show the card, don't crash the list.
+
 ## Creating a project
 
 ```json
