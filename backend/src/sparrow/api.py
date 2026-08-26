@@ -673,7 +673,13 @@ async def upload_asset(pid: str, asset_id: str,
             "next": "answer the asset gate with this asset set to 'upload'"}
 
 
-@app.get("/projects/{pid}/preview/{path:path}", tags=["artifacts"], summary="The built site, static — drop in an iframe")
+# HEAD as well as GET. A frontend checking "is there a preview here?" before
+# rendering an iframe sends HEAD, and Starlette answers a GET-only route with
+# 405 — which reads as "broken" rather than "not built yet". FastAPI derives the
+# HEAD response from the GET handler, so the body is never sent.
+@app.api_route("/projects/{pid}/preview/{path:path}", methods=["GET", "HEAD"],
+               tags=["artifacts"],
+               summary="The built site, static — drop in an iframe")
 def preview(pid: str, path: str = "") -> Any:
     """Serve the static export under a per-project prefix.
 
