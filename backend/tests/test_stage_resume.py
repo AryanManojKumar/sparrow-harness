@@ -37,9 +37,29 @@ def test_a_saved_stage_is_restored_on_a_cold_load(paths):
     assert api._run_for("p1").stage is Stage.BUILD
 
 
-def test_a_project_that_never_ran_starts_at_the_beginning(paths):
+def test_a_project_that_never_ran_starts_at_the_beginning(paths, tmp_path):
+    """A genuinely empty project — `make_run` is not one.
+
+    This used to assert on the make_run fixture, which writes sections AND a
+    design system. It passed only because nothing looked at those; once the
+    stage could be inferred from them the fixture correctly resolved to `build`,
+    and the test's name turned out to describe something it never built.
+    """
+    import json
     api, _ = paths
-    assert api._run_for("p1").stage is Stage.BRIEF
+    d = tmp_path / "projects/never-ran"
+    d.mkdir(parents=True)
+    (d / "blackboard.json").write_text(
+        json.dumps({"project_id": "never-ran", "version": 0}))
+    api._RUNS.clear()
+    assert api._run_for("never-ran").stage is Stage.BRIEF
+
+
+def test_the_make_run_fixture_resolves_to_build(paths):
+    """What that test was actually asserting on: a project with sections and a
+    design system but no export is mid-build, not at the beginning."""
+    api, _ = paths
+    assert api._run_for("p1").stage is Stage.BUILD
 
 
 def test_an_unknown_stage_string_does_not_crash_the_load(paths):
