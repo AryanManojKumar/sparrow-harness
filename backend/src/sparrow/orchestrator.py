@@ -38,7 +38,8 @@ class Stage(StrEnum):
     SOURCES = "sources"              # extract, classify, rank, blueprint
     DESIGN = "design"                # design system + sitemap
     GATE_DESIGN = "gate:design"      # ── GATE 2 — choose between directions
-    GATE_ASSETS = "gate:assets"      # ── ASSET GATE — per image: upload/generate/skip
+    CONTENT = "content"              # draft the copy; collect the invented facts
+    GATE_ASSETS = "gate:assets"      # ── MATERIAL GATE — per image, and per invented fact
     ASSETS = "assets"                # curator
     BUILD = "build"                  # builder, compose, repair
     VERIFY = "verify"                # drift audit + inspector

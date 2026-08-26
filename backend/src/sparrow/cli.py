@@ -277,6 +277,7 @@ def cmd_run(args) -> int:
         Stage.BRIEF: _steps.step_brief,
         Stage.SOURCES: lambda r: _steps.step_sources(r, urls),
         Stage.DESIGN: _steps.step_design,
+        Stage.CONTENT: _steps.step_content,
         Stage.GATE_ASSETS: _steps.step_asset_gate,
         Stage.ASSETS: _steps.step_assets,
         Stage.BUILD: _steps.step_build,

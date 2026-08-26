@@ -159,6 +159,8 @@ class GateAnswer(BaseModel):
     choice: str | int | None = None
     note: str | None = None
     assets: dict[str, str] | None = None    # asset_id -> upload | generate | skip
+    content: dict[str, str] | None = None   # ask_id -> the user's real answer
+                                            # (omit or empty to keep the draft)
 
     model_config = {"json_schema_extra": {"examples": [
         {"choice": 0, "note": "the ledger direction"},
@@ -389,12 +391,16 @@ def answer_gate(pid: str, body: GateAnswer) -> dict[str, Any]:
         raise HTTPException(409, "no gate is open")
     if run.pending.gate is Stage.GATE_ASSETS:
         try:
+            # Content first: an asset error must not silently discard the real
+            # facts the user just typed about their own business.
+            replaced = steps.record_content_answers(run, body.content or {})
             plan = steps.record_asset_decisions(run, body.assets or {})
         except ValueError as e:
             raise HTTPException(400, str(e))
         run.resolve({"assets": {a["id"]: a["decision"] for a in plan}})
         return {"stage": run.stage.value,
-                "decisions": {a["id"]: a["decision"] for a in plan}}
+                "decisions": {a["id"]: a["decision"] for a in plan},
+                "content_answered": replaced}
     if run.pending.gate is Stage.GATE_DESIGN:
         # "None of these" sends the run back to DESIGN with the note as guidance,
         # so a rejection produces new directions rather than the same three.

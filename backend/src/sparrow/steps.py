@@ -492,6 +492,112 @@ def apply_design_system(run: Run, bb: Blackboard) -> None:
 
 # ------------------------------------------------------------- the asset gate
 
+CONTENT_FILE = "content.json"
+
+
+def load_content(run: Run) -> dict:
+    f = run.dir / CONTENT_FILE
+    return json.loads(f.read_text()) if f.exists() else {}
+
+
+def save_content(run: Run, content: dict) -> None:
+    (run.dir / CONTENT_FILE).write_text(json.dumps(content, indent=2))
+
+
+def step_content(run: Run) -> Iterator[Event]:
+    """Draft the copy for every section, and collect what it had to invent.
+
+    CLAUDE.md §2's second differentiator. Before this stage the builder wrote
+    copy inline from one line of instruction and recorded nothing about which
+    claims were invented; the only user words that reached a page were hard
+    constraints, pasted verbatim.
+
+    It runs BEFORE the material gate rather than after, so the handful of
+    questions it raises can ride along with the image questions instead of
+    opening a fifth gate. §8 allows three, and a run with five stops is a run
+    nobody finishes.
+
+    Kept in a sidecar next to the asset plan rather than on the blackboard.
+    §3 lists `content` as a blackboard field and it should end up there, but
+    that is a schema change and this is not — the asset plan established the
+    pattern and consistency is worth more here than purity.
+    """
+    from sparrow.agents.content_editor import ContentEditor
+    from sparrow.blueprints import load_dir
+
+    bb = _bb(run)
+    existing = load_content(run)
+    blueprints = load_dir(run.dir / "blueprints")
+    editor = ContentEditor()
+
+    content: dict = {}
+    asks = 0
+    for section in sorted(bb.sections, key=lambda x: x.order):
+        bp = blueprints.get(section.blueprint_id)
+        if bp is None or not bp.slots:
+            continue
+        # A resumed run must not redraft copy the user has already answered on.
+        prior = existing.get(section.id)
+        if prior and prior.get("answered"):
+            content[section.id] = prior
+            continue
+
+        copy = editor.write(bb.brief, bb.constraints, bp, section_id=section.id)
+        content[section.id] = {
+            "slots": copy.slots,
+            "provenance": {k: v.value for k, v in copy.provenance.items()},
+            "asks": [vars(a) for a in copy.asks],
+            "answered": False,
+        }
+        asks += len(copy.asks)
+        yield Event(Stage.CONTENT, "progress",
+                    f"{section.id}: {len(copy.slots)} slot(s)"
+                    + (f", {len(copy.asks)} to confirm" if copy.asks else ""))
+
+    save_content(run, content)
+    yield Event(Stage.CONTENT, "done",
+                f"copy drafted for {len(content)} section(s) · "
+                f"{asks} invented fact(s) to confirm")
+
+
+def content_asks(run: Run) -> list[dict]:
+    """Every unanswered ask across the run, flattened for the gate."""
+    out: list[dict] = []
+    for sid, entry in load_content(run).items():
+        if entry.get("answered"):
+            continue
+        out += list(entry.get("asks") or [])
+    return out
+
+
+def record_content_answers(run: Run, answers: dict[str, str]) -> int:
+    """Apply the gate's content answers. An empty answer keeps the draft.
+
+    Returns how many slots the user actually replaced. Raises ValueError on an
+    ask id that does not exist, because a silently ignored answer is worse than
+    a refused one — the user typed a real fact about their business and would
+    never learn it was dropped.
+    """
+    content = load_content(run)
+    known = {a["id"] for e in content.values() for a in (e.get("asks") or [])}
+    unknown = sorted(set(answers) - known)
+    if unknown:
+        raise ValueError(f"no such content ask(s): {', '.join(unknown)}")
+
+    replaced = 0
+    for entry in content.values():
+        for ask in list(entry.get("asks") or []):
+            answer = (answers.get(ask["id"]) or "").strip()
+            if answer:
+                entry["slots"][ask["slot"]] = answer
+                entry["provenance"][ask["slot"]] = "user_supplied"
+                replaced += 1
+        entry["asks"] = []
+        entry["answered"] = True
+    save_content(run, content)
+    return replaced
+
+
 ASSET_PLAN = "asset-plan.json"
 DECISIONS = ("upload", "generate", "skip")
 
@@ -582,13 +688,16 @@ def step_asset_gate(run: Run) -> Iterator[Event]:
     for a in plan:
         a["upload"] = uploads.get(a["id"])
 
-    if not plan:
+    facts = content_asks(run)
+
+    if not plan and not facts:
         save_plan(run, plan)
-        yield Event(Stage.GATE_ASSETS, "done", "no blueprint asked for imagery")
+        yield Event(Stage.GATE_ASSETS, "done",
+                    "no blueprint asked for imagery, and the copy invented nothing")
         return
 
     decided = {a["id"]: a.get("decision") for a in existing}
-    if all(decided.get(a["id"]) for a in plan):
+    if plan and all(decided.get(a["id"]) for a in plan) and not facts:
         # Already answered — a resumed run must not ask the same question twice.
         save_plan(run, existing)
         yield Event(Stage.GATE_ASSETS, "done",
@@ -597,11 +706,37 @@ def step_asset_gate(run: Run) -> Iterator[Event]:
 
     save_plan(run, plan)
     upload_url = f"/projects/{run.project_id}/assets"
+    parts = []
+    if plan:
+        parts.append(f"{len(plan)} image(s) go on this page — for each one: use "
+                     "your own file, have one generated, or leave it out")
+    if facts:
+        parts.append(f"{len(facts)} line(s) of the copy state something about your "
+                     "business that we had to make up — confirm or correct them, "
+                     "or leave the draft as it is")
+
     raise Halt(GateRequest(
         Stage.GATE_ASSETS,
-        f"{len(plan)} image(s) go on this page. For each one: use your own file, "
-        "have one generated from the description, or leave it out?",
+        ". ".join(parts) + ".",
         options=[{
+            "kind": "fact",
+            "ask_id": f["id"],
+            "section_id": f["section_id"],
+            "slot": f["slot"],
+            "question": f["question"],
+            "draft": f["draft"],
+            "invented": f["invented"],
+            "source_example": f["source_example"],
+            "choices": [
+                {"choice": "answer",
+                 "label": "Give the real answer",
+                 "detail": "Used verbatim, and never redrafted afterwards.",
+                 "field": "text"},
+                {"choice": "keep",
+                 "label": "Keep the draft as written"},
+            ],
+        } for f in facts] + [{
+            "kind": "image",
             "asset_id": a["id"],
             "section_id": a["section_id"],
             "brief": a["brief"],
@@ -833,6 +968,7 @@ def step_build(run: Run) -> Iterator[Event]:
     from sparrow.blueprints import load_dir
 
     bb = _bb(run)
+    content = load_content(run)
     blueprints = load_dir(run.dir / "blueprints")
     ws = run.workspace
     primitives = sorted(p.stem for p in (ws / "src/components/ui").glob("*.tsx"))
@@ -856,7 +992,8 @@ def step_build(run: Run) -> Iterator[Event]:
         out = builder.build(bb, section, bp, stack=STACK,
                             available_primitives=primitives,
                             assets=bb.assets_for(section.id),
-                            asset_base=f"/projects/{run.project_id}/preview")
+                            asset_base=f"/projects/{run.project_id}/preview",
+                            copy=(content.get(section.id) or {}).get("slots"))
         write_section(ws, section, out.code)
         # Immediately, per section. The file and the record of the file are one
         # transition; anything between them is a window in which a crash leaves

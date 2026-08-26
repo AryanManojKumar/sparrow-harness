@@ -324,12 +324,17 @@ Matching cannot do this job: in-row match errors ran 0.115–0.599 and crossing 
 It reads its own output back and retries once, **masking** whatever still reads rather
 than substituting it a second time — the second pass places against the same approximate
 box and makes the same mistake, and one masked name beats a published one. Where too much
-still reads even so, it **stops substituting and masks every located value instead**. Measured on a dense
-trade-finance capture — 36 findings, several near-identical account numbers stacked in one
-narrow column — placements crossed rows: an IBAN was drawn over an organisation's name
-while the original IBAN stayed put, leaving the image both damaged and leaky. The masked
-version is uglier and it is honest; the event says so, and the answer is a simpler
-capture. **A capture that dense is the known limit of this approach.**
+still reads even so, it **stops substituting and masks every located value instead**, and
+the event says so.
+
+Density is what decides how much of a capture survives as substitution rather than mask.
+On a dense trade-finance capture — 36 findings, several near-identical account numbers
+stacked in one narrow column — the row bound holds (no placement lands on the wrong row)
+but a third of the findings cannot be placed on their own row at all, so 24 are
+substituted and 12 masked, against 21–23 and 3–5 on the payments dashboard. The masked
+version is uglier and it is honest, and the answer is a simpler capture. **A capture that
+dense is the known limit of this approach** — not because it comes out wrong any more, but
+because it comes out grey.
 
 The read-back is what makes any of this checkable, and it looks for two things: values the
 locate pass named that are still legible, matched on shared words rather than exact string
@@ -338,10 +343,12 @@ because the two reads of a row disagree (`Foo Food Suppliers Ltd` one pass,
 report said otherwise); and money- and email-shaped strings the locate pass **never named
 at all**, which nothing was checking before. Both get masked.
 
-**This is a distribution, not a fixed result.** The model returns different boxes and finds
-slightly different values on every run, so the honest way to describe the scrub is a rate,
-not a sample: over five live runs of the same capture, 23–25 values substituted, 1–3
-masked, 0 crossings, and the leaks that did occur were caught by the read-back and masked.
+**This is a distribution, not a fixed result.** The model returns different boxes and
+finds slightly different values on every run, so the honest way to describe the scrub is a
+rate over repeated runs, never a single sample. Over five live runs of the same upload:
+21–23 values substituted, 3–5 masked, 0 placements on the wrong row, 0 of 24 real values
+surviving. Expect the substituted/masked split to move run to run; expect the last two
+numbers not to.
 
 ### The fidelity gate on uploads
 

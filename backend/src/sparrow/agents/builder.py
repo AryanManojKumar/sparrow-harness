@@ -135,6 +135,7 @@ class Builder(Agent):
         available_primitives: list[str],
         assets: list | None = None,
         asset_base: str = "",
+        copy: dict | None = None,
     ) -> BuildOutput:
         # Stated as an instruction, not as context. Written as "this section sits
         # on X" it was read as background information and ignored by 4 of 5
@@ -148,10 +149,28 @@ class Builder(Agent):
             f"shadcn primitives already present in src/components/ui/: "
             f"{', '.join(sorted(available_primitives))}\n</stack>\n\n"
             "<copy>\nWrite real copy for this specific product. No lorem ipsum, no "
-            "placeholder brackets, no bracketed TODOs.\n</copy>",
+            "placeholder brackets, no bracketed TODOs.\n</copy>"
+            if not copy else
+            "<copy>\nThe copy for this section is GIVEN, below, per slot. Use it "
+            "verbatim. Do not rewrite it, shorten it, expand it, or correct its "
+            "spelling — some of it is the user's own words and some of it they "
+            "confirmed, and either way it is not yours to edit. Your job here is "
+            "the markup around it.\n</copy>",
         )
 
-        user = "\n\n".join([
+        copy_block = ""
+        if copy:
+            lines = []
+            for slot, value in copy.items():
+                if isinstance(value, list):
+                    lines.append(f"{slot}:")
+                    lines += [f"  - {v}" for v in value]
+                else:
+                    lines.append(f"{slot}: {value}")
+            copy_block = "<section_copy>\n" + "\n".join(lines) + "\n</section_copy>"
+
+        user = "\n\n".join(x for x in [
+            copy_block,
             f"<blueprint>\n"
             f"id: {blueprint.id}\n"
             f"purpose: {blueprint.purpose}\n"
@@ -185,7 +204,7 @@ class Builder(Agent):
              + "\n</assets>") if assets else
             ("<assets>\nNo imagery for this section. Compose from type and layout; do not "
              "fabricate a product screenshot in markup.\n</assets>"),
-        ])
+        ] if x)
 
         res = self.call(system=system, user=user)
 

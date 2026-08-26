@@ -351,20 +351,31 @@ class Curator(Agent):
         # the only check that catches that, and it costs nothing — the fidelity
         # gate downstream needs this transcription anyway.
         lines = self.transcribe(out)
+
+        # LOOK AGAIN AT THE IMAGE, unconditionally — do not ask the
+        # transcription whether a second look is needed. Measured: a
+        # beneficiary sat on the second line of a two-line cell, the model's box
+        # named the first line, the mask landed on `Payout` and left
+        # `To Food Suppliers Ltd` legible underneath — and the read-back did not
+        # report it, so a transcription-gated retry never ran. The read-back is
+        # a vision call too; a value it cannot see is not a value that is gone.
+        # One more locate costs about three cents and does not depend on it.
+        # What the read-back says is still legible, by name and by shape.
         survived = [f for f in plan if _still_reads(f["text"], lines)]
         # Plus anything PII-shaped the locate pass never named at all. Checking
         # only what the model found means a miss is invisible to the check.
         survived += _unlocated(lines, plan)
-        if survived:
+
+        second = [f for f in self._locate(out)
+                  if _same_value(f["text"], plan + survived) is not None]
+        if second or survived:
             # The retry MASKS rather than substituting again. Substitution
             # already failed for these values once — measured on the payments
             # capture, `Sarah Reed` survived a second substitution pass too,
             # because the second pass places against the same approximate box
             # and makes the same mistake. A mosaic over the box the model just
             # named cannot miss, and one masked name beats a published one.
-            retry = [dict(f, replacement="")
-                     for f in self._locate(out)
-                     if _same_value(f["text"], survived) is not None]
+            retry = [dict(f, replacement="") for f in second]
             if retry:
                 out, more = redact.paint(out, retry)
                 done += more
