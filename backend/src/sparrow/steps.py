@@ -221,6 +221,7 @@ def step_sources(run: Run, urls: list[str]) -> Iterator[Event]:
     by_type: dict[str, list[Candidate]] = {}
     by_type_all: dict[str, list[Candidate]] = {}   # includes chrome, for blueprints
     registers: dict[str, object] = {}
+    vocabulary: dict[str, object] = {}   # counted components, per source
     out_dir = run.dir / "sources"
 
     for url in urls:
@@ -232,6 +233,8 @@ def step_sources(run: Run, urls: list[str]) -> Iterator[Event]:
             continue
         if r.register is not None:
             registers[site] = r.register
+        if r.components is not None:
+            vocabulary[site] = r.components
         types = classify(provider, r.bands)
         labelled[site] = [(t, b.index + 1) for t, b in zip(types, r.bands)]
         for t, b in zip(types, r.bands):
@@ -282,7 +285,8 @@ def step_sources(run: Run, urls: list[str]) -> Iterator[Event]:
                 "why": "page chrome — required on every page, not ranked",
                 "adopt": [], "unopposed": True}
         bp, u = bper.write(bb.brief, name, stub, cands,
-                           [x for x in order if x in rankings])
+                           [x for x in order if x in rankings],
+                           vocabulary=vocabulary)
         comp = "".join(w.capitalize() for w in name.replace("-", " ").split())
         (bp_dir / f"{'00' if name == 'nav' else '99'}-{name}.md").write_text(
             to_markdown(bp, comp))
@@ -293,7 +297,8 @@ def step_sources(run: Run, urls: list[str]) -> Iterator[Event]:
         if t not in rankings:
             continue
         bp, u = bper.write(bb.brief, t, rankings[t], by_type.get(t, []),
-                           [x for x in order if x != t])
+                           [x for x in order if x != t],
+                           vocabulary=vocabulary)
         comp = "".join(w.capitalize() for w in t.replace("-", " ").split())
         (bp_dir / f"{i + 1:02d}-{t}.md").write_text(to_markdown(bp, comp))
         run.spent += u.cost(provider.name, bper.tier)

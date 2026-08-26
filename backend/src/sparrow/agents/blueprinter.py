@@ -95,6 +95,7 @@ class Blueprinter(Agent):
         ranking: dict,
         candidates: list,
         neighbours: list[str],
+        vocabulary: dict | None = None,
     ) -> tuple[Blueprint, object]:
         winner = ranking.get("winner")
         won = [c for c in candidates if c.site == winner] or candidates
@@ -109,16 +110,33 @@ class Blueprinter(Agent):
 
         adopt = "\n".join(f"  - {a}" for a in ranking.get("adopt", [])) or "  (none recorded)"
 
-        user = "\n\n".join([
+        # The counted component census. The instruction to use the sources'
+        # vocabulary was already in the system prompt; the COUNTS were measured
+        # by the scout, stored on the extract, and never rendered anywhere —
+        # `Components.used()` had no caller at all. So the model was told to
+        # match a vocabulary it was never shown, and defaulted to icon-title-body
+        # cards every time. Measured on real sources: kiro.dev 17 accordions and
+        # 62 inline SVGs, linear.app 8 pill rows, 11 code blocks, 183 SVGs.
+        counted = ""
+        for site, comps in (vocabulary or {}).items():
+            used = comps.used() if hasattr(comps, "used") else []
+            if used:
+                counted += f"  {site}: {', '.join(used)}\n"
+
+        user = "\n\n".join(x for x in [
             f"<brief>\nOffering: {brief.offering}\nAudience: {brief.audience}\n"
             f"Tone: {brief.tone}\nPrimary action: {brief.primary_action}\n</brief>",
             f"<section_type>{section_type}</section_type>",
             f"<why_this_source_won>\n{ranking.get('why', '')}\n</why_this_source_won>",
+            (f"<counted_vocabulary>\nComponents counted on the sources, with how many "
+             f"of each. This is what this category actually builds pages out of — ask "
+             f"for one by name where it does this section's job better than plain type "
+             f"would.\n{counted}</counted_vocabulary>") if counted else "",
             f"<adopt>\n{adopt}\n</adopt>",
             "<evidence>\n" + "\n".join(evidence) + "\n</evidence>",
             f"<neighbours>\nThis section sits in a page of: {', '.join(neighbours)}.\n"
             "Do not duplicate what an adjacent section already does.\n</neighbours>",
-        ])
+        ] if x)
 
         res = self.call(system=SYSTEM, user=user)
         m = _JSON.search(res.text)
