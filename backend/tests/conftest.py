@@ -97,6 +97,68 @@ class RecordingFixer:
         return {getattr(d, "code", "?") for _sid, ds in self.calls for d in ds}
 
 
+class RecordingBuilder:
+    """Stands in for `Builder`, and remembers which sections it was asked for.
+
+    `calls` is the whole point, again: resume is the claim that a BUILT section
+    is not sent to the builder a second time, and the only evidence for that is
+    the list of sections the builder was handed. A fake that merely writes files
+    would let a rebuild-everything pass as a resume.
+
+    `on_build` runs before the code is returned, so a test can kill the stage
+    part-way through and look at what the blackboard says at that instant.
+    """
+
+    provider = _Provider()
+    tier = "fake"
+
+    def __init__(self, code: str = "export default function S() { return null; }\n",
+                 on_build=None) -> None:
+        self.calls: list[str] = []
+        self.code = code
+        self.on_build = on_build
+
+    def build(self, _bb, section, _bp, **_kw):
+        self.calls.append(section.id)
+        if self.on_build is not None:
+            self.on_build(section)
+        return _Output(self.code.replace("function S", f"function {section.component_name}"))
+
+
+def install_build(monkeypatch, builder, *, blueprints=None, compose=None, repair=None):
+    """Swap out everything in `step_build` that costs money or runs pnpm."""
+    import sparrow.agents.builder as builder_mod
+    import sparrow.blueprints as blueprints_mod
+    import sparrow.cli as cli_mod
+    from sparrow.blackboard.schema import Blueprint
+
+    monkeypatch.setattr(builder_mod, "Builder", lambda: builder)
+    monkeypatch.setattr(
+        blueprints_mod, "load_dir",
+        lambda _d: blueprints if blueprints is not None
+        else _every_section_has_one(_d))
+    monkeypatch.setattr(cli_mod, "_compose_page", compose or (lambda _bb, _ws: None))
+    monkeypatch.setattr(cli_mod, "_repair_until_builds",
+                        repair or (lambda _bb, _ws, _p: 0.0))
+    return Blueprint
+
+
+def blueprints_for(*ids):
+    from sparrow.blackboard.schema import Blueprint
+
+    return {i: Blueprint(id=i, purpose="p", slots=["headline"], structure="s")
+            for i in ids}
+
+
+def _every_section_has_one(_d):
+    raise AssertionError("pass blueprints= to install_build")
+
+
+def read_bb(run):
+    """The blackboard as it stands on disk, right now."""
+    return Blackboard.model_validate_json(run.blackboard_path.read_text())
+
+
 def drain(gen):
     """Run a stage generator to its gate. Returns (events, GateRequest)."""
     from sparrow.orchestrator import Halt

@@ -9,6 +9,7 @@ one Postgres JSONB will take.
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -69,6 +70,7 @@ class Store:
         *,
         agent: str,
         summary: str,
+        supersedes: str | None = None,
         expect_version: int | None = None,
     ) -> Applied | Rejected:
         """Apply an RFC 6902 patch, or reject it with a reason.
@@ -98,11 +100,46 @@ class Store:
         bb.version = current.version + 1
         bb.decisions.append(Decision(
             id=f"d{len(bb.decisions) + 1:04d}", agent=agent, summary=summary,
+            supersedes=supersedes,
         ))
         self._write(bb)
         return Applied(bb.version)
 
     def _write(self, bb: Blackboard) -> None:
-        tmp = self.path.with_suffix(".tmp")
-        tmp.write_text(bb.model_dump_json(indent=2))
-        tmp.replace(self.path)  # atomic
+        """Serialise, flush, rename. A half-written blackboard loses the project.
+
+        Three separate failures are being defended against, and only the third
+        was already covered:
+
+        1. SERIALISATION THROWS. `model_dump_json` runs before anything touches
+           the filesystem, so a model that will not serialise leaves the file on
+           disk exactly as it was rather than truncated to nothing.
+        2. TWO WRITERS SHARE ONE SCRATCH FILE. The temp name was
+           `blackboard.tmp` — one fixed name for every writer of this project.
+           Two processes (an SSE advance the API kept alive plus a CLI command,
+           which is reachable today) interleave their writes into that one file
+           and then both rename it into place, so the surviving file is halves of
+           two different blackboards and parses as neither. The pid makes each
+           writer's scratch file its own; the rename is still atomic, so the
+           worst case degrades to a lost update rather than a corrupt file.
+        3. THE RENAME IS NOT ATOMIC. It is, on the same filesystem — which is why
+           the temp file is written beside the target and never in /tmp.
+
+        The fsync is the difference between "the rename is atomic" and "the
+        renamed file has contents": without it a crash after the rename can leave
+        a correctly-named, zero-length file, which is the one outcome this whole
+        function exists to prevent.
+        """
+        body = bb.model_dump_json(indent=2)
+        tmp = self.path.with_name(f"{self.path.name}.{os.getpid()}.tmp")
+        try:
+            with open(tmp, "w") as fh:
+                fh.write(body)
+                fh.flush()
+                os.fsync(fh.fileno())
+            tmp.replace(self.path)  # atomic within the directory
+        finally:
+            # A crash between write and rename leaves scratch behind; the next
+            # successful write must not inherit it as a sibling nobody reads.
+            if tmp.exists():
+                tmp.unlink(missing_ok=True)

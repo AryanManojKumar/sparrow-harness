@@ -17,7 +17,8 @@ import subprocess
 from collections.abc import Iterator
 from pathlib import Path
 
-from sparrow.blackboard.schema import Blackboard, Ground, Section
+from sparrow.blackboard.schema import Blackboard, BuildStatus, Ground, Section
+from sparrow.blackboard.store import Rejected, Store
 from sparrow.orchestrator import Event, GateRequest, Halt, Run, Stage
 
 CHROME_SKIP_ASSETS = {"nav", "footer"}
@@ -36,9 +37,159 @@ def _bb(run: Run) -> Blackboard:
     return Blackboard.model_validate_json(run.blackboard_path.read_text())
 
 
-def _save(run: Run, bb: Blackboard) -> None:
-    bb.version += 1
-    run.blackboard_path.write_text(bb.model_dump_json(indent=2))
+# --------------------------------------------------------------- one write path
+#
+# CLAUDE.md §3: agents propose diffs, an orchestrator applies or rejects them,
+# and every state transition is recorded so a run is replayable. `Store.apply` is
+# that mechanism and until now these step functions went around it — `_save` did
+# `bb.version += 1` and dumped the whole model over the file. Measured across the
+# six exported projects, that is exactly what the blackboard shows: `version`
+# climbing (brief, sources, design all went through `_save`) and `decisions`
+# empty on every one, because the decision log only ever gets written by the path
+# nothing was using.
+#
+# Everything below routes through `Store.apply`. That buys three things `_save`
+# could not: the patch is validated against the schema before it lands, the write
+# is atomic (see `Store._write`), and each transition leaves a Decision naming
+# the agent that caused it.
+#
+# A rejection is NOT raised. Persistence must never change what a run produces —
+# a build that succeeded and then failed to record itself is still a build that
+# succeeded, and turning a bookkeeping failure into a dead stage would be a worse
+# bug than the one this fixes. Callers surface the rejection as a `blocked` event
+# and carry on.
+
+
+# The prefix that identifies an adoption in the decision log, so a later
+# adoption can name the one it supersedes without re-deriving what "adopted"
+# looks like in two places.
+_ADOPTED = "direction adopted: #"
+
+
+def _store(run: Run) -> Store:
+    return Store(run.blackboard_path)
+
+
+def telemetry_note(run: Run, where: str, rejected: Rejected) -> None:
+    """Where a rejection cannot become an Event, it still has to become a line.
+
+    `adopt_direction` and `record_asset_decisions` are called from the HTTP layer,
+    not from inside a stage generator, so there is nothing to yield into. A
+    rejection swallowed here is a decision that silently did not get logged,
+    which is the exact class of bug this work exists to close.
+    """
+    from sparrow import telemetry
+
+    telemetry.log_stage("blackboard", "blocked",
+                        f"{where}: {rejected.code} — {rejected.message}")
+
+
+def _note(run: Run, *, agent: str, summary: str,
+          supersedes: str | None = None) -> Rejected | None:
+    """Record a decision that changes no other field.
+
+    An empty patch is deliberate: the decision IS the state change. A Fixer
+    dispute moves nothing on the blackboard and is precisely the thing that was
+    unrecoverable afterwards — one run burned three rounds and ~$2 on four
+    disputes whose text existed only in a `disputed` dict that died with the
+    process.
+    """
+    r = _store(run).apply([], agent=agent, summary=_safe(summary),
+                          supersedes=supersedes)
+    return r if isinstance(r, Rejected) else None
+
+
+# Decisions are read back by agents, rendered into prompts and copied into logs.
+# `Asset.scrubbed` already carries the rule for the same reason: record the shape
+# of a thing, never the value. Nothing here composes user text into a summary —
+# the summaries are section ids, status names, defect codes and agent-authored
+# prose about code — and the cap keeps a runaway model reply from turning the
+# decision log into the biggest field on the blackboard.
+_SUMMARY_MAX = 400
+
+
+def _safe(summary: str) -> str:
+    one_line = " ".join(summary.split())
+    return one_line if len(one_line) <= _SUMMARY_MAX else one_line[:_SUMMARY_MAX - 1] + "…"
+
+
+def _replace(run: Run, path: str, value, *, agent: str, summary: str,
+             supersedes: str | None = None) -> Rejected | None:
+    """Replace one top-level field. The shape every old `_save` call really had."""
+    r = _store(run).apply([{"op": "replace", "path": path, "value": value}],
+                          agent=agent, summary=_safe(summary), supersedes=supersedes)
+    return r if isinstance(r, Rejected) else None
+
+
+def _record_section(run: Run, section_id: str, *, agent: str,
+                    status: BuildStatus | None = None,
+                    bump_attempt: bool = False,
+                    defects: list[str] | None = None,
+                    note: str = "") -> Rejected | None:
+    """Move one section's build state, immediately, as it moves.
+
+    Per section rather than per stage. `step_build` used to write nothing at all
+    until the stage ended, so a run that died on section six left nine sections
+    reading `pending / 0 attempts` — an accurate record of a build that never
+    happened, on a project with six built files on disk. That record is what
+    resume reads, so it has to be true at every instant, not only at the end.
+
+    The index is resolved against a FRESH read rather than against the caller's
+    in-memory blackboard: by the time a build reaches section six the caller's
+    copy is five versions stale, and an index taken from it points at whatever
+    happens to sit there now.
+    """
+    bb = _bb(run)
+    idx = next((i for i, s in enumerate(bb.sections) if s.id == section_id), None)
+    if idx is None:
+        return Rejected("unknown-section",
+                        f"no section {section_id!r} on this blackboard")
+    current = bb.sections[idx]
+
+    patch: list[dict] = []
+    parts: list[str] = []
+    if status is not None and status is not current.status:
+        patch.append({"op": "replace", "path": f"/sections/{idx}/status",
+                      "value": status.value})
+        parts.append(f"{current.status.value} → {status.value}")
+    if bump_attempt:
+        patch.append({"op": "replace", "path": f"/sections/{idx}/attempts",
+                      "value": current.attempts + 1})
+        parts.append(f"attempt {current.attempts + 1}")
+    if defects is not None and defects != current.defects:
+        patch.append({"op": "replace", "path": f"/sections/{idx}/defects",
+                      "value": [_safe(d) for d in defects]})
+        parts.append(f"{len(defects)} defect(s)" if defects else "defects cleared")
+
+    if not patch and not note:
+        return None                      # nothing moved; do not bump the version
+    summary = f"{section_id}: " + " · ".join([*parts, *( [note] if note else [] )])
+    r = _store(run).apply(patch, agent=agent, summary=_safe(summary))
+    return r if isinstance(r, Rejected) else None
+
+
+def reset_sections(run: Run, section_ids: list[str]) -> list[str]:
+    """Send named sections back to PENDING so a re-advance rebuilds only those.
+
+    The user-facing half of resume: "just redo the hero". Without it, persisted
+    state means a resumed run skips every built section forever and there is no
+    way to ask for one of them again.
+
+    Raises ValueError on an unknown id rather than silently resetting nothing —
+    a typo that reports success and rebuilds nothing is the failure this is
+    for.
+    """
+    bb = _bb(run)
+    known = {s.id for s in bb.sections}
+    unknown = sorted(set(section_ids) - known)
+    if unknown:
+        raise ValueError(f"no such section(s): {', '.join(unknown)}")
+    done = []
+    for sid in section_ids:
+        _record_section(run, sid, agent="orchestrator", status=BuildStatus.PENDING,
+                        defects=[], note="reset for rebuild at the user's request")
+        done.append(sid)
+    return done
 
 
 # ------------------------------------------------------------------ gate 1
@@ -169,7 +320,14 @@ def step_sources(run: Run, urls: list[str]) -> Iterator[Event]:
                 ground=Ground.PAGE)
         for i, t in enumerate(sitemap, 1)
     ]
-    _save(run, bb)
+    rejected = _replace(run, "/sections",
+                        [s.model_dump(mode="json") for s in bb.sections],
+                        agent="blueprinter",
+                        summary=f"sitemap fixed: {len(bb.sections)} sections — "
+                                + ", ".join(s.id for s in bb.sections))
+    if rejected:
+        yield Event(Stage.SOURCES, "blocked",
+                    f"sitemap not recorded ({rejected.code}): {rejected.message}")
     yield Event(Stage.SOURCES, "done",
                 f"{len(bb.sections)} sections · {len(rankings)} blueprints")
 
@@ -197,6 +355,18 @@ def step_design(run: Run, alternatives: int = 3) -> Iterator[Event]:
                     "direction, not a nuance to blend in.\n"
                     "</the_user_rejected_the_previous_directions>")
         redirect.unlink()
+        # The FACT of the re-roll, never the sentence they typed. The steer
+        # itself is the user's own words about their own business and the
+        # decision log is read into prompts and copied into logs; the design
+        # system this produces is where that steer becomes visible and
+        # inspectable. What is unrecoverable without this line is that these
+        # three directions are a second set, not the first.
+        rejected = _note(run, agent="design-director",
+                         summary="previous directions rejected at gate 2 — "
+                                 "re-proposing against the user's correction")
+        if rejected:
+            yield Event(Stage.DESIGN, "blocked",
+                        f"re-roll not recorded ({rejected.code}): {rejected.message}")
 
     dd = DesignDirector()
     proposals, seen = [], []
@@ -271,8 +441,22 @@ def adopt_direction(run: Run, index: int) -> None:
 
     proposals = json.loads((run.dir / "directions.json").read_text())
     bb = _bb(run)
-    bb.design_system = DesignSystem.model_validate(proposals[index]["design_system"])
-    _save(run, bb)
+    chosen = DesignSystem.model_validate(proposals[index]["design_system"])
+
+    # A re-roll ("none of these") replaces a direction that was already adopted,
+    # and a replacement is not an addition — CLAUDE.md §4. The trace is the one
+    # line that makes "why does this look different from what I approved"
+    # answerable after the fact, so the superseded decision is named rather than
+    # left to be inferred from two adoptions in a row.
+    previous = next((d.id for d in reversed(bb.decisions)
+                     if d.summary.startswith(_ADOPTED)), None)
+    bb.design_system = chosen
+    rejected = _replace(run, "/design_system", chosen.model_dump(mode="json"),
+                        agent="design-director",
+                        summary=f"{_ADOPTED}{index} — {chosen.signature}",
+                        supersedes=previous)
+    if rejected:                       # recorded or not, the direction is adopted
+        telemetry_note(run, "adopt_direction", rejected)
     apply_design_system(run, bb)
 
 
@@ -458,6 +642,19 @@ def record_asset_decisions(run: Run, decisions: dict[str, str]) -> list[dict]:
                 f"/projects/{run.project_id}/assets/{a['id']} yet")
         a["decision"] = choice
     save_plan(run, plan)
+
+    # One decision per image, not one for the batch. Provenance downstream is
+    # per asset — a founder uploads a real dashboard for the hero and skips the
+    # integrations strip — so a single "asset gate answered" line cannot say
+    # which of those two produced the file that shipped. The brief is the
+    # blueprint's own words, not the user's, so it is safe to quote.
+    for a in plan:
+        rejected = _note(run, agent="user@gate:assets",
+                         summary=f"{a['id']} ({a['section_id']}, "
+                                 f"{a['prominence']}): {a['decision']}")
+        if rejected:
+            telemetry_note(run, "record_asset_decisions", rejected)
+            break
     return plan
 
 
@@ -589,7 +786,13 @@ def step_assets(run: Run) -> Iterator[Event]:
         ))
 
     bb.assets = made
-    _save(run, bb)
+    rejected = _replace(run, "/assets", [a.model_dump(mode="json") for a in made],
+                        agent="curator",
+                        summary=f"{len(made)} asset(s) produced — "
+                                + ", ".join(f"{m.id}:{m.provenance.value}" for m in made))
+    if rejected:
+        yield Event(Stage.ASSETS, "blocked",
+                    f"assets not recorded ({rejected.code}): {rejected.message}")
     tally = {}
     for m in made:
         tally[m.provenance.value] = tally.get(m.provenance.value, 0) + 1
@@ -609,6 +812,23 @@ def _write_png(data: bytes, path: Path, Image) -> None:
 
 
 def step_build(run: Run) -> Iterator[Event]:
+    """Build every section that is not built yet, recording each as it lands.
+
+    RESUME. A section already marked BUILT is skipped rather than rebuilt. That
+    is only sound because the status is now written the instant the file is
+    written — before this, `status` was `pending` on all nine sections of a
+    project whose preview was serving, so skipping on it would have skipped
+    nothing and trusting it would have been wrong.
+
+    What that buys, at roughly $0.10-0.25 of builder time per section: a stage
+    that died on section six resumes at section six, and `reset_sections` turns
+    "just redo the hero" into one section rebuilt rather than the whole page.
+
+    Composition and repair still run on every pass, deliberately. `page.tsx` has
+    to name every section including the ones this pass skipped, and a workspace
+    that does not build is not a thing to hand to VERIFY — that is what took two
+    whole experiments to notice the first time.
+    """
     from sparrow.agents.builder import Builder, write_section
     from sparrow.blueprints import load_dir
 
@@ -617,16 +837,39 @@ def step_build(run: Run) -> Iterator[Event]:
     ws = run.workspace
     primitives = sorted(p.stem for p in (ws / "src/components/ui").glob("*.tsx"))
     builder = Builder()
+    built = skipped = 0
 
     for section in sorted(bb.sections, key=lambda s: s.order):
         bp = blueprints.get(section.blueprint_id)
         if bp is None:
             continue
+        # BUILT plus a file on disk. The status alone would resume a run whose
+        # workspace was rebuilt from the scaffold into composing a page.tsx that
+        # imports components no longer there, which fails the build with an error
+        # about a missing module and says nothing about why.
+        if section.status is BuildStatus.BUILT and (ws / section.target_path).exists():
+            skipped += 1
+            yield Event(Stage.BUILD, "progress",
+                        f"{section.id}: already built — kept")
+            continue
+
         out = builder.build(bb, section, bp, stack=STACK,
                             available_primitives=primitives,
                             assets=bb.assets_for(section.id),
                             asset_base=f"/projects/{run.project_id}/preview")
         write_section(ws, section, out.code)
+        # Immediately, per section. The file and the record of the file are one
+        # transition; anything between them is a window in which a crash leaves
+        # the blackboard lying about the workspace.
+        rejected = _record_section(run, section.id, agent="builder",
+                                   status=BuildStatus.BUILT, bump_attempt=True,
+                                   defects=[],
+                                   note=f"{len(out.code.splitlines())} loc")
+        if rejected:
+            yield Event(Stage.BUILD, "blocked",
+                        f"{section.id} built but not recorded ({rejected.code}): "
+                        f"{rejected.message}")
+        built += 1
         yield Event(Stage.BUILD, "progress",
                     f"{section.id}: {len(out.code.splitlines())} loc",
                     cost=out.usage.cost(builder.provider.name, builder.tier))
@@ -634,7 +877,9 @@ def step_build(run: Run) -> Iterator[Event]:
     from sparrow.cli import _compose_page, _repair_until_builds
     _compose_page(bb, ws)
     run.spent += _repair_until_builds(bb, ws, builder.provider.name)
-    yield Event(Stage.BUILD, "done", "page composed and built")
+    yield Event(Stage.BUILD, "done", "page composed and built"
+                + (f" · {built} built, {skipped} kept from a previous run"
+                   if skipped else ""))
 
 
 class AssetsNotServed(RuntimeError):
@@ -757,6 +1002,45 @@ def _drift_defects(findings: list, bb: Blackboard) -> dict[str, list]:
     return out
 
 
+def _settle_sections(run: Run, bb: Blackboard, findings: list,
+                     per_section: dict[str, list],
+                     disputed: dict[str, list[str]]) -> Iterator[Event]:
+    """Write the last look's verdict onto every section that was built.
+
+    Both halves count. Drift is measured from the code and visual defects are
+    seen in a browser, and a section carrying either is not clean — the gate
+    question already reports both, and a `status` that disagreed with the
+    sentence next to it would be worse than no status.
+
+    PENDING sections are left alone. A section with no blueprint is never built
+    and never inspected, and marking it BUILT here because the inspector had
+    nothing to say about it would invent a build that did not happen — which is
+    the same class of lie, pointing the other way, as the one this work fixes.
+    """
+    remaining = _drift_defects(findings, bb)
+    for sid, ds in per_section.items():
+        remaining.setdefault(sid, []).extend(ds)
+
+    for section in bb.sections:
+        if section.status is BuildStatus.PENDING:
+            continue
+        ds = remaining.get(section.id, [])
+        note = ""
+        if not ds and disputed.get(section.id):
+            # Clean, but only after the fixer refused some of what it was shown.
+            # Worth a line: the difference between "nothing was wrong" and
+            # "something was reported and argued down" is the whole diagnosis.
+            note = f"clean, {len(disputed[section.id])} defect(s) disputed"
+        rejected = _record_section(
+            run, section.id, agent="observer",
+            status=BuildStatus.DEFECTIVE if ds else BuildStatus.BUILT,
+            defects=[f"{d.source}:{d.code} {d.what}" for d in ds], note=note)
+        if rejected:
+            yield Event(Stage.VERIFY, "blocked",
+                        f"{section.id} verdict not recorded ({rejected.code}): "
+                        f"{rejected.message}")
+
+
 def step_verify(run: Run) -> Iterator[Event]:
     """Look, fix, look again — until the page is clean or the budget is spent.
 
@@ -835,6 +1119,21 @@ def step_verify(run: Run) -> Iterator[Event]:
             yield Event(Stage.VERIFY, "blocked", f"{slot.code}: {slot.message}")
             break
 
+        # Recorded BEFORE the first fixer call of the round. The fixer is the
+        # part that can throw, time out, or be killed; a defect list that only
+        # lands after it returns is a defect list that is absent exactly when
+        # someone needs to know what the run was working on when it died.
+        # `_record_section` writes nothing when nothing moved, so a second round
+        # that finds the same defects does not churn the version.
+        for sid, defects in work.items():
+            rejected = _record_section(
+                run, sid, agent="inspector", status=BuildStatus.DEFECTIVE,
+                defects=[f"{d.source}:{d.code} {d.what}" for d in defects])
+            if rejected:
+                yield Event(Stage.VERIFY, "blocked",
+                            f"{sid} defects not recorded ({rejected.code}): "
+                            f"{rejected.message}")
+
         fixer = fixer or Fixer()
         fixed_any = False
         # Every file this round is about to overwrite, as it stood before the
@@ -851,10 +1150,34 @@ def step_verify(run: Run) -> Iterator[Event]:
                 continue
             if dispute:
                 disputed.setdefault(sid, []).append(dispute)
+                # THE reason this stage got a writer. A dispute changes no field
+                # on the blackboard, suppresses the defect for every later round,
+                # and until now lived only in the `disputed` dict above — which
+                # dies with the process. One run spent three rounds and ~$2 on
+                # four disputes and afterwards there was nothing on disk saying
+                # what had been disputed, so nothing to diagnose. It is the
+                # fixer's own prose about a section file, not user material.
+                rejected = _note(run, agent="fixer",
+                                 summary=f"{sid}: DISPUTED — {dispute}")
+                if rejected:
+                    yield Event(Stage.VERIFY, "blocked",
+                                f"{sid} dispute not recorded ({rejected.code}): "
+                                f"{rejected.message}")
                 yield Event(Stage.VERIFY, "progress", f"{sid}: disputed — {dispute[:70]}")
                 continue
             snapshots.setdefault(path, before)
             write_section(run.workspace, section, out.code)
+            # Status stays DEFECTIVE. The file changed; nothing has looked at the
+            # result yet, and loop.py's fourth rule is that nothing is marked done
+            # on an agent's say-so. The next round's inspection is the evidence,
+            # and the settle at the end of the stage is where it is applied.
+            rejected = _record_section(
+                run, sid, agent="fixer", bump_attempt=True,
+                note="fix applied for " + ", ".join(sorted({d.code for d in defects})))
+            if rejected:
+                yield Event(Stage.VERIFY, "blocked",
+                            f"{sid} fix not recorded ({rejected.code}): "
+                            f"{rejected.message}")
             fixed_any = True
             yield Event(Stage.VERIFY, "progress",
                         f"{sid}: fixed {len(defects)} defect(s)",
@@ -877,8 +1200,16 @@ def step_verify(run: Run) -> Iterator[Event]:
             # code that had just failed to build, behind a message claiming
             # recovery — one project sat unbuildable for hours that way. The
             # sentence is now the thing that happens.
+            reverted = []
             for target, original in snapshots.items():
                 target.write_text(original)
+                sid = next((x.id for x in bb.sections
+                            if run.workspace / x.target_path == target), None)
+                if sid:
+                    reverted.append(sid)
+                    _record_section(run, sid, agent="orchestrator",
+                                    status=BuildStatus.DEFECTIVE,
+                                    note="fix reverted — it did not build")
             recovered, again = _run_build(run.workspace)
             if not recovered:
                 # Nothing further in this stage can help, and gate 3 must not
@@ -896,11 +1227,22 @@ def step_verify(run: Run) -> Iterator[Event]:
         yield Event(Stage.VERIFY, "progress", f"rebuilt · {rounds.summary()}")
 
     findings = audit_dir(run.workspace / "src/components/sections", bb.design_system)
+    looked = True
     try:
         _, per_section, _ = _inspect_once(run, bb, blueprints, port + 10, disputed)
         left = sum(len(v) for v in per_section.values())
     except AssetsNotServed as e:
-        per_section, left, unserved = {}, 0, e.urls
+        per_section, left, unserved, looked = {}, 0, e.urls, False
+
+    # One settle, on the evidence of the last look. A section is BUILT again only
+    # because something measured it clean — never because a fix was written and
+    # assumed to have worked. If the final look never happened (the page could
+    # not serve its own files) nothing is settled at all: the alternative is
+    # marking every section clean on the strength of an inspection that returned
+    # no defects because it never ran.
+    if looked:
+        for ev in _settle_sections(run, bb, findings, per_section, disputed):
+            yield ev
 
     # A page that cannot load its own assets is not a page anyone should be asked
     # to ship, so that leads the question rather than sitting in a log line.
