@@ -25,8 +25,21 @@ LITERAL_COLOR = re.compile(
     rf"(?:{_PALETTES})(?:-\d{{2,3}})?\b"
 )
 FONT_WEIGHT = re.compile(r"\bfont-(thin|extralight|light|normal|medium|semibold|bold|extrabold|black)\b")
-TEXT_STEP = re.compile(r"\btext-(xs|sm|base|lg|xl|[2-9]xl)\b")
-SHADOW = re.compile(r"\bshadow-(?:2xl|xl|lg|md|sm|none|inner)\b")
+# Both of these also match arbitrary values, because a closed alternation cannot
+# see the thing it most needs to catch. `ide-01` used shadow-[0_2px_0_0_oklch(
+# 0.805_0.032_235)] eleven times against a design system declaring
+# shadow-[0_1px_0_0_oklch(0.720_0.045_230)] — a different colour AND a different
+# offset, invisible to the audit because it was not a named Tailwind step. That
+# is the "tenth value at section six" §6 says the recorded decision exists to
+# prevent. `permitted()` stores declared values verbatim, so arbitrary values
+# compare correctly once they are matched at all.
+TEXT_STEP = re.compile(
+    r"\btext-(?:xs|sm|base|lg|xl|[2-9]xl)\b"
+    # Only size-like arbitrary values. text-[#fff] is a colour, not a type step,
+    # and belongs to the colour rule.
+    r"|\btext-\[[^\]]*(?:rem|px|em|vw|vh|ch|clamp)[^\]]*\]"
+)
+SHADOW = re.compile(r"\bshadow-(?:2xl|xl|lg|md|sm|none|inner)\b|\bshadow-\[[^\]]*\]")
 ROUNDED = re.compile(r"\brounded-(?:none|sm|md|lg|xl|2xl|3xl|full)\b")
 # Captures the SIZE, and tolerates both the fractional steps Tailwind really has
 # and the axis variants. `\bgap-\d+\b` matched "gap-2" inside "gap-2.5" and
@@ -86,6 +99,17 @@ def permitted(ds: DesignSystem) -> dict[str, set[str]]:
     }
 
 
+def bare(utility: str) -> str:
+    """Strip responsive/state variants without touching an arbitrary value.
+
+    `md:shadow-[...]` is the same decision as `shadow-[...]`. Splitting on every
+    colon would also cut Tailwind's typed arbitrary syntax, `shadow-[color:red]`,
+    in half — so only the part before the bracket is considered.
+    """
+    head, sep, rest = utility.partition("[")
+    return head.split(":")[-1] + sep + rest
+
+
 def gap_size(utility: str) -> str:
     """"gap-x-2.5" -> "2.5". Both sides of the gap comparison go through this."""
     m = GAP.search(utility)
@@ -102,16 +126,16 @@ def audit_file(path: Path, ds: DesignSystem) -> list[Finding]:
         for m in LITERAL_COLOR.finditer(line):
             out.append(Finding(name, n, "literal-color", m.group(0)))
         for m in FONT_WEIGHT.finditer(line):
-            if m.group(0).split(":")[-1] not in allow["off-scale-weight"]:
+            if bare(m.group(0)) not in allow["off-scale-weight"]:
                 out.append(Finding(name, n, "off-scale-weight", m.group(0)))
         for m in TEXT_STEP.finditer(line):
-            if m.group(0).split(":")[-1] not in allow["off-scale-type"]:
+            if bare(m.group(0)) not in allow["off-scale-type"]:
                 out.append(Finding(name, n, "off-scale-type", m.group(0)))
         for m in SHADOW.finditer(line):
-            if m.group(0).split(":")[-1] not in allow["off-scale-shadow"]:
+            if bare(m.group(0)) not in allow["off-scale-shadow"]:
                 out.append(Finding(name, n, "off-scale-shadow", m.group(0)))
         for m in ROUNDED.finditer(line):
-            if m.group(0).split(":")[-1] not in allow["off-scale-radius"]:
+            if bare(m.group(0)) not in allow["off-scale-radius"]:
                 out.append(Finding(name, n, "off-scale-radius", m.group(0)))
         for m in GAP.finditer(line):
             # Compared by size rather than by whole utility, so a declared
