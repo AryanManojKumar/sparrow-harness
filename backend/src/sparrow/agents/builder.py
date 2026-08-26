@@ -142,6 +142,13 @@ class Builder(Agent):
         # sections — see experiments/drift-test-02.
         ground_class = "bg-background" if section.ground is Ground.PAGE else "bg-muted"
 
+        # asset_base was declared, passed in from steps.py, and never read — the
+        # listing hard-coded a leading "/". A preview is exported with Next's
+        # `basePath`, and `unoptimized` images do NOT get it prepended, so every
+        # src rendered as /assets/… and 404'd. Measured on a real run: seven
+        # images uploaded and generated, seven blank spaces on the page.
+        base = asset_base.rstrip("/")
+
         system = stable_system(
             SYSTEM.format(fidelity=FIDELITY_LINE),
             bb,
@@ -198,8 +205,13 @@ class Builder(Agent):
              "height, full container width or bleeding past an edge, nothing competing.\n"
              "  supporting — beside the copy, roughly half the container width.\n"
              "  thumbnail  — one of several, small on purpose.\n\n"
+             + "EVERY src BELOW IS ALREADY COMPLETE. Use each one character for "
+             "character. Do not shorten it, do not strip a leading path segment, do "
+             "not 'tidy' it to /assets/… — a preview is served under a base path and "
+             "`next/image` with `unoptimized` does not prepend it for you, so a "
+             "shortened src is a 404 and a blank space where the image was.\n\n"
              + "\n".join(
-                 f"- /{a.path}  ({a.width}x{a.height})  [{a.prominence.value}]\n"
+                 f"- {base}/{a.path}  ({a.width}x{a.height})  [{a.prominence.value}]\n"
                  f"    {a.brief}" for a in assets)
              + "\n</assets>") if assets else
             ("<assets>\nNo imagery for this section. Compose from type and layout; do not "
@@ -260,9 +272,32 @@ class Repairer(Agent):
         return BuildOutput(m.group(1).strip(), None, res)
 
 
-def write_section(workspace: Path, section: Section, code: str) -> Path:
+_ROOT_ASSET = re.compile(r'(["\'`])/assets/')
+
+
+def prefix_assets(code: str, asset_base: str) -> str:
+    """Put the preview's base path back on any root-relative /assets/ src.
+
+    Told once in the prompt, this still came back wrong on a real run: seven
+    images produced, seven `src="/assets/…"`, seven 404s and seven blank spaces
+    on the page. `next/image` with `unoptimized` does not prepend `basePath`, so
+    a root-relative src cannot resolve under /projects/{id}/preview.
+
+    A deterministic pass is the only version of this that holds. Idempotent by
+    construction: a src that already carries the base no longer matches, so a
+    fix round cannot double-prefix one.
+    """
+    base = (asset_base or "").rstrip("/")
+    if not base:
+        return code
+    return _ROOT_ASSET.sub(rf"\1{base}/assets/", code)
+
+
+def write_section(workspace: Path, section: Section, code: str,
+                  *, asset_base: str = "") -> Path:
     target = workspace / section.target_path
     target.parent.mkdir(parents=True, exist_ok=True)
+    code = prefix_assets(code, asset_base)
     target.write_text(code if code.endswith("\n") else code + "\n")
     return target
 

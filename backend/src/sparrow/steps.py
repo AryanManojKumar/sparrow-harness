@@ -994,7 +994,8 @@ def step_build(run: Run) -> Iterator[Event]:
                             assets=bb.assets_for(section.id),
                             asset_base=f"/projects/{run.project_id}/preview",
                             copy=(content.get(section.id) or {}).get("slots"))
-        write_section(ws, section, out.code)
+        write_section(ws, section, out.code,
+                      asset_base=f"/projects/{run.project_id}/preview")
         # Immediately, per section. The file and the record of the file are one
         # transition; anything between them is a window in which a crash leaves
         # the blackboard lying about the workspace.
@@ -1303,7 +1304,8 @@ def step_verify(run: Run) -> Iterator[Event]:
                 yield Event(Stage.VERIFY, "progress", f"{sid}: disputed — {dispute[:70]}")
                 continue
             snapshots.setdefault(path, before)
-            write_section(run.workspace, section, out.code)
+            write_section(run.workspace, section, out.code,
+                          asset_base=f"/projects/{run.project_id}/preview")
             # Status stays DEFECTIVE. The file changed; nothing has looked at the
             # result yet, and loop.py's fourth rule is that nothing is marked done
             # on an agent's say-so. The next round's inspection is the evidence,
