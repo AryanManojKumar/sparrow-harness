@@ -310,15 +310,28 @@ class Curator(Agent):
                 done += more
                 lines = self.transcribe(out)
 
+        left = {f["text"] for f in plan
+                if len(f["text"]) >= 4 and f["text"] in "\n".join(lines)}
+        if len(left) > max(1, len(plan) // 5):
+            # DEGRADE, do not ship a half-substituted image. Measured on a dense
+            # trade-finance capture — 36 findings, several near-identical account
+            # numbers stacked in one narrow column: placements crossed rows, one
+            # IBAN was drawn over an organisation's name while the original IBAN
+            # stayed put, and the result was both damaged AND leaky. Masking
+            # every located value is uglier and tells the user the truth: this
+            # capture is too dense to substitute, send a simpler one.
+            out, done = redact.paint(png, [dict(f, replacement="") for f in plan])
+            lines = self.transcribe(out)
+            return Scrub(out, [f"{len(plan)} value(s) masked — too many to place "
+                               "individually on a capture this dense"], lines)
+
         tally: dict[str, int] = {}
         for f in done:
             tally[f["kind"]] = tally.get(f["kind"], 0) + 1
         changed = [f"{k.replace('_', ' ')} ×{n}" for k, n in sorted(tally.items())]
-        blurred = sum(1 for f in done if f.get("blurred"))
-        if blurred:
-            changed.append(f"{blurred} blurred rather than substituted")
-        left = [f["text"] for f in plan
-                if len(f["text"]) >= 4 and f["text"] in "\n".join(lines)]
+        masked = sum(1 for f in done if f.get("blurred"))
+        if masked:
+            changed.append(f"{masked} masked rather than substituted")
         if left:
             changed.append(f"{len(left)} value(s) still readable after two passes")
         return Scrub(out, changed, lines)

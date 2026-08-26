@@ -89,6 +89,12 @@ _TYPE_TAG = re.compile(r"^([a-z]{2,6}[_-])(?=[A-Za-z0-9]*\d)")
 # A trailing TLD. Reshaping it turns an email into gibberish for no privacy gain.
 _TLD = re.compile(r"(\.[A-Za-z]{2,4})$")
 _RUN = re.compile(r"[A-Za-z0-9]+")
+# ISO currency codes read as three ordinary letters to a shape-preserving
+# reshape, which turned `USD 98,450.00` into `TOB 11,025.76`. A currency code
+# says what the number is denominated in, not whose money it is.
+_CURRENCY = re.compile(r"\b(?:[A-Z]{3})\b")
+_CODES = {"USD", "EUR", "GBP", "CNY", "JPY", "CHF", "AUD", "CAD", "INR", "SGD",
+          "HKD", "NZD", "SEK", "NOK", "DKK", "ZAR", "AED", "BRL", "MXN", "PLN"}
 
 
 def _rng(seed: str) -> random.Random:
@@ -103,12 +109,17 @@ def reshape(text: str, *, seed: str | None = None) -> str:
     case, digits stay digits, everything else is untouched — so the string keeps
     its width, its separators and its register."""
     r = _rng(seed or text)
+    keep = {m.span() for m in _CURRENCY.finditer(text) if m.group(0) in _CODES}
     head = m.group(1) if (m := _TYPE_TAG.match(text)) else ""
     tail = m.group(1) if (m := _TLD.search(text)) else ""
     body = text[len(head):len(text) - len(tail)]
 
+    off = len(head)
     out, seen_digit = [], False
-    for ch in body:
+    for i, ch in enumerate(body):
+        if any(a <= i + off < b for a, b in keep):
+            out.append(ch)
+            continue
         if ch.isdigit():
             # Only the FIRST digit of the string is held away from zero — a
             # replacement reading "£0,000.00" is a placeholder, but "£1,045.00"
@@ -122,6 +133,32 @@ def reshape(text: str, *, seed: str | None = None) -> str:
         else:
             out.append(ch)
     return head + "".join(out) + tail
+
+
+# Reshaping a NAME letter by letter gives `Vfhm oc Wzrxq, Enckbkip Ydvsdp` —
+# which is not a business, does not read as one, and is the grey smear again.
+# Where the model's own suggestion is unusable, a name is drawn from here
+# instead, seeded from the original so it stays stable across a replay.
+_GIVEN = ("Alex", "Jordan", "Maya", "Priya", "Sam", "Nina", "Omar", "Lena",
+          "Theo", "Rosa", "Kai", "Ines", "Noah", "Zara", "Felix", "Anya")
+_FAMILY = ("Hart", "Okafor", "Nakamura", "Bennett", "Duarte", "Kowalski",
+           "Ferreira", "Lindqvist", "Osei", "Marchetti", "Halvorsen", "Baptiste")
+_FIRM = ("Northwind", "Bluecrest", "Fairmark", "Ridgeline", "Kestrel", "Silverlane",
+         "Oakford", "Meridian", "Harborview", "Ardent", "Copperline", "Larkmoor")
+_SUFFIX = ("Trading", "Holdings", "Partners", "Industrial", "Logistics", "Group",
+           "Supplies", "Systems", "Ventures", "Foods", "Imports", "Exports")
+
+
+def _invent(text: str, kind: str) -> str:
+    """A plausible name of roughly the right length, seeded from the original."""
+    r = _rng(text)
+    pool = (_GIVEN, _FAMILY) if kind == "person_name" else (_FIRM, _SUFFIX)
+    parts = [r.choice(p) for p in pool]
+    # Keep any trailing legal form — `Ltd.`, `Inc.`, `LLC`, `Co.` — because it
+    # says what kind of entity it is, not which one.
+    tail = [w for w in re.split(r"\s+", text) if w.rstrip(".").upper() in
+            {"LTD", "INC", "LLC", "PLC", "CO", "GMBH", "SA", "AG", "BV", "NV"}]
+    return " ".join(parts + tail[-1:])
 
 
 def _is_mask(s: str) -> bool:
@@ -213,10 +250,10 @@ def resolve(items: list[tuple[str, str, str]]) -> dict[str, str]:
 
     out: dict[str, str] = {}
     words: dict[str, str] = {}
-    for text, _kind, sug in names:
+    for text, kind, sug in names:
         if text in out:
             continue
-        out[text] = sug if _usable(text, sug) else reshape(text)
+        out[text] = sug if _usable(text, sug) else _invent(text, kind)
         words.update(_words((text, out[text])))
 
     for text, kind, sug in rest:
@@ -506,7 +543,10 @@ def _pixelate(crop):
     from PIL import Image
 
     w, h = crop.size
-    block = max(2, min(w, h) // 5)
+    # The block has to be a fair fraction of the LINE HEIGHT or it destroys
+    # nothing: at a fifth of a 12px row the mosaic was 2px and `Greenfield
+    # Imports Ltd.` was still legible straight through it.
+    block = max(3, round(min(w, h) * 0.6))
     return (crop.resize((max(1, w // block), max(1, h // block)), Image.BOX)
                 .resize((w, h), Image.NEAREST))
 

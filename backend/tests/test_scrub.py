@@ -250,3 +250,105 @@ def test_the_replacement_is_drawn_in_the_ink_the_line_was_written_in():
         darkest = min(sum(a.getpixel((x, y))) for y in range(35, 62)
                       for x in range(8, 90))
     assert darkest < 200, "the substituted text is paler than the text it replaced"
+
+
+# ---------------------------------------------------- verifying and degrading
+
+
+class FakeCurator:
+    """`Curator.scrub` with the two model calls replaced by scripted answers.
+
+    `locates` is one list of findings per `_locate` call; `reads` is one
+    transcription per `transcribe` call. What is under test is the control flow
+    between them — verify, retry, and the decision to stop substituting.
+    """
+
+    def __init__(self, locates, reads):
+        from sparrow.agents.curator import Curator
+
+        self.locates, self.reads = list(locates), list(reads)
+        self.located = self.read = 0
+        self.scrub = Curator.scrub.__get__(self)
+        self.transcribe = lambda _img: self._read()
+        self._locate = lambda _img: self._next_locate()
+
+    def _read(self):
+        self.read += 1
+        return self.reads[min(self.read - 1, len(self.reads) - 1)]
+
+    def _next_locate(self):
+        self.located += 1
+        return self.locates[min(self.located - 1, len(self.locates) - 1)]
+
+
+def finding(text, kind="person_name", box=(10, 200, 150, 275), replacement="Maya Stone"):
+    return {"text": text, "kind": kind, "box": list(box), "replacement": replacement}
+
+
+@needs_fonts
+def test_a_clean_image_costs_one_read_and_comes_back_untouched():
+    im = shot([(10, 40, "Gross volume", 15)])
+    cur = FakeCurator(locates=[[]], reads=[["Gross volume"]])
+    out = cur.scrub(as_png(im))
+
+    assert out.clean and out.image == as_png(im)
+    assert out.lines == ["Gross volume"], \
+        "the fidelity gate needs this transcription, so the scrub hands it on"
+    assert cur.located == 1 and cur.read == 1
+
+
+@needs_fonts
+def test_a_value_that_survived_the_first_pass_is_looked_for_again():
+    """The failure is quiet: the model boxes the row above, the width happens to
+    match what it landed on, and the beneficiary is still in the image while the
+    report says it was replaced. Reading the result back is the only check that
+    catches it."""
+    im = shot([(10, 40, "Sarah Reed", 15)])
+    cur = FakeCurator(
+        locates=[[finding("Sarah Reed", box=(500, 500, 540, 540))],   # nowhere near
+                 [finding("Sarah Reed", box=box_of(im, 10, 40, 82, 55))]],
+        reads=[["Sarah Reed"], ["Maya Stone"], ["Maya Stone"]])
+    out = cur.scrub(as_png(im))
+
+    assert cur.located == 2, "a survivor must be looked for a second time"
+    assert "Sarah Reed" not in "\n".join(out.lines)
+
+
+@needs_fonts
+def test_the_retry_reuses_the_first_pass_replacement():
+    """Otherwise the second pass invents a different name for the same person,
+    and an image where one row says Maya Stone and another says someone else is
+    not a picture of anybody's product."""
+    im = shot([(10, 40, "Sarah Reed", 15)])
+    cur = FakeCurator(
+        locates=[[finding("Sarah Reed", box=(500, 500, 540, 540))],
+                 [finding("Sarah Reed", box=box_of(im, 10, 40, 82, 55),
+                          replacement="Someone Else")]],
+        reads=[["Sarah Reed"], ["?"], ["?"]])
+    cur.scrub(as_png(im))
+    # The second locate's own suggestion is discarded; nothing in the image is
+    # allowed to disagree with what pass one decided.
+    assert cur.located == 2
+
+
+@needs_fonts
+def test_too_many_survivors_stops_substituting_and_masks_everything():
+    """Measured on a dense trade-finance capture: 36 findings, several
+    near-identical account numbers stacked in one narrow column. Placements
+    crossed rows — an IBAN was drawn over an organisation's name while the
+    original IBAN stayed put — and the result was both damaged AND leaky.
+    Masking is uglier and tells the user the truth: send a simpler capture."""
+    im = shot([(10, 40, "Sarah Reed", 15), (10, 70, "Jane Doe Two", 15),
+               (10, 100, "John Roe Three", 15)])
+    nowhere = (900, 900, 940, 940)
+    cur = FakeCurator(
+        locates=[[finding("Sarah Reed", box=nowhere),
+                  finding("Jane Doe Two", box=nowhere),
+                  finding("John Roe Three", box=nowhere)]],
+        # every read still shows them: nothing the scrub tried actually landed
+        reads=[["Sarah Reed", "Jane Doe Two", "John Roe Three"]])
+    out = cur.scrub(as_png(im))
+
+    assert not out.clean
+    assert "masked" in out.changed[0] and "too many to place" in out.changed[0]
+    assert cur.located == 2, "one retry, then it stops — §8 caps loops"

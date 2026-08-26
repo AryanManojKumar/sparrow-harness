@@ -311,6 +311,14 @@ The scrub runs **before the restyle**, not after. `restyle` posts the file to a
 third-party image model and what comes back is published at the preview URL; after either,
 the data has already left.
 
+It reads its own output back and retries once, and **where too much still reads through it
+stops substituting and masks every located value instead**. Measured on a dense
+trade-finance capture — 36 findings, several near-identical account numbers stacked in one
+narrow column — placements crossed rows: an IBAN was drawn over an organisation's name
+while the original IBAN stayed put, leaving the image both damaged and leaky. The masked
+version is uglier and it is honest; the event says so, and the answer is a simpler
+capture. **A capture that dense is the known limit of this approach.**
+
 ### The fidelity gate on uploads
 
 Only the upload path is gated, and the asymmetry is deliberate. A generated image invents
