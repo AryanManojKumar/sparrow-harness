@@ -19,9 +19,18 @@ boundary: `_place` searches around it and measures which ink to repaint.
 
 WIDTH ALONE IS NOT ENOUGH TO IDENTIFY A STRING. `Apple Pay •••• 1010` and
 `Foo Food Suppliers Ltd` render within 3px of the same width at the same line
-height, and the model had put the second one's box on the first one's row — so a
-width-only match repainted the wrong row and left the beneficiary standing. The
-ink PROFILE (`_buckets`) separates them.
+height. The ink PROFILE (`_buckets`) separates them.
+
+BUT MATCHING CANNOT DECIDE WHICH ROW. Measured over five locate responses for
+one capture, 5.1% of placements landed on a row other than the one the model
+pointed at — a beneficiary's name painted across the `View all activity ›` link
+at the foot of the table, a card's last four digits painted 48px down into the
+row below. The match error does not separate those from the good placements:
+in-row errors ran 0.115-0.599 and crossing errors 0.450-0.579, one distribution
+on top of the other. No tolerance tells them apart. So the row is a HARD
+GEOMETRIC BOUND (`_ROW_SLACK`), nothing overrides it, and a value that is not on
+the row the model pointed at gets masked there rather than relocated. Same
+capture, same measurement, after: 0 of 112.
 
 THE FONT IS NOT KNOWN. It is measured rather than assumed: each candidate face
 is rendered at every plausible size and scored on how closely it reproduces the
@@ -436,9 +445,15 @@ _SOLID = 0.55
 # chip across the account name beside it, and were repainted at 40pt.
 _SPAN_WIDTH = (0.55, 2.0)
 
+# How far a line's centre may sit outside the model's box and still count as the
+# row the box points at. The model's vertical placement is good to a few pixels
+# and its box is often a little short, so a quarter of the box height absorbs
+# the honest error without reaching the next row — table rows in the captures
+# measured here are 51px apart on a 12px line.
+_ROW_SLACK = 0.25
 
-def _place(im, box: Box, text: str, ruler: _Ruler, *,
-           threshold: int = 40, band: float = 1.2, anchored: bool = True):
+
+def _place(im, box: Box, text: str, ruler: _Ruler, *, threshold: int = 40):
     """Find the ink that actually spells `text` near the model's box.
 
     The model's box is a POINTER. Measured on the payments capture it was short
@@ -453,9 +468,8 @@ def _place(im, box: Box, text: str, ruler: _Ruler, *,
 
     - the span must cover the box's horizontal CENTRE. Without it, `5555` matched
       the four `••••` bullets to its left just as well, and was painted there.
-    - `anchored` requires the line to overlap the box vertically. Without it,
-      `£42,210.34` matched the words `to pay out` on the label line above, at a
-      font size small enough to make any width fit.
+    - the line must BE the row the box points at, not merely touch it — see
+      `_ROW_SLACK`. This is a HARD bound and nothing overrides it.
     - the span must not be a solid block, nor far wider than the box itself —
       see `_SOLID` and `_SPAN_WIDTH`.
 
@@ -463,7 +477,7 @@ def _place(im, box: Box, text: str, ruler: _Ruler, *,
     """
     W, H = im.size
     pad_x = max(10, round(box.h * 2.0))
-    pad_y = max(4, round(box.h * band))
+    pad_y = max(4, round(box.h * 1.2))
     rx0, ry0 = max(0, box.x0 - pad_x), max(0, box.y0 - pad_y)
     rx1, ry1 = min(W, box.x1 + pad_x), min(H, box.y1 + pad_y)
     if rx1 - rx0 < 2 or ry1 - ry0 < 2:
@@ -486,7 +500,22 @@ def _place(im, box: Box, text: str, ruler: _Ruler, *,
         lh = bot - top + 1
         if lh < 3 or not 0.5 <= lh / max(box.h, 1) <= 2.0:
             continue
-        if anchored and (bot + ry0 < box.y0 or top + ry0 > box.y1):
+        # THE ROW BOUND. Overlapping the box was not enough: the search region
+        # reaches past a neighbouring row, so a line one row down can still
+        # clip the box and win on width. Measured over five locate responses
+        # for the same capture, 7.6% of placements landed on another row that
+        # way — a beneficiary name painted across `View all activity ›`, a
+        # card's last four digits painted 48px down into the row below.
+        #
+        # Matching cannot fix this: over those same runs the in-row match
+        # errors ran 0.115-0.599 and the crossing errors 0.347-0.587. The two
+        # distributions sit on top of each other, so no tolerance separates
+        # them. Geometry does, and only geometry.
+        lcy = (top + bot) / 2 + ry0
+        slack = max(2.0, box.h * _ROW_SLACK)
+        if not box.y0 - slack <= lcy <= box.y1 + slack:
+            continue
+        if abs(lcy - (box.y0 + box.y1) / 2) > max(box.h, lh) * 0.6:
             continue
         counts = [sum(1 for y in range(top, bot + 1) if ink_at[y * rw + x])
                   for x in range(rw)]
@@ -531,7 +560,52 @@ def _place(im, box: Box, text: str, ruler: _Ruler, *,
     core = [p for _d, p in dark[max(0, int(len(dark) * 0.75)):]]
     ink = _modal(core) if core else (0, 0, 0)
 
-    return (Box(rx0 + x0, ry0 + top, rx0 + x1 + 1, ry0 + bot + 1), bg, ink, path, size)
+    return (Box(rx0 + x0, ry0 + top, rx0 + x1 + 1, ry0 + bot + 1), bg, ink, path, size, _err)
+
+
+def _cover(im, box: Box, threshold: int = 40) -> Box:
+    """Grow a box sideways to the full extent of the ink it lands on.
+
+    Masking at the model's raw box was too literal: its boxes are short and
+    sometimes a few pixels left, so a mask over `•••• 4242` covered the bullets
+    and the first digit and left `242` sitting in the open — three quarters of
+    a card number, and scrappy-looking with it. This walks out along the box's
+    OWN ROW to the ends of the ink runs the box touches.
+
+    Vertically it does not move at all. The row bound is the whole guarantee.
+    """
+    W, H = im.size
+    pad = max(6, box.h)
+    reach = max(8.0, box.w * 1.25)      # how far out it may grow, each side
+    rx0, rx1 = max(0, round(box.x0 - reach)), min(W, round(box.x1 + reach))
+    # Sampled a little taller than the box so a clipped glyph top or bottom
+    # still registers as ink. The MASK still uses the box's own rows: this
+    # widens what is looked at, never what is painted.
+    vpad = max(1, round(box.h * 0.35))
+    ry0, ry1 = max(0, box.y0 - vpad), min(H, box.y1 + vpad)
+    if rx1 - rx0 < 2 or ry1 - ry0 < 2:
+        return box
+
+    region = im.crop((rx0, ry0, rx1, ry1))
+    rw, rh = region.size
+    px = list(region.get_flattened_data())
+    bg = _modal(px)
+    cols = [any(_dist(px[y * rw + x], bg) > threshold for y in range(rh))
+            for x in range(rw)]
+    # Bridge letter spacing so `•••• 4242` is one run, not five.
+    runs = _runs(cols, bridge=max(2, round(box.h * 0.5)))
+    lo, hi = box.x0 - rx0, box.x1 - rx0
+    touched = [(a, b) for a, b in runs if b >= lo and a <= hi]
+    if not touched:
+        return box
+    x0, x1 = min(a for a, _b in touched), max(b for _a, b in touched)
+    # Clipped to `reach` rather than abandoned when the run is long. On a
+    # tightly set cell the label, the bullets and the digits bridge into one
+    # run, and giving up there is what leaves `242` in the open; growing
+    # without a bound would mask the whole cell including its label.
+    x0 = max(x0, lo - reach)
+    x1 = min(x1, hi + reach)
+    return Box(rx0 + round(x0), box.y0, rx0 + round(x1) + 1, box.y1)
 
 
 def _pixelate(crop):
@@ -587,31 +661,36 @@ def paint(image: bytes, found: list[dict]) -> tuple[bytes, list[dict]]:
         if f["kind"] == "face" or not faces or not f.get("replacement"):
             plan.append((f, box, None))
             continue
-        placed = _place(im, box, f["text"], ruler)
-        if placed is None:
-            # The model's vertical placement is off by a whole table row often
-            # enough to be worth a second look before giving up and blurring:
-            # two rows of the payments capture's activity table were reported
-            # against the row above, ~50px away on a 12px line. The band widens
-            # past a neighbouring row and the anchor drops, but the width
-            # measurement and the span-width bound still have to agree.
-            placed = _place(im, box, f["text"], ruler, band=4.5, anchored=False)
-        plan.append((f, box, placed))
+        # No unanchored rescue. There was one — it widened the band past the
+        # neighbouring rows and dropped the vertical anchor, to catch boxes the
+        # model had put a whole row out. It caught those, and it is also how a
+        # beneficiary's name came to be painted over the table's `View all
+        # activity ›` link. Where the value is not on the row the model pointed
+        # at, this masks instead: a mosaic on the right row beats a name on the
+        # wrong one, and painting over somebody's UI control is not a trade
+        # worth making for a tidier substitution.
+        plan.append((f, box, _place(im, box, f["text"], ruler)))
 
     draw = ImageDraw.Draw(im)
     done: list[dict] = []
     for f, box, placed in plan:
         if placed is None:
+            box = _cover(im, box)
             pad = max(2, round(min(box.w, box.h) * 0.2))
-            r = (max(0, box.x0 - pad), max(0, box.y0 - pad),
-                 min(im.size[0], box.x1 + pad), min(im.size[1], box.y1 + pad))
+            # Vertical padding is capped so a mask cannot bleed into the row
+            # above or below either. The row bound is the whole guarantee: what
+            # this module changes stays on the row the model pointed at,
+            # whether it substitutes there or masks there.
+            pad_y = min(pad, max(1, box.h // 4))
+            r = (max(0, box.x0 - pad), max(0, box.y0 - pad_y),
+                 min(im.size[0], box.x1 + pad), min(im.size[1], box.y1 + pad_y))
             if r[2] <= r[0] or r[3] <= r[1]:
                 continue
             im.paste(_pixelate(im.crop(r)), r)
             done.append(dict(f, blurred=True))
             continue
 
-        tight, bg, ink, path, size = placed
+        tight, bg, ink, path, size, err = placed
         font = ImageFont.truetype(path, size)
         l, t, r, b = font.getbbox(f["replacement"])
         if r - l > tight.w * 1.15 and size > 6:            # replacement ran long
@@ -621,7 +700,10 @@ def paint(image: bytes, found: list[dict]) -> tuple[bytes, list[dict]]:
 
         draw.rectangle((tight.x0 - 1, tight.y0 - 1, tight.x1, tight.y1), fill=bg)
         draw.text((tight.x0 - l, tight.y0 - t), f["replacement"], font=font, fill=ink)
-        done.append(f)
+        # `at` is what was actually repainted, against `box` which is where the
+        # model said to look. A caller comparing the two can see a placement
+        # that crossed to another row; `test_scrub` and the spread harness do.
+        done.append(dict(f, at=[tight.x0, tight.y0, tight.x1, tight.y1], err=round(err, 3)))
 
     buf = io.BytesIO()
     im.save(buf, "PNG")

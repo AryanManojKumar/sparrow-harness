@@ -311,6 +311,16 @@ The scrub runs **before the restyle**, not after. `restyle` posts the file to a
 third-party image model and what comes back is published at the preview URL; after either,
 the data has already left.
 
+A replacement is only ever painted on the row the model pointed at. Nothing overrides
+that bound — where the value is not on that row, the scrub masks there instead of hunting
+for it elsewhere. There used to be a rescue pass that widened the search past the
+neighbouring rows, and it is how a beneficiary's name came to be painted across the
+`View all activity ›` link at the foot of a table. Measured over five locate responses
+for one capture, **5.1% of placements landed on another row; after the bound, 0 of 112**.
+Matching cannot do this job: in-row match errors ran 0.115–0.599 and crossing errors
+0.450–0.579, one distribution on top of the other. The cost is masking a little more —
+9 masks became 15 over those same responses — which is the right way round.
+
 It reads its own output back and retries once, **masking** whatever still reads rather
 than substituting it a second time — the second pass places against the same approximate
 box and makes the same mistake, and one masked name beats a published one. Where too much
@@ -320,6 +330,18 @@ narrow column — placements crossed rows: an IBAN was drawn over an organisatio
 while the original IBAN stayed put, leaving the image both damaged and leaky. The masked
 version is uglier and it is honest; the event says so, and the answer is a simpler
 capture. **A capture that dense is the known limit of this approach.**
+
+The read-back is what makes any of this checkable, and it looks for two things: values the
+locate pass named that are still legible, matched on shared words rather than exact string
+because the two reads of a row disagree (`Foo Food Suppliers Ltd` one pass,
+`To Food Suppliers Ltd` the next — on an exact test that row shipped unscrubbed while the
+report said otherwise); and money- and email-shaped strings the locate pass **never named
+at all**, which nothing was checking before. Both get masked.
+
+**This is a distribution, not a fixed result.** The model returns different boxes and finds
+slightly different values on every run, so the honest way to describe the scrub is a rate,
+not a sample: over five live runs of the same capture, 23–25 values substituted, 1–3
+masked, 0 crossings, and the leaks that did occur were caught by the read-back and masked.
 
 ### The fidelity gate on uploads
 

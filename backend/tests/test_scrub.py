@@ -353,3 +353,164 @@ def test_too_many_survivors_stops_substituting_and_masks_everything():
     assert not out.clean
     assert "masked" in out.changed[0] and "too many to place" in out.changed[0]
     assert cur.located == 2, "one retry, then it stops — §8 caps loops"
+
+
+# ------------------------------------------------------------- the row bound
+
+
+@needs_fonts
+def test_a_replacement_is_never_painted_onto_another_row():
+    """The defect this exists for: a beneficiary's name from a table row was
+    painted across the `View all activity ›` link at the foot of the table,
+    leaving a stray `v` behind. Measured over five locate responses for the same
+    capture, 5.1% of placements landed on a row other than the one the model
+    pointed at, in four of the five.
+
+    Matching cannot prevent it. Over those runs the in-row match errors ran
+    0.115-0.599 and the crossing errors 0.450-0.579 — the two distributions sit
+    on top of each other, so no tolerance tells them apart. The row bound is
+    geometric and absolute.
+    """
+    im = shot([(10, 40, "Sarah Reed", 15),
+               (10, 92, "View all activity", 15)])   # a control, one row down
+    before = as_png(im)
+    # A box pointing at the FIRST row. `View all activity` is a near-identical
+    # width at the same height, so on width alone it is an equally good match.
+    after, done = redact.paint(before, [{
+        "text": "Sarah Reed", "kind": "person_name",
+        "box": box_of(im, 10, 40, 82, 55), "replacement": "Maya Stone",
+    }])
+
+    with Image.open(io.BytesIO(before)) as b:
+        control = [(x, y) for y in range(86, 112) for x in range(b.size[0])
+                   if b.getpixel((x, y)) != (255, 255, 255)]
+    assert control, "the control has to be there for the test to mean anything"
+    assert not (differing(before, after) & set(control)), \
+        "the substitution was painted over the control on the row below"
+
+
+@needs_fonts
+def test_a_value_the_model_pointed_at_the_wrong_row_is_masked_not_relocated():
+    """There used to be a rescue pass here: where nothing matched on the box's
+    own row it widened the band past the neighbouring rows and dropped the
+    vertical anchor. It did recover boxes the model had put a row out — and it
+    is also how the beneficiary reached the link. Masking on the row the model
+    named is the honest answer: the mosaic is visible, it is where the model
+    said to look, and the read-back pass catches the value if it was elsewhere.
+    """
+    im = shot([(10, 92, "Sarah Reed", 15)])     # the value is on the LOWER row
+    before = as_png(im)
+    after, done = redact.paint(before, [{
+        "text": "Sarah Reed", "kind": "person_name",
+        "box": box_of(im, 10, 40, 82, 55),      # the box points a whole row high
+        "replacement": "Maya Stone",
+    }])
+    assert done and done[0].get("blurred") is True
+    assert all(y < 86 for _x, y in differing(before, after)), \
+        "it reached down and repainted the row it was not pointed at"
+
+
+# --------------------------------------- values the locate pass never reported
+
+
+def test_the_sweep_finds_money_and_email_the_model_did_not_report():
+    """The verify step only re-checked values the model had already named, so a
+    value it never named was never checked. Measured across five live runs of
+    the same capture, the locate pass missed two of the activity table's payout
+    amounts on one run and found them on the other four — recall varies run to
+    run exactly as placement does."""
+    from sparrow.agents.curator import _unlocated
+
+    lines = ["Recent activity",
+             "Payout  To Willow Ridge Farms  £58,170.32  Succeeded",
+             "jamie.moore@novastores.com"]
+    plan = [{"text": "£1,454.84"}]
+    got = {f["text"] for f in _unlocated(lines, plan)}
+    assert got == {"£58,170.32", "jamie.moore@novastores.com"}
+
+
+def test_the_sweep_ignores_what_it_cannot_tell_from_product_chrome():
+    """Ids, counts and version strings are deliberately out of scope. A sweep
+    that fires on those masks the parts of the screenshot worth keeping — and
+    the counters and API version are exactly what makes the capture read as
+    real software."""
+    from sparrow.agents.curator import _unlocated
+
+    lines = ["231", "Refunded 7", "API v2025-05-16", "pay_01JTVX8Z8Q3K6Y6Z7J9X2V1F4P",
+             "16 May, 14:31", "Step 3 of 6", "1 USD = 7.2213 CNY"]
+    assert _unlocated(lines, []) == []
+
+
+def test_a_value_already_substituted_is_not_swept_again():
+    from sparrow.agents.curator import _unlocated
+
+    assert _unlocated(["Gross volume £663,734.26"], [{"text": "£663,734.26"}]) == []
+
+
+def test_the_sweep_does_not_report_the_values_the_scrub_itself_wrote():
+    """The replacements are money-shaped by construction — that is the point of
+    substituting rather than masking. A sweep that knows only the originals
+    reads every amount it just substituted as an unlocated leak and masks the
+    lot on the retry, which is the grey smear arriving by the back door."""
+    from sparrow.agents.curator import _unlocated
+
+    plan = [{"text": "£12,500.00", "replacement": "£58,170.32"},
+            {"text": "sarah.reed@acmemarkets.com",
+             "replacement": "jamie.moore@novastores.com"}]
+    lines = ["Payout To Willow Ridge Farms £58,170.32 Succeeded",
+             "jamie.moore@novastores.com"]
+    assert _unlocated(lines, plan) == []
+
+
+def test_a_survivor_is_recognised_when_the_two_reads_disagree():
+    """Measured live: the locate pass transcribed a beneficiary as `Foo Food
+    Suppliers Ltd` and the read-back returned `To Food Suppliers Ltd`. On an
+    exact substring test the survivor check found nothing, and the row shipped
+    unscrubbed while the report said it had been replaced."""
+    from sparrow.agents.curator import _still_reads
+
+    assert _still_reads("Foo Food Suppliers Ltd",
+                        ["Payout", "To Food Suppliers Ltd", "£12,500.00"])
+    assert _still_reads("£125,430.28", ["Gross volume", "£125,430.28"])
+
+
+def test_a_substituted_row_does_not_read_as_a_survivor():
+    """The check has to stay quiet on success, or every run masks everything."""
+    from sparrow.agents.curator import _still_reads
+
+    assert not _still_reads("Foo Food Suppliers Ltd",
+                            ["Payout", "To Willow Ridge Farms", "£58,170.32"])
+    assert not _still_reads("Sarah Reed", ["Jamie Moore", "Operations"])
+
+
+@needs_fonts
+def test_a_mask_covers_the_whole_value_not_just_the_box():
+    """Measured on a live run: the model's box for a card's `•••• 4242` sat a
+    few pixels left, the mask covered the bullets and the first digit, and `242`
+    was left sitting in the open — three quarters of a card number."""
+    im = shot([(10, 40, "•••• 4242", 15)])
+    before = as_png(im)
+    short = box_of(im, 8, 40, 40, 55)           # covers the bullets, not the digits
+    after, done = redact.paint(before, [{
+        "text": "4242", "kind": "identifier", "box": short, "replacement": "",
+    }])
+    assert done and done[0].get("blurred") is True
+    with Image.open(io.BytesIO(before)) as b:
+        ink = [x for x in range(b.size[0])
+               if any(b.getpixel((x, y)) != (255, 255, 255) for y in range(35, 62))]
+    xs = {x for x, _y in differing(before, after)}
+    assert max(xs) >= max(ink), "the digits were left readable beside the mask"
+
+
+@needs_fonts
+def test_growing_a_mask_never_moves_it_off_its_row():
+    im = shot([(10, 10, "Gross volume", 15),
+               (10, 40, "•••• 4242", 15),
+               (10, 70, "Successful", 15)])
+    before = as_png(im)
+    after, _done = redact.paint(before, [{
+        "text": "4242", "kind": "identifier",
+        "box": box_of(im, 8, 40, 40, 55), "replacement": "",
+    }])
+    ys = {y for _x, y in differing(before, after)}
+    assert ys and min(ys) > 25 and max(ys) < 68

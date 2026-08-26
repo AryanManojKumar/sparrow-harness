@@ -197,6 +197,61 @@ class Scrub:
         return not self.changed
 
 
+# Shapes that are PII wherever they appear and cannot be confused with product
+# chrome: a currency amount and an email address. Deliberately not ids or bare
+# numbers — a version string, a row count and a port number all look like those,
+# and a sweep that fires on them masks the parts of the screenshot worth keeping.
+_SHAPES = (
+    re.compile(r"[£$€¥]\s?\d[\d,]*\.\d{2}"),
+    re.compile(r"[\w.+-]+@[\w-]+\.[A-Za-z]{2,}"),
+)
+
+
+def _still_reads(text: str, lines: list[str]) -> bool:
+    """Whether `text` is still in the image, allowing for the two reads of the
+    same row disagreeing.
+
+    Exact substring was not enough. Measured live: a beneficiary the locate pass
+    transcribed as `Foo Food Suppliers Ltd` came back from the read-back as
+    `To Food Suppliers Ltd`, the substring test found nothing, and the row
+    shipped unscrubbed while the report said it had been replaced. Two shared
+    long words on one line is the same rule `_same_value` already uses to pair
+    the passes up.
+    """
+    if len(text) >= 4 and any(text in line for line in lines):
+        return True
+    words = {w.lower() for w in re.findall(r"[A-Za-z0-9]{4,}", text)}
+    if len(words) < 2:
+        return False
+    return any(len(words & {w.lower() for w in re.findall(r"[A-Za-z0-9]{4,}", line)}) >= 2
+               for line in lines)
+
+
+def _unlocated(lines: list[str], plan: list[dict]) -> list[dict]:
+    """PII shapes in the read-back that the locate pass never named.
+
+    The verify step only re-checked the values the model had already found, so a
+    value it never found was never checked. Measured across five live runs of
+    the same capture, the locate pass missed two of the activity table's payout
+    amounts on one run and found them on the others — recall varies run to run
+    just as placement does. Whatever the sweep turns up is masked, never
+    substituted: there is no box for it and no transcription to trust.
+    """
+    # The REPLACEMENTS have to count as known too. They are money-shaped by
+    # construction — that is the whole point of substituting rather than
+    # masking — so a sweep that only knows the originals reports every amount
+    # it just substituted as an unlocated leak, and masks the lot on the retry.
+    known = " ".join(f"{f['text']} {f.get('replacement', '')}" for f in plan)
+    out: list[dict] = []
+    for line in lines:
+        for shape in _SHAPES:
+            for hit in shape.findall(line):
+                if hit not in known and not any(d["text"] == hit for d in out):
+                    out.append({"text": hit, "kind": "money" if hit[0] not in
+                                "abcdefghijklmnopqrstuvwxyz" else "email"})
+    return out
+
+
 def _same_value(text: str, among: list[dict]) -> dict | None:
     """Whether a second-pass finding is one of the values that survived the
     first. Compared on shared words rather than exact string, because the two
@@ -296,9 +351,10 @@ class Curator(Agent):
         # the only check that catches that, and it costs nothing — the fidelity
         # gate downstream needs this transcription anyway.
         lines = self.transcribe(out)
-        blob = "\n".join(lines)
-        survived = [f for f in plan
-                    if len(f["text"]) >= 4 and f["text"] in blob]
+        survived = [f for f in plan if _still_reads(f["text"], lines)]
+        # Plus anything PII-shaped the locate pass never named at all. Checking
+        # only what the model found means a miss is invisible to the check.
+        survived += _unlocated(lines, plan)
         if survived:
             # The retry MASKS rather than substituting again. Substitution
             # already failed for these values once — measured on the payments
@@ -314,8 +370,8 @@ class Curator(Agent):
                 done += more
                 lines = self.transcribe(out)
 
-        left = {f["text"] for f in plan
-                if len(f["text"]) >= 4 and f["text"] in "\n".join(lines)}
+        left = {f["text"] for f in plan if _still_reads(f["text"], lines)}
+        left |= {f["text"] for f in _unlocated(lines, plan)}
         if len(left) > max(1, len(plan) // 5):
             # DEGRADE, do not ship a half-substituted image. Measured on a dense
             # trade-finance capture — 36 findings, several near-identical account
