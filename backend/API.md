@@ -99,6 +99,37 @@ POST /interview  { "prompt": "a site for my SOC 2 compliance startup, we sell to
 rows, not as a disclosure. `constraints` are the user's own words, extracted verbatim and
 never paraphrased.
 
+## When a preview is present but broken
+
+Two things must agree for a preview to render, and they drift independently:
+`basePath` in `next.config.ts`, which Next uses for its own `_next/…` URLs, and
+the prefix on every `/assets/…` src in the section sources — because
+`next/image` with `unoptimized` does **not** prepend `basePath`.
+
+A deploy that serves at the root rewrites both. The result is a page whose
+stylesheets load and whose every image 404s, which looks like a broken build
+rather than a mismatched one.
+
+Every listing row carries `preview_bound`. `has_preview` says a build EXISTS;
+`preview_bound` says it was built for the path the preview serves it from.
+
+```
+has_preview  preview_bound   what the UI should do
+false        true            no build yet — show the stage, no iframe
+true         true            render the iframe
+true         false           offer "repair preview", not an iframe
+```
+
+```json
+POST /projects/{id}/rebind
+-> { "project_id": "…", "rebuilt": true, "config_rebound": true,
+     "sections_rebound": ["Hero.tsx", "FeatureGrid.tsx"], "preview_bound": true }
+```
+
+Idempotent — calling it on a bound project changes nothing and returns
+`rebuilt: false`, so the button is safe to leave enabled. It runs `pnpm build`,
+so allow up to a couple of minutes.
+
 ## Listing projects
 
 ```json

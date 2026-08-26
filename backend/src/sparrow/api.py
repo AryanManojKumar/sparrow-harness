@@ -24,6 +24,7 @@ that works in a browser without a socket.
 from __future__ import annotations
 
 import json
+import subprocess
 import re
 from pathlib import Path
 from typing import Any
@@ -351,6 +352,44 @@ def create_project(body: CreateProject) -> dict[str, Any]:
     return {"project_id": body.project_id, "stage": Stage.BRIEF.value}
 
 
+@app.post("/projects/{pid}/rebind", tags=["artifacts"],
+          summary="Re-bind a drifted export to the preview path and rebuild")
+def rebind(pid: str) -> dict[str, Any]:
+    """Repair a preview whose export was built for a different path.
+
+    Two things must agree: `basePath` in next.config.ts, which Next uses for its
+    own `_next/…` URLs, and the prefix on every `/assets/…` src in the section
+    sources, because `next/image` with `unoptimized` does not prepend basePath.
+
+    They drift independently and silently. A Cloudflare deploy rewrote both back
+    to root-relative twice, and each time the preview returned a page whose
+    stylesheets loaded and whose every image 404'd — which looks like a broken
+    build rather than a mismatched one.
+    """
+    run = _run_for(pid)
+    if pid in _ADVANCING:
+        raise HTTPException(409, "this project is advancing — wait for a gate")
+
+    changed = steps.rebind_preview(run)
+    built = False
+    if changed["config"] or changed["sections"]:
+        try:
+            subprocess.run(["pnpm", "build"], cwd=run.workspace, check=True,
+                           capture_output=True, timeout=900)
+            built = True
+        except subprocess.CalledProcessError as e:
+            raise HTTPException(
+                500, f"re-bound, but the rebuild failed: "
+                     f"{(e.stderr or b'').decode()[-600:]}")
+        except subprocess.TimeoutExpired:
+            raise HTTPException(504, "re-bound, but the rebuild timed out")
+
+    return {"project_id": pid, "rebuilt": built,
+            "config_rebound": changed["config"],
+            "sections_rebound": changed["sections"],
+            "preview_bound": steps.preview_bound(run)}
+
+
 @app.get("/projects", tags=["projects"], summary="List projects")
 def list_projects() -> list[dict[str, Any]]:
     """One unreadable project must not take down the list.
@@ -373,6 +412,11 @@ def list_projects() -> list[dict[str, Any]]:
             "updated_at": f.stat().st_mtime,
             # What the UI needs to decide whether a card is clickable at all.
             "has_preview": (d / "workspace/out/index.html").is_file(),
+            # Present is not the same as usable: an export built for a different
+            # path serves a page whose images all 404. False here means the UI
+            # should offer POST /projects/{id}/rebind, not an iframe.
+            "preview_bound": steps.preview_bound(_run_for(d.name))
+            if (d / "workspace/out/index.html").is_file() else True,
         }
         try:
             bb = Blackboard.model_validate_json(f.read_text())

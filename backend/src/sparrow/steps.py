@@ -2001,6 +2001,64 @@ def step_verify(run: Run) -> Iterator[Event]:
     ))
 
 
+def preview_base(run: Run) -> str:
+    return f"/projects/{run.project_id}/preview"
+
+
+def preview_bound(run: Run) -> bool:
+    """Is the export on disk built for the path the preview serves it from?
+
+    Two things have to agree and they drift independently. `next.config.ts`
+    carries `basePath`, which Next uses for its own `_next/…` URLs. The section
+    sources carry the prefix on every `/assets/…` src, because `next/image` with
+    `unoptimized` does NOT prepend basePath and never has.
+
+    A Cloudflare deploy rewrote both — config and every section file — back to
+    root-relative, twice, and each time the preview came back as a page whose
+    stylesheets loaded and whose images all 404'd. Nothing detected it; it just
+    looked broken.
+    """
+    from sparrow.capture import base_path
+
+    out = run.workspace / "out"
+    if not (out / "index.html").is_file():
+        return True                      # nothing built yet is not "unbound"
+    return base_path(out) == preview_base(run)
+
+
+def rebind_preview(run: Run) -> dict:
+    """Put the preview binding back on the config and every asset src.
+
+    Returns what changed. Does NOT rebuild — the caller decides, because a
+    rebuild is slow and a caller that only wanted to know can ask `preview_bound`.
+    """
+    from sparrow.agents.builder import prefix_assets
+
+    base = preview_base(run)
+    changed: dict = {"config": False, "sections": []}
+
+    cfg = run.workspace / "next.config.ts"
+    if cfg.is_file() and "basePath" not in cfg.read_text():
+        cfg.write_text(cfg.read_text().replace(
+            "  trailingSlash: true,",
+            f'  trailingSlash: true,\n\n'
+            f'  // Bound to the preview path so Next generates correct URLs in the\n'
+            f'  // HTML, the RSC payload and at runtime. Without it hydration fails\n'
+            f'  // silently and nothing animates.\n'
+            f'  basePath: "{base}",\n'
+            f'  assetPrefix: "{base}",'))
+        changed["config"] = True
+
+    secs = run.workspace / "src/components/sections"
+    for f in sorted(secs.glob("*.tsx")) if secs.is_dir() else []:
+        before = f.read_text()
+        after = prefix_assets(before, base)
+        if after != before:
+            f.write_text(after)
+            changed["sections"].append(f.name)
+    return changed
+
+
 def make_workspace(run: Run, scaffold: Path) -> None:
     """Copy the scaffold and bind it to the path the preview serves from.
 
