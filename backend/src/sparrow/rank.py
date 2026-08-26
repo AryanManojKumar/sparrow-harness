@@ -68,6 +68,12 @@ class Candidate:
     headings: list[str]
     text: str
     unrendered: bool = False
+    # The two things that actually say what this section LOOKS like. Everything
+    # above is a count, and counts are why every page this harness built came
+    # out the same shape: a hero reduced to "3 img · 4 btn" carries nothing a
+    # model could use to reproduce a hero.
+    shot: object = None          # Path to the band's screenshot
+    html: str = ""               # the band's own markup
 
     def line(self) -> str:
         return (

@@ -207,7 +207,9 @@ class DesignDirector(Agent):
     max_tokens = 12000
 
     def direct(
-        self, bb: Blackboard, *, sources: str = "", avoid: list[DesignSystem] | None = None
+        self, bb: Blackboard, *, sources: str = "",
+        avoid: list[DesignSystem] | None = None,
+        shots: list[str] | None = None,
     ) -> tuple[DesignSystem, str, object]:
         """Propose a direction. `avoid` forces a genuinely different one.
 
@@ -226,9 +228,26 @@ class DesignDirector(Agent):
         if sources.strip():
             parts.append(
                 "<sources>\nStructure and section inventory extracted from the reference "
-                "sites. Use these for what this category's pages CONTAIN. Do not adopt "
-                "their look — the visual direction is yours to decide.\n"
+                "sites.\n"
                 f"{sources.strip()}\n</sources>"
+            )
+        if shots:
+            # The screenshots of the WINNING source. Until these were passed,
+            # nothing in this pipeline had ever seen a source site: this agent
+            # decided a visual direction from a word count and an image count,
+            # which is why four different briefs produced four pages with the
+            # same container and the same section rhythm in different colours.
+            parts.append(
+                "<winning_source>\nThe screenshots below are the source that WON for "
+                "this brief — the page whose structure and pacing this site is being "
+                "built from. Look at them.\n\n"
+                "Design with them in mind. What makes that page work — how it uses "
+                "width, where it puts weight, how dense or sparse it is, how one "
+                "section differs from the next — is the evidence you are deciding "
+                "from. You are not required to depart from it, and a direction that "
+                "ignores it is a direction built from nothing.\n\n"
+                "Where you do depart, say so in `revised` and say why this subject "
+                "needs something the winner does not do.\n</winning_source>"
             )
         if avoid:
             rejected = "\n\n".join(
@@ -252,7 +271,7 @@ class DesignDirector(Agent):
                 "than the same idea restyled.\n</already_rejected>"
             )
 
-        res = self.call(system=SYSTEM, user="\n\n".join(parts))
+        res = self.call(system=SYSTEM, user="\n\n".join(parts), images=shots)
 
         m = _JSON.search(res.text)
         if not m:

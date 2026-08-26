@@ -16,7 +16,7 @@ import re
 from pathlib import Path
 
 from sparrow.agents.base import FIDELITY_LINE, Agent, context_block, stable_system
-from sparrow.blackboard.schema import Blackboard, Blueprint, Ground, Section
+from sparrow.blackboard.schema import AssetKind, Blackboard, Blueprint, Ground, Section
 from sparrow.providers import Completion, Tier
 
 SYSTEM = """You are the builder for a website harness. You build ONE section per call.
@@ -177,7 +177,32 @@ class Builder(Agent):
                     lines.append(f"{slot}: {value}")
             copy_block = "<section_copy>\n" + "\n".join(lines) + "\n</section_copy>"
 
+        # The winning source's OWN version of this section. Nothing in this
+        # pipeline had ever shown a source to the builder: it built from a
+        # blueprint's prose, which is a description of a layout rather than the
+        # layout. A section screenshot is ~1,700 tokens, and the markup is the
+        # only record of how the parts are arranged — the counts that used to
+        # stand in for both ("3 img · 4 btn") are why every page came out the
+        # same shape in different colours.
+        winner = ""
+        if source_shot or source_html:
+            winner = (
+                "<winning_source_section>\n"
+                "This is the source that WON for this section — the page this "
+                "site's structure is being taken from. "
+                + ("A screenshot of it is attached. Look at it. "
+                   if source_shot else "")
+                + "Build with it in mind: how it divides the width, where the "
+                "weight sits, how dense it is, what carries the eye through it.\n\n"
+                "Take its ARRANGEMENT. Do not take its colours, its typefaces, "
+                "its copy or its brand — those come from the design system and "
+                "the copy you were given, and they are not yours to change.\n"
+                + (f"\nIts markup:\n{source_html}\n" if source_html else "")
+                + "</winning_source_section>"
+            )
+
         user = "\n\n".join(x for x in [
+            winner,
             # BEFORE the blueprint, deliberately. This is the one part of a
             # chrome section that is not the blueprint's to decide: the source
             # site's nav was measured, its structure was written down, and its
@@ -219,15 +244,27 @@ class Builder(Agent):
              "not 'tidy' it to /assets/… — a preview is served under a base path and "
              "`next/image` with `unoptimized` does not prepend it for you, so a "
              "shortened src is a 404 and a blank space where the image was.\n\n"
+             + "A [video] asset is a MOVING asset and must be rendered as a "
+             "<video>, never as next/image:\n"
+             "  <video src=… autoPlay muted loop playsInline "
+             "className=…>  — no controls, no poster, no download attribute.\n"
+             "  autoPlay without muted does not play; muted without playsInline "
+             "goes fullscreen on iOS. All three, always.\n"
+             "  Frame it the way the design system frames product imagery, and "
+             "respect its aspect ratio — a 480x832 asset is a phone, not a "
+             "banner, and stretching it to a wide slot is worse than not using "
+             "it.\n\n"
              + "\n".join(
-                 f"- {base}/{a.path}  ({a.width}x{a.height})  [{a.prominence.value}]\n"
+                 f"- {base}/{a.path}  ({a.width}x{a.height})  [{a.prominence.value}]"
+                 f"{'  [VIDEO]' if a.kind is AssetKind.VIDEO else ''}\n"
                  f"    {a.brief}" for a in assets)
              + "\n</assets>") if assets else
             ("<assets>\nNo imagery for this section. Compose from type and layout; do not "
              "fabricate a product screenshot in markup.\n</assets>"),
         ] if x)
 
-        res = self.call(system=system, user=user)
+        res = self.call(system=system, user=user,
+                        images=[source_shot] if source_shot else None)
 
         m = _CODE.search(res.text)
         if not m:

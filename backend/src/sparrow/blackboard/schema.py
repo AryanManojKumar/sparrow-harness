@@ -233,6 +233,13 @@ class AssetKind(StrEnum):
 
     IMAGE — content imagery. May be generated from a brief, or restyled from an
             upload, because what it shows is a picture of a thing.
+    VIDEO — a moving product asset. The sources for this category use video on
+            3 of 3 pages and the harness could not represent one at all: the
+            scout measured it, the design agent asked for it in prose, and then
+            `Blueprint.assets` is defined as "one sentence per image" and the
+            curator emits PNG. A video is user-supplied only — nothing here
+            generates one — and it is never scrubbed or restyled, because both
+            of those are raster passes over a single frame.
     LOGO  — the client's mark. It is a trademark, so it is RECOLOURED, NEVER
             REDRAWN: it never reaches `Curator.restyle` or `Curator.generate`.
             An image model asked to restyle a logo redraws the letterforms, and
@@ -245,6 +252,7 @@ class AssetKind(StrEnum):
     """
 
     IMAGE = "image"
+    VIDEO = "video"
     LOGO = "logo"
 
 

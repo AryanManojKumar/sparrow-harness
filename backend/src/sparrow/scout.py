@@ -166,6 +166,11 @@ class Band:
     unrendered: bool
     text: str
     shot: Path | None = None
+    # The band's own markup. Counts say a hero has 3 images and 4 buttons; the
+    # markup says how they are arranged, which is the part that makes a hero
+    # look like that hero. Capped because a source section can be enormous and
+    # the tail of it is boilerplate.
+    html: str = ""
 
 
 # Aggregate visual register — COUNTED, never copied.
@@ -537,25 +542,30 @@ def extract(
                                f"segmentation failed: {type(e).__name__}: {str(e)[:120]}")
 
         bands = [Band(**b) for b in raw]
-        if shots:
-            host = url.split("//")[-1].split("/")[0].replace(".", "_")
-            for b in bands:
-                if _time.monotonic() >= deadline:
-                    break                       # keep the bands, drop the shots
-                try:
-                    el = page.evaluate_handle(
-                        "([t, h]) => [...document.querySelectorAll('body *')]"
-                        ".find(e => { const r = e.getBoundingClientRect();"
-                        " return Math.round(r.top + window.scrollY) === t"
-                        " && Math.round(r.height) === h; })",
-                        [b.top, b.height],
-                    ).as_element()
-                    if el:
-                        p = out_dir / f"{host}-b{b.index:02d}.png"
-                        el.screenshot(path=str(p), timeout=8000)
-                        b.shot = p
-                except Exception:
-                    pass
+        host = url.split("//")[-1].split("/")[0].replace(".", "_")
+        for b in bands:
+            if _time.monotonic() >= deadline:
+                break                       # keep the bands, drop the extras
+            try:
+                el = page.evaluate_handle(
+                    "([t, h]) => [...document.querySelectorAll('body *')]"
+                    ".find(e => { const r = e.getBoundingClientRect();"
+                    " return Math.round(r.top + window.scrollY) === t"
+                    " && Math.round(r.height) === h; })",
+                    [b.top, b.height],
+                ).as_element()
+                if not el:
+                    continue
+                # Markup always. It is one evaluate on a handle already in hand,
+                # and it is the only record of how the section is ARRANGED —
+                # everything else about a band is a count.
+                b.html = (el.evaluate("e => e.outerHTML") or "")[:14000]
+                if shots:
+                    dest = out_dir / f"{host}-b{b.index:02d}.png"
+                    el.screenshot(path=str(dest), timeout=8000)
+                    b.shot = dest
+            except Exception:
+                pass
 
         browser.close()
         return SiteExtract(url, title, True, page_height=page_h,

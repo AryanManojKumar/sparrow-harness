@@ -302,7 +302,11 @@ def step_sources(run: Run, urls: list[str]) -> Iterator[Event]:
 
     for url in urls:
         site = url.split("//")[-1].split("/")[0]
-        r = extract(url, out_dir, shots=False)
+        # shots=True. This defaulted to True and the sources stage turned it
+        # off, so no agent in the pipeline had ever seen a source site — the
+        # design agent designed from a word count and the builder built from
+        # prose. A section screenshot is ~1,700 tokens against a $3.50 run.
+        r = extract(url, out_dir, shots=True)
         if not r.ok or len(r.bands) < 4:
             yield Event(Stage.SOURCES, "blocked",
                         f"{site}: unreadable or too thin — skipped")
@@ -319,7 +323,8 @@ def step_sources(run: Run, urls: list[str]) -> Iterator[Event]:
         labelled[site] = [(t, b.index + 1) for t, b in zip(types, r.bands)]
         for t, b in zip(types, r.bands):
             cand = Candidate(site, t, b.index + 1, b.height, b.words, b.images,
-                             b.buttons, b.listItems, b.headings, b.text, b.unrendered)
+                             b.buttons, b.listItems, b.headings, b.text, b.unrendered,
+                             shot=b.shot, html=b.html)
             by_type_all.setdefault(t, []).append(cand)
             if t in RANKABLE:
                 by_type.setdefault(t, []).append(cand)
@@ -351,6 +356,27 @@ def step_sources(run: Run, urls: list[str]) -> Iterator[Event]:
 
     (out_dir / "design-brief.md").write_text(
         to_design_brief(comm, primary, why, rankings, registers))
+
+    # The winner's own screenshot and markup, per section type, kept for the
+    # stages that run later. `sources` and `build` are separate stages in
+    # separate processes, so evidence that is not written down here is evidence
+    # the builder cannot have — which is exactly how it ended up building from
+    # prose about a layout instead of the layout.
+    winners: dict[str, dict] = {}
+    for t, r in rankings.items():
+        won = next((c for c in by_type.get(t, []) if c.site == r.get("winner")), None)
+        if won is None:
+            continue
+        winners[t] = {"site": won.site,
+                      "shot": str(won.shot) if won.shot else None,
+                      "html": won.html}
+    for name in CHROME_ORDER:
+        cands = by_type_all.get(name, [])
+        if cands:
+            winners[name] = {"site": cands[0].site,
+                             "shot": str(cands[0].shot) if cands[0].shot else None,
+                             "html": cands[0].html}
+    (run.dir / WINNERS).write_text(json.dumps(winners, indent=2))
 
     bp_dir = run.dir / "blueprints"
     bp_dir.mkdir(parents=True, exist_ok=True)
@@ -456,7 +482,8 @@ def step_design(run: Run, alternatives: int = 3) -> Iterator[Event]:
     dd = DesignDirector()
     proposals, seen = [], []
     for i in range(alternatives):
-        ds, revised, u = dd.direct(bb, sources=sources, avoid=seen or None)
+        ds, revised, u = dd.direct(bb, sources=sources, avoid=seen or None,
+                                   shots=_winner_shots(run))
         seen.append(ds)
         proposals.append({"index": i, "signature": ds.signature,
                           "atmosphere": ds.atmosphere,
@@ -664,6 +691,7 @@ def record_content_answers(run: Run, answers: dict[str, str]) -> int:
     never learn it was dropped.
     """
     content = load_content(run)
+    winners = load_winners(run)
     known = {a["id"] for e in content.values() for a in (e.get("asks") or [])}
     unknown = sorted(set(answers) - known)
     if unknown:
@@ -782,6 +810,10 @@ def decisions_for(entry: dict) -> tuple[str, ...]:
     return LOGO_DECISIONS if _kind(entry) == "logo" else IMAGE_DECISIONS
 
 
+VIDEO_SUFFIXES = {".mp4", ".webm", ".mov"}
+WINNERS = "winners.json"
+
+
 def load_plan(run: Run) -> list[dict]:
     p = run.dir / ASSET_PLAN
     return json.loads(p.read_text()) if p.exists() else []
@@ -809,7 +841,45 @@ def merged_plan(run: Run) -> list[dict]:
         if prior:
             a["upload"] = prior.get("upload")
             a["decision"] = prior.get("decision")
+            # `kind` is carried too, but only where the UPLOAD decided it. A
+            # blueprint slot is enumerated as an image; posting an .mp4 to it is
+            # what makes it a video, and re-enumeration was throwing that away —
+            # the file stayed on disk as product-showcase-1.mp4 while the plan
+            # went back to saying "image", so the curator generated a PNG over
+            # the top of it and the page never saw the video.
+            if prior.get("kind") == "video":
+                a["kind"] = "video"
     return plan
+
+
+def load_winners(run: Run) -> dict:
+    f = run.dir / WINNERS
+    return json.loads(f.read_text()) if f.exists() else {}
+
+
+def _b64(path: str | None) -> str | None:
+    p = Path(path) if path else None
+    if p is None or not p.is_file():
+        return None
+    import base64
+    return base64.b64encode(p.read_bytes()).decode()
+
+
+def _winner_shots(run: Run, limit: int = 4) -> list[str]:
+    """The winning source's sections, as images, biggest first.
+
+    Capped: the design agent needs to SEE the page it is designing from, not
+    every band of it. Four sections at ~1,700 tokens each is the shape of the
+    thing without paying for the whole site.
+    """
+    out: list[str] = []
+    for _t, w in load_winners(run).items():
+        b = _b64(w.get("shot"))
+        if b:
+            out.append(b)
+        if len(out) >= limit:
+            break
+    return out
 
 
 def step_asset_gate(run: Run) -> Iterator[Event]:
@@ -1006,6 +1076,17 @@ def record_upload(run: Run, asset_id: str, filename: str, data: bytes) -> dict:
     suffix = Path(filename).suffix.lower() or ".png"
 
     from sparrow.specimen import is_svg
+
+    if suffix in VIDEO_SUFFIXES:
+        # A video is passed through untouched. Every other upload path here is
+        # raster work over one frame — the scrub's vision pass, the restyle,
+        # `derive_variants` — and none of it means anything for a moving asset.
+        name = f"{asset_id}{suffix}"
+        (up / name).write_bytes(data)
+        entry["upload"] = name
+        entry["kind"] = "video"
+        save_plan(run, plan)
+        return entry
 
     if is_svg(data):
         if _kind(entry) != "logo":
@@ -1226,6 +1307,21 @@ def step_assets(run: Run) -> Iterator[Event]:
             yield Event(Stage.ASSETS, "progress",
                         f"{aid}: your logo, used as it is — never sent to the "
                         f"image model, never redrawn")
+            continue
+
+        if _kind(a) == "video":
+            src = run.dir / "uploads" / a["upload"]
+            dest = public / f"{aid}{src.suffix}"
+            dest.write_bytes(src.read_bytes())
+            made.append(Asset(
+                id=aid, section_id=a["section_id"], kind=AssetKind.VIDEO,
+                brief=a["brief"], prominence=Prominence(a["prominence"]),
+                provenance=Provenance.USER_SUPPLIED,
+                path=f"assets/{dest.name}",
+            ))
+            yield Event(Stage.ASSETS, "progress",
+                        f"{aid}: your video, used as it is — nothing here "
+                        f"generates, scrubs or restyles a moving asset")
             continue
 
         path = public / f"{aid}.png"
