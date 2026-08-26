@@ -311,8 +311,10 @@ The scrub runs **before the restyle**, not after. `restyle` posts the file to a
 third-party image model and what comes back is published at the preview URL; after either,
 the data has already left.
 
-It reads its own output back and retries once, and **where too much still reads through it
-stops substituting and masks every located value instead**. Measured on a dense
+It reads its own output back and retries once, **masking** whatever still reads rather
+than substituting it a second time — the second pass places against the same approximate
+box and makes the same mistake, and one masked name beats a published one. Where too much
+still reads even so, it **stops substituting and masks every located value instead**. Measured on a dense
 trade-finance capture — 36 findings, several near-identical account numbers stacked in one
 narrow column — placements crossed rows: an IBAN was drawn over an organisation's name
 while the original IBAN stayed put, leaving the image both damaged and leaky. The masked

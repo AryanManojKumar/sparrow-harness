@@ -312,23 +312,24 @@ def test_a_value_that_survived_the_first_pass_is_looked_for_again():
 
     assert cur.located == 2, "a survivor must be looked for a second time"
     assert "Sarah Reed" not in "\n".join(out.lines)
+    assert out.image != as_png(im)
 
 
 @needs_fonts
-def test_the_retry_reuses_the_first_pass_replacement():
-    """Otherwise the second pass invents a different name for the same person,
-    and an image where one row says Maya Stone and another says someone else is
-    not a picture of anybody's product."""
+def test_the_retry_masks_rather_than_substituting_again():
+    """Measured on the payments capture: `Sarah Reed` survived a SECOND
+    substitution pass too, because the second pass places against the same
+    approximate box and makes the same mistake. A mosaic over the box the model
+    just named cannot miss, and one masked name beats a published one."""
     im = shot([(10, 40, "Sarah Reed", 15)])
     cur = FakeCurator(
         locates=[[finding("Sarah Reed", box=(500, 500, 540, 540))],
-                 [finding("Sarah Reed", box=box_of(im, 10, 40, 82, 55),
-                          replacement="Someone Else")]],
-        reads=[["Sarah Reed"], ["?"], ["?"]])
-    cur.scrub(as_png(im))
-    # The second locate's own suggestion is discarded; nothing in the image is
-    # allowed to disagree with what pass one decided.
+                 [finding("Sarah Reed", box=box_of(im, 10, 40, 82, 55))]],
+        reads=[["Sarah Reed"], ["Maya Stone"], ["Maya Stone"]])
+    out = cur.scrub(as_png(im))
+
     assert cur.located == 2
+    assert any("masked" in c for c in out.changed)
 
 
 @needs_fonts

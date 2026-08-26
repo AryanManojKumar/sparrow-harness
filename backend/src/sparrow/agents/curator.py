@@ -300,11 +300,15 @@ class Curator(Agent):
         survived = [f for f in plan
                     if len(f["text"]) >= 4 and f["text"] in blob]
         if survived:
-            retry = []
-            for f in self._locate(out):
-                match = _same_value(f["text"], survived)
-                if match is not None:
-                    retry.append(dict(f, replacement=match["replacement"]))
+            # The retry MASKS rather than substituting again. Substitution
+            # already failed for these values once — measured on the payments
+            # capture, `Sarah Reed` survived a second substitution pass too,
+            # because the second pass places against the same approximate box
+            # and makes the same mistake. A mosaic over the box the model just
+            # named cannot miss, and one masked name beats a published one.
+            retry = [dict(f, replacement="")
+                     for f in self._locate(out)
+                     if _same_value(f["text"], survived) is not None]
             if retry:
                 out, more = redact.paint(out, retry)
                 done += more
