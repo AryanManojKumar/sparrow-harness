@@ -560,7 +560,10 @@ def asset_plan(pid: str) -> list[dict[str, Any]]:
     what was chosen without keeping its own copy.
     """
     run = _run_for(pid)
-    plan = steps.load_plan(run)
+    # Merged, not loaded: a project finished before a slot existed would
+    # otherwise never show it. The voice-ai site was built before the logo slot
+    # and its saved plan has no nav-logo in it.
+    plan = steps.merged_plan(run) if (run.dir / "blueprints").is_dir() else []
     if not plan:
         raise HTTPException(404, "no asset plan yet — the run has not reached "
                                  "the asset gate")

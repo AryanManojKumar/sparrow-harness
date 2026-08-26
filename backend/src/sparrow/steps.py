@@ -787,6 +787,27 @@ def save_plan(run: Run, plan: list[dict]) -> None:
     (run.dir / ASSET_PLAN).write_text(json.dumps(plan, indent=2))
 
 
+def merged_plan(run: Run) -> list[dict]:
+    """The plan re-enumerated, with everything already answered carried across.
+
+    Two reasons this is not just `asset_plan`. A file posted before the gate was
+    answered must survive a re-enumeration, or an upload is silently lost to a
+    retry. And a project built before a slot existed must be able to pick it up:
+    the voice-ai site was finished before the logo slot was added, so its saved
+    plan has no `nav-logo` and re-reading the file would never grow one. A slot
+    the blueprints ask for and the plan has never heard of is exactly the case
+    this has to handle.
+    """
+    existing = {a["id"]: a for a in load_plan(run)}
+    plan = asset_plan(run)
+    for a in plan:
+        prior = existing.get(a["id"])
+        if prior:
+            a["upload"] = prior.get("upload")
+            a["decision"] = prior.get("decision")
+    return plan
+
+
 def step_asset_gate(run: Run) -> Iterator[Event]:
     """Ask, per image, whose it is.
 
@@ -807,13 +828,7 @@ def step_asset_gate(run: Run) -> Iterator[Event]:
     not.
     """
     existing = load_plan(run)
-    plan = asset_plan(run)
-
-    # A file posted before the gate was answered must survive the plan being
-    # re-enumerated, or an upload is silently lost to a retry.
-    uploads = {a["id"]: a.get("upload") for a in existing}
-    for a in plan:
-        a["upload"] = uploads.get(a["id"])
+    plan = merged_plan(run)
 
     facts = content_asks(run)
 
@@ -973,7 +988,11 @@ def record_upload(run: Run, asset_id: str, filename: str, data: bytes) -> dict:
     work, and an SVG would fail at whichever of them ran first, several minutes
     and one gate later than here.
     """
-    plan = load_plan(run)
+    # Merged, so a slot the blueprints ask for can be uploaded to even on a
+    # project whose saved plan predates it. Loading the file instead rejected
+    # the logo on every site built before the logo slot existed — which is all
+    # of them.
+    plan = merged_plan(run)
     entry = next((a for a in plan if a["id"] == asset_id), None)
     if entry is None:
         raise ValueError(f"no such asset {asset_id!r} in this run's plan")
@@ -1107,7 +1126,14 @@ def step_assets(run: Run) -> Iterator[Event]:
     from PIL import Image
 
     bb = _bb(run)
-    plan = load_plan(run)
+    plan = merged_plan(run)
+    # A slot with a file and no answer is an upload. The gate is still the place
+    # the choice is made, but a project past that gate has no way to answer one
+    # — and refusing to execute a file the user went and found, because a field
+    # beside it says null, is the wrong reading of what they did.
+    for a in plan:
+        if a.get("upload") and not a.get("decision"):
+            a["decision"] = "upload"
     if not plan:
         # No gate ran: a project created before the asset gate existed, or a
         # blueprint set that asks for no imagery. Generating is what this stage
