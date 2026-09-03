@@ -127,11 +127,38 @@ _SEGMENT = r"""
       if (raw) { text = raw; hidden = true; }
     }
     if (!text && !el.querySelector('img, svg, video')) return;
+    // How wide the band's CONTENT actually sits, as a fraction of the viewport.
+    // The band itself is nearly always full width; what varies — and what a
+    // reader sees — is how far the things inside it span. Measured on
+    // elevenlabs.io/creative: 0.36 for a logo strip, 0.75 for the common
+    // column, 0.94 for a product band. Every page this harness builds is
+    // max-w-6xl, a flat 0.80 for every section, which is why they read as
+    // clustered in the middle: near the average of a real page and never near
+    // its extremes. Clamped to the viewport because a horizontal carousel runs
+    // far past the right edge and its true width is what can be seen.
+    // `counted`, not `seen`: an earlier version called this `seen` and shadowed
+    // the outer `const seen = new Set()` used for de-duplication a few lines
+    // up. `let` hoists into a temporal dead zone across the whole block, so
+    // `seen.has(key)` ABOVE this line began throwing, the evaluate failed, and
+    // segmentation returned zero bands for every site.
+    let lo = Infinity, hi = -Infinity, counted = 0;
+    for (const c of el.querySelectorAll('h1,h2,h3,p,img,video,li,button,svg')) {
+      const cr = c.getBoundingClientRect();
+      if (cr.width < 24 || cr.height < 12) continue;
+      const left = Math.max(cr.left, 0), right = Math.min(cr.right, window.innerWidth);
+      if (right <= left) continue;
+      lo = Math.min(lo, left); hi = Math.max(hi, right); counted++;
+    }
+    const span = counted ? Math.round(hi - lo) : 0;
+
     out.push({
       index: out.length,
       strategy,
       tag: el.tagName.toLowerCase(),
       semantic: ['SECTION','HEADER','FOOTER','ARTICLE','ASIDE'].includes(el.tagName),
+      contentWidth: span,
+      contentShare: counted ? +(span / window.innerWidth).toFixed(2) : 0,
+      inset: counted ? Math.round(Math.min(lo, window.innerWidth - hi)) : 0,
       top, height: h,
       headings: [...el.querySelectorAll('h1,h2,h3')]
         .map(x => (x.innerText || '').trim()).filter(Boolean).slice(0, 3),
@@ -155,6 +182,13 @@ class Band:
     strategy: str
     tag: str
     semantic: bool
+    # Measured, not chosen from a vocabulary. An earlier version of this had the
+    # composition pass pick from contained/wide/full-bleed — three words I
+    # invented, which cannot express the 0.36, 0.47, 0.57 and 0.64 a real page
+    # actually uses.
+    contentWidth: int
+    contentShare: float
+    inset: int
     top: int
     height: int
     headings: list[str]
@@ -235,6 +269,24 @@ _REGISTER = r"""
     dark: body < 0.45 || dark/total > 0.5,
     darkShare: +(dark/total).toFixed(2),
     video: document.querySelectorAll('video').length,
+    // WHAT the video is, not just how many. A count cannot tell ambient
+    // background footage from a demo you press play on, and those want opposite
+    // treatments — one is texture behind a section, the other is the section.
+    // muted+loop+autoplay together is the signature of decoration; controls is
+    // the signature of content.
+    videos: [...document.querySelectorAll('video')].slice(0, 6).map(v => {
+      const r = v.getBoundingClientRect();
+      return {
+        w: Math.round(r.width), h: Math.round(r.height),
+        bleed: r.width >= window.innerWidth * 0.92,
+        muted: v.muted || v.hasAttribute('muted'),
+        loop: v.loop || v.hasAttribute('loop'),
+        autoplay: v.autoplay || v.hasAttribute('autoplay'),
+        controls: v.controls || v.hasAttribute('controls'),
+        poster: v.getAttribute('poster') || '',
+        secs: Number.isFinite(v.duration) ? Math.round(v.duration) : 0,
+      };
+    }),
     canvas: document.querySelectorAll('canvas').length,
     codeBlocks: document.querySelectorAll('pre, code').length,
     productImages: [...document.querySelectorAll('img')]
@@ -434,6 +486,10 @@ class Register:
     canvas: int
     code_blocks: int
     product_images: int
+    # Per-video facts, up to six. `video: 3` says a category uses video; these
+    # say whether it is texture or content, which is the only version of that
+    # fact a design agent can act on.
+    videos: list[dict] = field(default_factory=list)
     motion: Motion | None = None
     palette: Palette | None = None
     components: Components | None = None
@@ -449,6 +505,44 @@ class SiteExtract:
     semantic_sections: int = 0
     register: Register | None = None
     bands: list[Band] = field(default_factory=list)
+
+
+_DISMISS = r"""
+() => {
+  // Consent dialogs, chat launchers and region banners arrive with the VISIT,
+  // not with the design, and they sit on top of the page in every screenshot
+  // this harness takes. The reader duly described elevenlabs' privacy panel as
+  // a page feature and explained how to build one; the design director and the
+  // builder have been looking at it all along without anyone noticing.
+  //
+  // Accept is clicked rather than the dialog hidden, where an accept exists: a
+  // hidden dialog often leaves the page scroll-locked behind it, and a page
+  // that cannot scroll segments into one enormous band.
+  const WORDS = /cookie|consent|privacy|gdpr|tracking/i;
+  const OK = /^(accept|allow|agree|got it|ok|i agree|accept all|allow all)\b/i;
+  let clicked = 0, hidden = 0;
+
+  for (const el of document.querySelectorAll('div,section,aside,dialog,[role="dialog"]')) {
+    const cs = getComputedStyle(el);
+    if (cs.position !== 'fixed' && cs.position !== 'sticky') continue;
+    const r = el.getBoundingClientRect();
+    if (r.width < 120 || r.height < 60) continue;
+    const txt = (el.innerText || '').slice(0, 400);
+    if (!WORDS.test(txt) && !WORDS.test(el.className || '') && !WORDS.test(el.id || '')) continue;
+    const btn = [...el.querySelectorAll('button,a[role="button"],[role="button"]')]
+      .find(b => OK.test((b.innerText || '').trim()));
+    if (btn) { btn.click(); clicked++; }
+    else { el.style.setProperty('display', 'none', 'important'); hidden++; }
+  }
+
+  // Whatever the dialog did to the scroll while it was up.
+  for (const n of [document.documentElement, document.body]) {
+    n.style.removeProperty('overflow');
+    n.style.removeProperty('position');
+  }
+  return {clicked, hidden};
+}
+"""
 
 
 _SETTLE = r"""
@@ -616,6 +710,13 @@ def extract(
             # they would be once the reader arrived, so the capture is of the
             # page as seen rather than the page as loaded.
             arrival = _probe_arrival(page)
+            # Before the settling scroll, so the page that gets scrolled,
+            # measured and photographed is the page without the overlay.
+            try:
+                page.evaluate(_DISMISS)
+                page.wait_for_timeout(400)
+            except Exception:
+                pass
             page.evaluate(_SCROLL)
             try:
                 settled = page.evaluate(_SETTLE)
@@ -646,7 +747,8 @@ def extract(
                                f"unreadable after load: {type(e).__name__}: {str(e)[:120]}")
         register = Register(
             dark=bool(reg["dark"]), dark_share=float(reg["darkShare"]),
-            video=int(reg["video"]), canvas=int(reg["canvas"]),
+            video=int(reg["video"]), videos=list(reg.get("videos") or []),
+            canvas=int(reg["canvas"]),
             code_blocks=int(reg["codeBlocks"]), product_images=int(reg["productImages"]),
             palette=Palette(
                 ground=str(pal["ground"]), surfaces=list(pal["surfaces"]),

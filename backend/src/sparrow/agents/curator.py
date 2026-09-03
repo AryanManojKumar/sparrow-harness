@@ -52,6 +52,28 @@ IMAGE_MODEL = eleven.IMAGE_MODEL
 _SIZES = eleven.SHAPES
 
 
+def _footage_clause(ds: DesignSystem) -> str:
+    """The design system, phrased for a camera rather than a stylesheet.
+
+    `_style_clause` carries "corners no rounder than rounded-lg", "hairline
+    borders over filled cards", "no gradients". Those are CSS, and a video model
+    given them is being told about border radius. Light, palette and register
+    are the parts of a design system that a lens can actually honour.
+    """
+    pick = {c.token: c for c in ds.colors}
+    ground = pick.get("background")
+    accent = pick.get("primary")
+    return (
+        "Match the register of this design system:\n"
+        + (f"- the world is lit like {ground.name} — {ground.value} is the ground "
+           f"this footage sits on, so key it to match\n" if ground else "")
+        + (f"- the one saturated note in frame is {accent.name} ({accent.value}); "
+           "everything else stays desaturated\n" if accent else "")
+        + f"- the mood is: {ds.atmosphere}\n"
+        + "- no on-screen graphics, no lower thirds, no logos, no product UI in focus"
+    )
+
+
 def _style_clause(ds: DesignSystem) -> str:
     """The design system, phrased for an image model rather than a builder."""
     pick = {c.token: c for c in ds.colors}
@@ -306,6 +328,37 @@ class Curator(Agent):
     max_tokens = 8000       # a dense dashboard scrubs to ~30 findings
 
     # --------------------------------------------------------------- generate
+
+    # The prompt is built separately from the call so it can be inspected, and
+    # tested, without spending eight seconds of Veo on finding out what it says.
+    def motion_prompt(self, brief: str, ds: DesignSystem) -> str:
+        """The prompt a moving asset would be generated from."""
+        return (
+            f"{brief}\n\n"
+            "Render this as live-action or rendered footage — a short silent loop "
+            "that sits behind or beside a section as texture. It is not a product "
+            "demonstration and nobody will press play on it.\n\n"
+            "NOTHING IN FRAME IS MEANT TO BE READ. No captions, no titles, no UI "
+            "copy the viewer is expected to parse. Any screen visible in shot is "
+            "out of focus or oblique. A video model renders a convincing "
+            "workstation whose on-screen code is gibberish; at a shallow depth of "
+            "field that reads as atmosphere, and head-on it reads as a mistake.\n\n"
+            "It must loop without a visible cut: begin and end on the same framing, "
+            "with no camera move that cannot return to where it started.\n\n"
+            f"{_footage_clause(ds)}\n\n"
+            "Slow and deliberate. No whip pans, no speed ramps, no lens flares, "
+            "nothing that pulls attention off the copy it sits behind."
+        )
+
+    def motion(self, brief: str, ds: DesignSystem) -> bytes:
+        """A silent ambient loop, as mp4 bytes.
+
+        Separate from `generate` because the two are not interchangeable and the
+        failure of confusing them is silent: ask the video model for a dashboard
+        and it returns beautiful footage of a dashboard nobody can read, which
+        looks like success until someone tries to read it.
+        """
+        return eleven.motion(self.motion_prompt(brief, ds))
 
     def generate(self, brief: str, ds: DesignSystem, *, shape: str = "wide",
                  product_name: str = "", logo: bytes | None = None) -> bytes:

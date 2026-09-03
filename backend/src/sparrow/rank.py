@@ -75,6 +75,12 @@ class Candidate:
     # model could use to reproduce a hero.
     shot: object = None          # Path to the band's screenshot
     html: str = ""               # the band's own markup
+    # How wide this section's content actually sits, as a fraction of the
+    # viewport. Measured, not chosen: ramp runs 0.42-1.00 and elevenlabs
+    # 0.36-0.94, and a harness that builds everything at max-w-6xl sits at a
+    # flat 0.80 — between the two, matching neither.
+    content_share: float = 0.0
+    inset: int = 0
 
     def line(self) -> str:
         return (
@@ -295,6 +301,38 @@ def register_report(registers: dict[str, object]) -> str:
                     else "  — the category is split" if dark else
                     "  — the category is light-grounded"))
     lines.append(f"  pages using video:     {video}/{n}")
+    # What the video IS. "2/3 use video" is a fact no design agent can act on:
+    # ambient footage behind a hero and a demo you press play on both count as
+    # one, and they want opposite treatments. muted+loop+autoplay is the
+    # signature of decoration; `controls` is the signature of content.
+    vids = [v for r in registers.values() for v in (getattr(r, "videos", None) or [])]
+    if vids:
+        amb = [v for v in vids if v.get("muted") and v.get("loop") and not v.get("controls")]
+        bleed = [v for v in vids if v.get("bleed")]
+        if amb:
+            lines.append(f"    {len(amb)} of {len(vids)} are muted looping autoplay — "
+                         "decoration, not content: no controls, nothing to press")
+        # Size and orientation, always — not only when something is full-bleed.
+        # Measured on elevenlabs.io/creative: three muted loops, all 370x444.
+        # "decoration, not content" alone would have a designer reach for footage
+        # behind a hero, when the source actually runs portrait clips in a row.
+        if bleed:
+            lines.append(f"    {len(bleed)} run full-bleed behind a section rather than "
+                         "sitting inside a card")
+        else:
+            w = sorted(v["w"] for v in vids)[len(vids) // 2]
+            h = sorted(v["h"] for v in vids)[len(vids) // 2]
+            shape = ("portrait" if h > w * 1.15 else
+                     "square-ish" if h > w * 0.85 else "landscape")
+            lines.append(f"    none are full-bleed — they sit inside the layout at "
+                         f"about {w}x{h} ({shape}), several to a row")
+        played = [v for v in vids if v.get("controls")]
+        if played:
+            lines.append(f"    {len(played)} have controls — those are something the "
+                         "reader chooses to watch")
+        secs = [v["secs"] for v in vids if v.get("secs")]
+        if secs:
+            lines.append(f"    typical length {sorted(secs)[len(secs) // 2]}s")
     lines.append(f"  pages using canvas:    {canvas}/{n}")
     lines.append(f"  pages showing code:    {code}/{n}")
     lines.append(f"  large product images:  {imgs:.0f} per page on average")

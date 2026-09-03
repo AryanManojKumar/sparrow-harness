@@ -310,8 +310,8 @@ class DesignDirector(Agent):
     tier = Tier.TOP          # this agent's ceiling is the product's ceiling
     max_tokens = 12000
 
-    def compose(self, bb: Blackboard, *, shots: list[str] | None = None
-                ) -> tuple[dict, str, object]:
+    def compose(self, bb: Blackboard, *, shots: list[str] | None = None,
+                observed: str = "") -> tuple[dict, str, object]:
         """Decide the shape of every section, in one call, seeing the whole page.
 
         Deliberately separate from `direct`. A direction is chosen by the user at
@@ -337,6 +337,8 @@ class DesignDirector(Agent):
                 f"TREATMENTS available to allocate, by name:\n{ts}\n"
                 "</design_system>"
             )
+        if observed:
+            parts.append(observed)
         if shots:
             parts.append(
                 "<source_page>\nThe first image is the whole source page tiled into "

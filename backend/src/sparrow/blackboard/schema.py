@@ -248,6 +248,12 @@ class Section(BaseModel):
     # covered palette, type and spacing; it did not cover shape, so ten builders
     # each decided shape alone and each picked the safe median.
     width: Width = Width.CONTAINED
+    # The measured fraction of the viewport this section's content should span,
+    # taken from the source section it was built from. `width` above is three
+    # words someone invented; this is what the page actually does. A real page
+    # uses eleven distinct shares — 0.36, 0.47, 0.57, 0.64 — and no vocabulary
+    # of three can carry that. Zero means unmeasured; fall back to `width`.
+    content_share: float = 0.0
     archetype: str = ""          # "split-with-panel", "band", "asymmetric-grid", …
     contrast: str = ""           # one line: how this differs from its neighbours
     # Which treatments this section may use, and whether it is the one that

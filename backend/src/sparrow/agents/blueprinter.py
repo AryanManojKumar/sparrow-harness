@@ -28,10 +28,24 @@ from sparrow.parse import first_object
 SYSTEM = """You write the structural spec for ONE section of a landing page, from
 measurements of how real sites in this category build that section.
 
-You are describing STRUCTURE, not looks. Say what elements exist, how many, in what
-hierarchy, at what density, and how they reflow on mobile. Never mention colour,
+You are describing CONTENT, not arrangement. Say what elements exist, how many, in
+what hierarchy, at what density, and how they reflow on mobile. Never mention colour,
 typeface, spacing values, shadows or radius — those are decided elsewhere, and a
 blueprint that names them removes the builder's judgement as well as the designer's.
+
+AND NEVER SAY WHERE THINGS SIT. Not "two-column", not "alongside", not "left" or
+"right", not "a content column beside a product visual". A later pass decides the
+shape of every section at once, having seen the whole page; you are writing before
+it runs and cannot know what the section above yours looks like. Measured: given
+kiro.dev's hero — a large left-weighted headline with install commands and a
+narrow news rail, no product image at all — this agent wrote "a two-part desktop
+composition: a primary content column alongside one prominent product visual", the
+composer said full-bleed/asymmetric-launch, and the builder followed the blueprint
+because four sentences of prose beat a two-word archetype. Every page the harness
+had built came out text-left, product-right.
+
+Say "a headline, one supporting line, a CTA pair, and one product visual". Let the
+composition pass say where they go.
 
 USE THE COMPONENT VOCABULARY THE SOURCES USE. The register counts what this category
 actually builds with — tabs, accordions, pill rows, code blocks, stat numbers, inline
@@ -71,6 +85,16 @@ exact values that an image can only approximate. Ask for an asset when the secti
 picture of something; describe the alternative in `structure` when it does not. The
 register says which of these the category actually uses.
 
+A [video] asset is a SILENT AMBIENT LOOP — texture behind or beside a section,
+never something a reader is meant to read. Anything with legible UI, real
+identifiers or numbers is an image: the video model renders a convincing
+workstation whose on-screen code is decorative gibberish, which is fine at a
+shallow depth of field and useless as evidence. Ask for one only where the
+register shows this category using muted looping video. A section may carry up to
+three if the source's own section does — a rail of portrait loops is a real
+pattern — but the page as a whole should not exceed three, because eight seconds
+of footage is the most expensive thing on it.
+
 ASSETS are imagery someone must produce. Describe each one well enough to act on:
 `product_image` is not a brief; "one 16:9 product capture showing the review packet with
 its checkpoint state" is. A section that needs no imagery gets an empty list, and that is
@@ -85,7 +109,9 @@ JSON only, no prose, no code fence:
 {
   "purpose": "one sentence — what this section is for in this specific page",
   "slots": ["copy slots, lower_snake_case; suffix [] for repeated ones"],
-  "assets": ["one sentence per image, describing what it must show"],
+  "assets": ["one sentence per asset. Prefix a MOVING asset with [video]:",
+             "  \"one 16:9 capture of the review panel filling with results\"",
+             "  \"[video] one 8s silent loop of the editor at night, shallow focus\""],
   "structure": "3-5 sentences. Layout, counts, hierarchy, mobile reflow, and what this
                 section must NOT contain so it does not duplicate its neighbours."
 }"""
@@ -115,6 +141,7 @@ class Blueprinter(Agent):
         vocabulary: dict | None = None,
         shot: str | None = None,
         imagery: str = "",
+        motion: str = "",
     ) -> tuple[Blueprint, object]:
         winner = ranking.get("winner")
         won = [c for c in candidates if c.site == winner] or candidates
@@ -152,6 +179,13 @@ class Blueprinter(Agent):
              f"for one by name where it does this section's job better than plain type "
              f"would.\n{counted}</counted_vocabulary>") if counted else "",
             (f"<imagery_density>\n{imagery}\n</imagery_density>") if imagery else "",
+            # The prompt tells this agent it may ask for [video] "where the
+            # register shows this category using muted looping video" — and for
+            # one commit it was never shown the register. An instruction that
+            # cites evidence the agent cannot see is an instruction it cannot
+            # follow; the same mistake put `3 img · 4 btn` in front of it while
+            # asking it to match a source's arrangement.
+            (f"<moving_imagery>\n{motion}\n</moving_imagery>") if motion else "",
             f"<adopt>\n{adopt}\n</adopt>",
             "<evidence>\n" + "\n".join(evidence) + "\n</evidence>",
             f"<neighbours>\nThis section sits in a page of: {', '.join(neighbours)}.\n"

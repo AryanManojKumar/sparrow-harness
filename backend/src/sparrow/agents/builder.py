@@ -35,6 +35,13 @@ tenth in a row — which is exactly what happened when this was left to each bui
 `<composition>` below says what your section is; build that, and put your judgement
 into what goes inside it.
 
+WHERE THE BLUEPRINT AND `<composition>` DISAGREE ABOUT SHAPE, COMPOSITION WINS.
+The blueprint is written per section, before the page is laid out, and it is
+longer and more specific — which is exactly why it used to win by default and why
+every page came out the same shape. If the blueprint implies an arrangement and
+the composition names a different one, the composition is the one that saw the
+whole page.
+
 ## Ways a section can be built
 
 Examples, not the set. Which one a section uses is decided by its blueprint and by what
@@ -178,6 +185,7 @@ class Builder(Agent):
         source_html: str = "",
         page_shot: str | None = None,
         composition: str = "",
+        observed: str = "",
     ) -> BuildOutput:
         # Stated as an instruction, not as context. Written as "this section sits
         # on X" it was read as background information and ignored by 4 of 5
@@ -257,6 +265,7 @@ class Builder(Agent):
             # "use this exact name" line in the brief, every one of eight
             # measured builds put a lucide icon where the wordmark goes and
             # labelled it `aria-label="Platform home"`.
+            observed,
             composition,
             identity,
             copy_block,

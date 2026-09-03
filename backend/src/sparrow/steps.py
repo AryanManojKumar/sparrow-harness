@@ -325,7 +325,9 @@ def step_sources(run: Run, urls: list[str]) -> Iterator[Event]:
         for t, b in zip(types, r.bands):
             cand = Candidate(site, t, b.index + 1, b.height, b.words, b.images,
                              b.buttons, b.listItems, b.headings, b.text, b.unrendered,
-                             shot=b.shot, html=b.html)
+                             shot=b.shot, html=b.html,
+                             content_share=getattr(b, "contentShare", 0.0) or 0.0,
+                             inset=getattr(b, "inset", 0) or 0)
             by_type_all.setdefault(t, []).append(cand)
             if t in RANKABLE:
                 by_type.setdefault(t, []).append(cand)
@@ -355,14 +357,43 @@ def step_sources(run: Run, urls: list[str]) -> Iterator[Event]:
         if u is not None:
             run.spent += u.cost(provider.name, Tier.CHEAP)
 
-    (out_dir / "design-brief.md").write_text(
-        to_design_brief(comm, primary, why, rankings, registers))
+    _brief_md = to_design_brief(comm, primary, why, rankings, registers)
     # Written down because `build` is a separate stage in a separate process and
     # the per-section winners do not imply it: on fernbank they split brex 5 /
     # ramp 3 / mercury 1 while the primary — the page whose ORDER AND PACING the
     # site takes, per the design brief — was ramp. Anything reading pacing off
     # "whichever site won the most sections" reads it off the wrong page.
     (out_dir / "primary.txt").write_text(primary)
+
+    # One reading of the primary, by a model that can see it. Everything else
+    # this stage produces is a count, and counts are what every agent after the
+    # design director has ever had. Stored as an artifact rather than passed as
+    # a message (§3), so the composer, the blueprinter and the builder read the
+    # same reading rather than each re-deriving one from a single band.
+    from sparrow.agents.reader import Reader
+
+    reading: dict = {}
+    try:
+        rdr = Reader(provider)
+        obs, portrait, u = rdr.read(
+            bb, site=primary,
+            images=[x for x in (_page_sheet(run), *_winner_shots(run, 5)) if x],
+            counted=comm.report())
+        run.spent += u.cost(provider.name, rdr.tier)
+        reading = {"site": primary, "observations": obs, "portrait": portrait}
+        (run.dir / READING).write_text(json.dumps(reading, indent=2))
+        from sparrow.agents.reader import to_block
+        _brief_md = _brief_md + "\n\n" + to_block(reading)
+        yield Event(Stage.SOURCES, "progress",
+                    f"read {primary}: {len(obs)} observation(s)"
+                    + (f" · {portrait[:60]}" if portrait else ""))
+    except Exception as e:
+        # Never fatal. A source the reader cannot parse is a source the harness
+        # still has counts for, and a stage that dies here would take the
+        # blueprints and the sitemap with it.
+        yield Event(Stage.SOURCES, "blocked",
+                    f"could not read {primary} ({type(e).__name__}) — "
+                    "carrying on with the counted facts alone")
 
     # The winner's own screenshot and markup, per section type, kept for the
     # stages that run later. `sources` and `build` are separate stages in
@@ -376,14 +407,19 @@ def step_sources(run: Run, urls: list[str]) -> Iterator[Event]:
             continue
         winners[t] = {"site": won.site,
                       "shot": str(won.shot) if won.shot else None,
-                      "html": won.html}
+                      "html": won.html,
+                      "content_share": won.content_share, "inset": won.inset}
     for name in CHROME_ORDER:
         cands = by_type_all.get(name, [])
         if cands:
             winners[name] = {"site": cands[0].site,
                              "shot": str(cands[0].shot) if cands[0].shot else None,
-                             "html": cands[0].html}
+                             "html": cands[0].html,
+                             "content_share": cands[0].content_share,
+                             "inset": cands[0].inset}
     (run.dir / WINNERS).write_text(json.dumps(winners, indent=2))
+
+    (out_dir / "design-brief.md").write_text(_brief_md)
 
     bp_dir = run.dir / "blueprints"
     bp_dir.mkdir(parents=True, exist_ok=True)
@@ -402,6 +438,27 @@ def step_sources(run: Run, urls: list[str]) -> Iterator[Event]:
         f"roughly {sum(_imgs) / len(_imgs) / max(1, len(order)):.1f}."
     ) if _imgs else ""
 
+    # What the sources do with video, in the words the blueprinter needs to act
+    # on: whether it is decoration or content, and what shape it is.
+    _vids = [v for r in (registers or {}).values() for v in (getattr(r, "videos", None) or [])]
+    if _vids:
+        amb = [v for v in _vids if v.get("muted") and v.get("loop") and not v.get("controls")]
+        bleed = [v for v in _vids if v.get("bleed")]
+        w = sorted(v["w"] for v in _vids)[len(_vids) // 2]
+        h = sorted(v["h"] for v in _vids)[len(_vids) // 2]
+        motion_line = (
+            f"These sources carry {len(_vids)} video(s). "
+            + (f"{len(amb)} are muted looping autoplay — decoration with nothing to "
+               "press. " if amb else "")
+            + (f"{len(bleed)} run full-bleed behind a section. "
+               if bleed else f"None are full-bleed; they sit in the layout at about "
+               f"{w}x{h}. ")
+            + "Ask for a [video] only if this section is the one that would carry it, "
+              "and never for anything a reader must read."
+        )
+    else:
+        motion_line = ""
+
     # Chrome gets blueprints too, written from whatever the sources showed even
     # though it was never ranked.
     for name in CHROME_ORDER:
@@ -413,7 +470,7 @@ def step_sources(run: Run, urls: list[str]) -> Iterator[Event]:
                            [x for x in order if x in rankings],
                            vocabulary=vocabulary,
                            shot=_b64(winners.get(name, {}).get("shot")),
-                           imagery=imagery)
+                           imagery=imagery, motion=motion_line)
         comp = "".join(w.capitalize() for w in name.replace("-", " ").split())
         (bp_dir / f"{'00' if name == 'nav' else '99'}-{name}.md").write_text(
             to_markdown(bp, comp))
@@ -427,7 +484,7 @@ def step_sources(run: Run, urls: list[str]) -> Iterator[Event]:
                            [x for x in order if x != t],
                            vocabulary=vocabulary,
                            shot=_b64(winners.get(t, {}).get("shot")),
-                           imagery=imagery)
+                           imagery=imagery, motion=motion_line)
         comp = "".join(w.capitalize() for w in t.replace("-", " ").split())
         (bp_dir / f"{i + 1:02d}-{t}.md").write_text(to_markdown(bp, comp))
         run.spent += u.cost(provider.name, bper.tier)
@@ -661,7 +718,8 @@ def composition_block(bb, section) -> str:
         return ""
 
     def line(x) -> str:
-        return f"{x.id}: {x.width.value}, {x.ground.value} ground, {x.archetype}"
+        w = f"{x.content_share:.2f} of the viewport" if x.content_share else x.width.value
+        return f"{x.id}: {w}, {x.ground.value} ground, {x.archetype}"
 
     parts = [
         "<composition>",
@@ -704,9 +762,15 @@ def composition_block(bb, section) -> str:
         ]
     parts += [
         "",
-        "  contained — the standard max-width column, centred.",
-        "  wide — wider than the column, still inset from the viewport edge.",
-        "  full-bleed — edge to edge, no side gutter on the outer element.",
+        (f"  YOUR CONTENT SPANS {section.content_share:.2f} OF THE VIEWPORT — "
+         f"about {round(section.content_share * 1440)}px at 1440. That is measured "
+         "off the source section this one is built from, not chosen from a list. "
+         "Set a max-width that lands there and inset the rest; at 1.00 the content "
+         "runs edge to edge with no side gutter."
+         if section.content_share else
+         "  contained — the standard max-width column, centred.\n"
+         "  wide — wider than the column, still inset from the viewport edge.\n"
+         "  full-bleed — edge to edge, no side gutter on the outer element."),
         "  page ground — `bg-background`.  muted ground — `bg-muted`.",
         "</composition>",
     ]
@@ -738,9 +802,13 @@ def step_compose(run: Run) -> Iterator[Event]:
         yield Event(Stage.COMPOSE, "progress", "composition already decided — kept")
         return
 
+    from sparrow.agents.reader import to_block
+
+    winners_for_share = load_winners(run)
     dd = DesignDirector()
     plan, rhythm, usage = dd.compose(
-        bb, shots=[x for x in (_page_sheet(run), *_winner_shots(run)) if x])
+        bb, shots=[x for x in (_page_sheet(run), *_winner_shots(run)) if x],
+        observed=to_block(load_reading(run)))
     run.spent += usage.cost(dd.provider.name, dd.tier)
 
     prev_ground = None
@@ -768,6 +836,12 @@ def step_compose(run: Run) -> Iterator[Event]:
         known = {t.name for t in (bb.design_system.treatments or [])}
         section.treatments = [str(t) for t in (spec.get("treatments") or [])
                               if str(t) in known]
+        # The source's own number, not the composer's word. The composer still
+        # picks a width so a section with no matching source still has one, but
+        # where the section was built from a real band, that band's measurement
+        # wins — it is evidence and the word is a bucket.
+        section.content_share = float(
+            (winners_for_share.get(section.id) or {}).get("content_share") or 0.0)
         section.carries_signature = bool(spec.get("signature"))
         prev_ground = ground
         applied += 1
@@ -1006,6 +1080,7 @@ def decisions_for(entry: dict) -> tuple[str, ...]:
 
 VIDEO_SUFFIXES = {".mp4", ".webm", ".mov"}
 WINNERS = "winners.json"
+READING = "reading.json"
 
 
 def load_plan(run: Run) -> list[dict]:
@@ -1044,6 +1119,11 @@ def merged_plan(run: Run) -> list[dict]:
             if prior.get("kind") == "video":
                 a["kind"] = "video"
     return plan
+
+
+def load_reading(run: Run) -> dict:
+    f = run.dir / READING
+    return json.loads(f.read_text()) if f.exists() else {}
 
 
 def load_winners(run: Run) -> dict:
@@ -1641,6 +1721,24 @@ def step_assets(run: Run) -> Iterator[Event]:
                 yield Event(Stage.ASSETS, "blocked",
                             f"{aid}: restyle invented text ({fidelity.reason()}) — "
                             "shipping your own screenshot instead")
+        elif a["brief"].lstrip().lower().startswith("[video]"):
+            # A moving asset. Separate branch rather than a flag on the image
+            # path, because almost nothing downstream is shared: no Pillow open,
+            # no derived crops (a card crop of a loop is meaningless), no
+            # branding check (there is no legible brand in footage that is
+            # deliberately out of focus), and a different file extension.
+            path = path.with_suffix(".mp4")
+            path.write_bytes(cur.motion(a["brief"].lstrip()[7:].strip(),
+                                        bb.design_system))
+            made.append(Asset(
+                id=aid, section_id=a["section_id"], kind=AssetKind.VIDEO,
+                brief=a["brief"], prominence=Prominence(a["prominence"]),
+                provenance=Provenance.GENERATED,
+                path=f"assets/{path.name}", width=1280, height=720,
+            ))
+            yield Event(Stage.ASSETS, "progress",
+                        f"{aid} generated · a silent ambient loop, not a demo")
+            continue
         else:
             # The name and the mark both go in. A generated product surface
             # shows branding somewhere — a sidebar header, a window title, a
@@ -1815,6 +1913,9 @@ def step_build(run: Run) -> Iterator[Event]:
     # Built once for the whole stage, not per section — it is the same image
     # nine times over, and re-tiling it each round is pure latency.
     sheet = _page_sheet(run)
+    from sparrow.agents.reader import to_block
+
+    observed = to_block(load_reading(run))
     built = skipped = 0
 
     for section in sorted(bb.sections, key=lambda s: s.order):
@@ -1850,7 +1951,8 @@ def step_build(run: Run) -> Iterator[Event]:
                             source_html=_source_markup(
                                 (winners.get(section.id) or {}).get("html")),
                             page_shot=sheet,
-                            composition=composition_block(bb, section))
+                            composition=composition_block(bb, section),
+                            observed=observed)
         write_section(ws, section, out.code,
                       asset_base=f"/projects/{run.project_id}/preview")
         # Immediately, per section. The file and the record of the file are one
