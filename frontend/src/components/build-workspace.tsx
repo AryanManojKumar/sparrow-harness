@@ -9,6 +9,7 @@ import {
   createProject,
   getDirections,
   getGate,
+  getProject,
   interview,
   previewUrl,
   type Direction,
@@ -21,11 +22,28 @@ import { GatePanel } from "@/components/gate-panel";
 
 type StoredPayload = { prompt: string; urls: string[] };
 
-type Phase = "loading" | "interview" | "create" | "run" | "gate" | "done" | "error";
+// "paused" is a resumed project that is NOT blocked on a human: the run
+// simply stopped part-way. It must never advance on its own — advancing is
+// billable, so it takes an explicit click.
+type Phase =
+  | "loading"
+  | "interview"
+  | "create"
+  | "run"
+  | "gate"
+  | "paused"
+  | "done"
+  | "error";
 
 export function BuildWorkspace() {
   const params = useSearchParams();
   const id = params.get("id");
+  // Set by a card on the home screen: the project already exists, so the
+  // interview and creation steps must be skipped entirely.
+  const isResume = params.get("resume") === "1";
+  // The card already knows whether an export exists; trusting it avoids a
+  // "Building preview…" placeholder over a site that is already built.
+  const resumeHasPreview = params.get("preview") === "1";
 
   const [phase, setPhase] = useState<Phase>("loading");
   const [stored, setStored] = useState<StoredPayload | null>(null);
@@ -35,6 +53,7 @@ export function BuildWorkspace() {
   const [directions, setDirections] = useState<Direction[] | null>(null);
   const [previewReady, setPreviewReady] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [stoppedStage, setStoppedStage] = useState<string | null>(null);
   const startedRef = useRef(false);
 
   // One leg of the run: from wherever it's paused to the next gate, the end,
@@ -83,12 +102,17 @@ export function BuildWorkspace() {
     setPhase("done");
   }
 
-  async function answerAndContinue(choice: string | number, note?: string) {
+  async function answerAndContinue(payload: {
+    choice?: string | number;
+    note?: string;
+    assets?: Record<string, string>;
+    content?: Record<string, string>;
+  }) {
     if (!id) return;
     setGate(null);
     setDirections(null);
     try {
-      await answerGate(id, choice, note);
+      await answerGate(id, payload);
     } catch (e) {
       setPhase("error");
       setErrorMessage(e instanceof Error ? e.message : String(e));
@@ -104,16 +128,57 @@ export function BuildWorkspace() {
       return;
     }
     const raw = sessionStorage.getItem(`sparrow:${id}`);
-    if (!raw) {
+    if (!raw && !isResume) {
       setPhase("error");
       setErrorMessage("This project's details expired — start again from the home screen.");
       return;
     }
-    const payload = JSON.parse(raw) as StoredPayload;
-    setStored(payload);
+    const payload = raw ? (JSON.parse(raw) as StoredPayload) : null;
+    if (payload) setStored(payload);
 
     if (startedRef.current) return;
     startedRef.current = true;
+
+    // Resuming an existing project: read where it actually got to and either
+    // show the gate it is blocked on or push it along. Nothing is created.
+    if (isResume) {
+      (async () => {
+        try {
+          const detail = await getProject(id);
+          setSpent(detail.spent ?? 0);
+          if (resumeHasPreview) setPreviewReady(true);
+          setStoppedStage(detail.stage ?? null);
+          if (!payload) {
+            const b = detail.blackboard?.brief;
+            setStored({
+              prompt: b?.product_name?.trim() || b?.offering || id,
+              urls: [],
+            });
+          }
+          const g = await getGate(id);
+          if (g.awaiting) {
+            setGate(g);
+            if (g.gate === "gate:design") {
+              setDirections(await getDirections(id).catch(() => null));
+            }
+            setPhase("gate");
+            return;
+          }
+          // Not blocked on anyone — the run just stopped. Opening a project
+          // must not restart it: /advance costs real model calls, and doing
+          // that as a side effect of a click is how spend happens unasked.
+          setPhase("paused");
+        } catch (e) {
+          setPhase("error");
+          setErrorMessage(e instanceof Error ? e.message : String(e));
+        }
+      })();
+      return;
+    }
+
+    // Unreachable — the guard above returns when there is no payload and this
+    // is not a resume — but it is what proves `payload` non-null from here on.
+    if (!payload) return;
 
     (async () => {
       try {
@@ -176,6 +241,9 @@ export function BuildWorkspace() {
           directions={directions}
           errorMessage={errorMessage}
           showGateInline={!gateInMainPane}
+          projectId={id || ""}
+          stoppedStage={stoppedStage}
+          onResume={() => id && runLeg(id)}
           onAnswerGate={answerAndContinue}
         />
       </div>
@@ -186,6 +254,7 @@ export function BuildWorkspace() {
             gate={gate}
             directions={directions}
             layout="wide"
+            projectId={id || ""}
             onAnswerGate={answerAndContinue}
           />
         </div>

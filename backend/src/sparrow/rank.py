@@ -31,6 +31,7 @@ from dataclasses import dataclass, field
 
 from sparrow.blackboard.schema import Brief
 from sparrow.providers import Provider, Tier
+from sparrow.parse import first_object
 
 _JSON = re.compile(r"\{.*\}", re.DOTALL)
 
@@ -116,6 +117,58 @@ class Commonality:
         return "\n".join(lines)
 
 
+def primary_order(labelled: dict[str, list[tuple[str, int]]],
+                  primary: str, comm: Commonality) -> list[str]:
+    """The section order of ONE page, not the average of several.
+
+    CLAUDE.md §5: "One primary reference — skeleton, rhythm, section order,
+    pacing. Blending six sites yields the mean of six sites, which is generic by
+    definition. Design is not additive." `commonality.typical_order` is that mean
+    — conventional types sorted by their average normalised position — and it was
+    what the sitemap used. The effect is measurable across projects: a voice-AI
+    agency built from vapi/elevenlabs/kore and a treasury dashboard built from
+    ramp/mercury/brex came out with the same nine section types in nearly the
+    same order, because any two B2B SaaS reference sets average to the same page.
+
+    So the order is the primary's own sequence. Commonality keeps the job §5
+    actually gives it — a CHECKLIST of what this category contains at all — and
+    a conventional type the primary happens to lack is inserted at the position
+    the rest of the sources put it, rather than dropped.
+    """
+    conv = set(comm.conventional())
+    own = labelled.get(primary) or []
+
+    # Everything the primary has, whether or not the OTHER sources have it. A
+    # `conventional()` filter here would drop exactly the sections that make the
+    # primary worth choosing: on a real set, ramp's product-showcase appeared on
+    # 1 of 3 sources and was cut from the sitemap for being unconventional —
+    # which is the mean deciding the skeleton again, one filter further down.
+    order: list[str] = []
+    for t, _ in sorted(own, key=lambda tp: tp[1]):
+        if t not in NOT_SECTIONS and t not in order:
+            order.append(t)
+
+    if not order:                     # primary unreadable or all-chrome: fall back
+        return list(comm.typical_order)
+
+    # Where the OTHER sources put a type the primary does not have, as a
+    # fraction of their page, mapped onto the primary's sequence.
+    missing = [t for t in comm.typical_order if t not in order]
+    for t in missing:
+        fracs = []
+        for site, types in labelled.items():
+            if site == primary:
+                continue
+            n = max((p for _, p in types), default=1)
+            fracs += [p / n for tt, p in types if tt == t]
+        if not fracs:
+            order.append(t)
+            continue
+        at = min(len(order), max(0, round(sum(fracs) / len(fracs) * len(order))))
+        order.insert(at, t)
+    return order
+
+
 def commonality(labelled: dict[str, list[tuple[str, int]]]) -> Commonality:
     """Count section types across sources. Deterministic; costs nothing.
 
@@ -178,7 +231,7 @@ def pick_primary(
     m = _JSON.search(res.text)
     if not m:
         raise ValueError(f"no JSON from primary selection: {res.text[:200]}")
-    d = json.loads(m.group(0))
+    d = first_object(m.group(0), what="ranker reply")
     return d["primary"], d.get("why", ""), res
 
 
@@ -224,7 +277,7 @@ def rank_section(
     m = _JSON.search(res.text)
     if not m:
         raise ValueError(f"no JSON ranking {section_type}: {res.text[:200]}")
-    return json.loads(m.group(0)), res
+    return first_object(m.group(0), what="ranker reply"), res
 
 
 def register_report(registers: dict[str, object]) -> str:
@@ -311,9 +364,44 @@ def register_report(registers: dict[str, object]) -> str:
         eas = sorted({m.easing for m in mots if m.easing})[:3]
         if eas:
             lines.append(f"    easing in use: {'; '.join(eas)}")
-        lines.append("    Not measurable from a page: scroll choreography driven by "
-                     "IntersectionObserver or a JS timeline. Tempo and register are "
-                     "evidence; sequence is your decision.")
+        # This used to end with "scroll choreography is not measurable from a
+        # page." That was true of the markup and false of the behaviour: scroll
+        # the page and sample opacity and translateY, and the entrances report
+        # themselves. Measured, not inferred — the same standing as the image
+        # counts above.
+        arr = [m for m in mots if m.arrival_share > 0]
+        if arr:
+            share = sum(m.arrival_share for m in arr) / len(arr)
+            frm = sum(m.arrival_from for m in arr) / len(arr)
+            trav = sorted(m.arrival_travel_px for m in arr if m.arrival_travel_px)
+            ms = sorted(m.arrival_ms for m in arr if m.arrival_ms)
+            lines.append("    ARRIVAL — read off the page, not guessed. These are the")
+            lines.append("    elements STAGED to animate in: sitting at opacity 0 or")
+            lines.append("    pre-offset, waiting for the reader to reach them.")
+            lines.append(f"      {share * 100:.0f}% of all elements are staged this way")
+            lines.append(f"      they start at opacity {frm:.2f}"
+                         + ("  — from nothing, not a partial fade" if frm < 0.15
+                            else "  — a partial fade, never from nothing"))
+            if trav:
+                lines.append(f"      and rise {trav[len(trav) // 2]}px into place")
+            if ms:
+                lines.append(f"      over {ms[len(ms) // 2]}ms")
+            lines.append("      Bind entrances to ARRIVAL, not to mount. An entrance that")
+            lines.append("      plays before the reader reaches it is one nobody sees.")
+        else:
+            lines.append("    Nothing on these sources is staged to animate in. A page that")
+            lines.append("    moves anyway is your decision, not theirs.")
+
+        # Named, because it is the part of these pages that CANNOT be reproduced:
+        # nothing in this harness emits canvas or video. Saying so keeps the
+        # design agent spending its effort where the effort can land, instead of
+        # chasing a quality the output has no mechanism to reach.
+        rendered = sum(1 for r in registers.values() if r.canvas or r.video)
+        if rendered:
+            lines.append(f"    {rendered}/{n} of these sources animate in CANVAS or VIDEO.")
+            lines.append("      That motion is rendered, not styled, and this harness has no")
+            lines.append("      way to produce it. Do not plan a page that depends on it —")
+            lines.append("      reach the same register with type, layout and CSS motion.")
     lines.append("")
     lines.append("  These are conventions, not requirements. Following one is a choice you")
     lines.append("  should be able to justify; departing from one is also a choice. What you")

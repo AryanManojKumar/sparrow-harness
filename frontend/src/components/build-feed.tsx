@@ -2,27 +2,30 @@
 
 import { useEffect, useRef } from "react";
 import Link from "next/link";
-import { AlertTriangle, Check, CircleDashed, Loader2 } from "lucide-react";
+import { AlertTriangle, Check, CircleDashed, Loader2, Play } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import type { Direction, GateInfo, RunEvent } from "@/lib/api";
 import { SparrowMark } from "@/components/sparrow-mark";
 import { SourceCard } from "@/components/source-card";
 import { GatePanel } from "@/components/gate-panel";
+import { Button } from "@/components/ui/button";
 
 // Matches backend/src/sparrow/orchestrator.py's Stage enum, in order —
 // needed to infer "done" for stages that end via a gate Halt rather than
 // their own kind="done" event (design and verify never emit one; they stop
 // at gate:design / gate:preview instead).
 const FULL_ORDER = [
-  "brief", "gate:brief", "sources", "design", "gate:design",
-  "assets", "build", "verify", "gate:preview", "done",
+  "brief", "gate:brief", "sources", "design", "gate:design", "compose",
+  "content", "gate:assets", "assets", "build", "verify", "gate:preview", "done",
 ];
 
 const DISPLAY_STAGES: { key: string; label: string }[] = [
   { key: "brief", label: "Brief" },
   { key: "sources", label: "Sources" },
   { key: "design", label: "Design" },
+  { key: "compose", label: "Layout" },
+  { key: "content", label: "Content" },
   { key: "assets", label: "Assets" },
   { key: "build", label: "Build" },
   { key: "verify", label: "Verify" },
@@ -30,13 +33,24 @@ const DISPLAY_STAGES: { key: string; label: string }[] = [
 
 type StageStatus = "pending" | "active" | "done" | "failed";
 
-function stageStatus(stageKey: string, events: RunEvent[]): StageStatus {
+function stageStatus(
+  stageKey: string,
+  events: RunEvent[],
+  stoppedStage?: string | null
+): StageStatus {
   const idx = FULL_ORDER.indexOf(stageKey);
   const own = events.filter((e) => e.stage === stageKey);
   if (own.some((e) => e.kind === "failed")) return "failed";
   if (events.some((e) => FULL_ORDER.indexOf(e.stage) > idx)) return "done";
   if (own.some((e) => e.kind === "done")) return "done";
   if (own.length > 0) return "active";
+  // A resumed project has no event stream behind it — the only record of how
+  // far it got is the stage the API reports, so anything ordered before that
+  // stage has already run.
+  if (stoppedStage) {
+    const at = FULL_ORDER.indexOf(stoppedStage);
+    if (at > -1 && idx < at) return "done";
+  }
   return "pending";
 }
 
@@ -65,18 +79,37 @@ export function BuildFeed({
   directions,
   errorMessage,
   showGateInline,
+  projectId,
+  stoppedStage,
+  onResume,
   onAnswerGate,
 }: {
   prompt: string;
   urls: string[];
-  phase: "loading" | "interview" | "create" | "run" | "gate" | "done" | "error";
+  phase:
+    | "loading"
+    | "interview"
+    | "create"
+    | "run"
+    | "gate"
+    | "paused"
+    | "done"
+    | "error";
   events: RunEvent[];
   spent: number;
   gate: GateInfo | null;
   directions: Direction[] | null;
   errorMessage: string | null;
   showGateInline: boolean;
-  onAnswerGate: (choice: string | number, note?: string) => void;
+  projectId: string;
+  stoppedStage: string | null;
+  onResume: () => void;
+  onAnswerGate: (payload: {
+    choice?: string | number;
+    note?: string;
+    assets?: Record<string, string>;
+    content?: Record<string, string>;
+  }) => void;
 }) {
   const logRef = useRef<HTMLDivElement>(null);
 
@@ -138,10 +171,10 @@ export function BuildFeed({
             <ul className="mb-4 flex flex-col gap-2.5">
               {DISPLAY_STAGES.map(({ key, label }) => (
                 <li key={key} className="flex items-center gap-2.5 text-sm">
-                  {STATUS_ICON[stageStatus(key, events)]}
+                  {STATUS_ICON[stageStatus(key, events, stoppedStage)]}
                   <span
                     className={cn(
-                      stageStatus(key, events) === "pending"
+                      stageStatus(key, events, stoppedStage) === "pending"
                         ? "text-muted-foreground"
                         : "text-foreground"
                     )}
@@ -176,8 +209,27 @@ export function BuildFeed({
             gate={gate}
             directions={directions}
             layout="compact"
+            projectId={projectId}
             onAnswerGate={onAnswerGate}
           />
+        )}
+
+        {/* Stopped part-way and not waiting on anyone. Resuming costs real
+            model calls, so it is offered as a button and never taken
+            automatically on open. */}
+        {phase === "paused" && (
+          <div className="rounded-xl border border-border bg-secondary/40 p-3.5">
+            <p className="text-sm text-foreground">
+              Stopped at {(stoppedStage ?? "an earlier stage").replace(/^gate:/, "")}
+            </p>
+            <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+              Nothing is running. Continuing runs the next stage and spends on
+              model calls{spent > 0 ? ` — $${spent.toFixed(4)} so far` : ""}.
+            </p>
+            <Button type="button" size="sm" className="mt-3" onClick={onResume}>
+              <Play className="size-3" /> Resume the run
+            </Button>
+          </div>
         )}
 
         {phase === "error" && (

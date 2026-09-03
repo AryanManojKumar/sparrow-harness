@@ -17,6 +17,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from sparrow.audit import audit_dir, summarise
+from sparrow import eleven
 from sparrow.blackboard.schema import Blackboard
 from sparrow.render.tokens import apply_to_stylesheet, font_imports, to_prompt
 
@@ -148,12 +149,19 @@ def cmd_build(args) -> int:
             print(f"     ↳ EXTENSION REQUEST: {out.extension_request}")
 
     _compose_page(bb, ws)
-    total += _repair_until_builds(bb, ws, builder.provider.name)
+    built_ok, spent = _repair_until_builds(bb, ws, builder.provider.name)
+    total += spent
     print(f"\n  total ${total:.4f}")
     return 0
 
 
-_FAILED_FILE = re.compile(r"\./(src/components/sections/\w+\.tsx)")
+# Both forms, because the two failing tools disagree. ESLint writes
+# "./src/components/sections/Hero.tsx"; tsc writes
+# "src/components/sections/Hero.tsx(36,14): error TS2322". With the "./"
+# required, every type error was unattributable — the repair loop bailed
+# with "no section could be blamed" having spent none of its 3 attempts,
+# and the run reported a build it had never completed.
+_FAILED_FILE = re.compile(r"(?:\./)?(src/components/sections/\w+\.tsx)")
 
 
 def _compose_page(bb, ws: Path) -> None:
@@ -230,8 +238,16 @@ def _run_build(ws: Path) -> tuple[bool, str]:
     return r.returncode == 0, (r.stdout + r.stderr)
 
 
-def _repair_until_builds(bb, ws: Path, provider_name: str, max_attempts: int = 3) -> float:
+def _repair_until_builds(bb, ws: Path, provider_name: str,
+                        max_attempts: int = 3) -> tuple[bool, float]:
     """Build, and if it fails, hand the error back to the repairer.
+
+    Returns (built, spent). The bool is not decoration: every exit path here
+    used to return the cost alone, so a caller could not tell a green build
+    from three exhausted attempts, and the run announced "page composed and
+    built" over a workspace with no export in it. The failure then surfaced a
+    stage later as "no static export at workspace/out", which names the
+    symptom and not one word of the cause.
 
     Capped at 3 — the same cap as every other loop in the harness. A build that
     still fails after three attempts is an escalation, not a retry.
@@ -249,12 +265,12 @@ def _repair_until_builds(bb, ws: Path, provider_name: str, max_attempts: int = 3
         if ok:
             rounds.complete("pnpm build exited 0")
             print(f"\n  build ok — {rounds.summary()}")
-            return spent
+            return True, spent
 
         slot = rounds.reserve()
         if isinstance(slot, Blocked):
             print(f"\n  {slot.code}: {slot.message}", file=sys.stderr)
-            return spent
+            return False, spent
 
         m = _FAILED_FILE.search(output)
         if not m:
@@ -262,14 +278,14 @@ def _repair_until_builds(bb, ws: Path, provider_name: str, max_attempts: int = 3
             rounds.settle(Outcome.SUPERSEDED, "no section could be blamed")
             print(f"\n  build failed, and no section could be blamed:\n{output[-800:]}",
                   file=sys.stderr)
-            return spent
+            return False, spent
 
         rel = m.group(1)
         section = next((s for s in bb.sections if s.target_path == rel), None)
         if section is None:
             rounds.settle(Outcome.SUPERSEDED, f"{rel} is not a known section")
             print(f"\n  build failed in {rel}, which is not a known section", file=sys.stderr)
-            return spent
+            return False, spent
 
         first = output.find("Export ")
         err = output[max(0, first - 200):][:2500] if first > 0 else output[-2500:]
@@ -315,6 +331,7 @@ def cmd_run(args) -> int:
         Stage.BRIEF: _steps.step_brief,
         Stage.SOURCES: lambda r: _steps.step_sources(r, urls),
         Stage.DESIGN: _steps.step_design,
+        Stage.COMPOSE: _steps.step_compose,
         Stage.CONTENT: _steps.step_content,
         Stage.GATE_ASSETS: _steps.step_asset_gate,
         Stage.ASSETS: _steps.step_assets,
@@ -521,7 +538,9 @@ def cmd_assets(args) -> int:
     return 0
 
 
-IMAGE_MODEL_NOTE = "gpt-image-2 · generated assets are not text-gated; restyles are"
+IMAGE_MODEL_NOTE = (
+    f"{eleven.IMAGE_MODEL} · generated assets are not text-gated; restyles are"
+)
 
 
 def cmd_inspect(args) -> int:

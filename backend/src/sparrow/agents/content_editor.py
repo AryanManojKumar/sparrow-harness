@@ -57,6 +57,7 @@ import json
 import re
 from dataclasses import dataclass, field
 from enum import StrEnum
+from sparrow.parse import first_object
 
 from sparrow.agents.base import Agent
 from sparrow.blackboard.schema import Blueprint, Brief, Constraint
@@ -282,7 +283,7 @@ def _parse(
     m = _JSON.search(text)
     if not m:
         raise ValueError(f"content editor returned no JSON for {section_id!r}")
-    data = json.loads(m.group(0))
+    data = first_object(m.group(0), what="content editor reply")
 
     slots = {_key(k): v for k, v in (data.get("slots") or {}).items()}
     declared = {_key(k): v for k, v in (data.get("source") or {}).items()}

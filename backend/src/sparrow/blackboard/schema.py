@@ -100,6 +100,27 @@ class TypeStep(BaseModel):
     use: str            # when to reach for it; may say "hero headline ONLY"
 
 
+class Treatment(BaseModel):
+    """One surface or compositional technique this page uses.
+
+    Open on purpose. Every other visual field on DesignSystem names a CATEGORY
+    someone anticipated — colours, fonts, spacing, radii, shadows, motion — and a
+    designer can only decide what there is a field for. Measured on fernbank2:
+    zero gradients, zero backdrop blur, zero overlapping elements on a page built
+    from sources that use all three, while the scout had already DETECTED ramp's
+    grain layer and filed it under motion because there was nowhere else to put
+    it. The pipeline perceived more than it could express.
+
+    `how` is not optional and is not decoration. "full-bleed" was given to the
+    builder as a word, and all ten sections came back `max-w-6xl` — a name loses
+    to the model's prior, an implementation does not.
+    """
+
+    name: str      # "grain overlay", "gradient wash", "card bleed past the edge"
+    where: str     # "the page ground", "behind the hero product panel"
+    how: str       # the actual implementation: classes, an SVG filter, a gradient
+
+
 class DesignSystem(BaseModel):
     """The design agent's recorded decisions. Vocabulary, never composition.
 
@@ -124,6 +145,10 @@ class DesignSystem(BaseModel):
     colors: list[Color]
     forbidden_hues: list[tuple[int, int]] = Field(default_factory=list)
 
+    # Whatever else this design does to its surfaces. Defaults empty so a system
+    # written before this field still validates.
+    treatments: list[Treatment] = Field(default_factory=list)
+
     # Three roles, not one string. The first run returned "Spline Sans (primary)
     # paired with IBM Plex Mono (evidence metadata)" in a single field, which is
     # readable prose and unloadable as a font. A field that has to be parsed back
@@ -135,7 +160,15 @@ class DesignSystem(BaseModel):
     type_steps: list[TypeStep]
 
     section_padding: str
+    # Three widths and three rhythms, because one of each is what produced ten
+    # identical bands. The composition pass names which one a section uses; these
+    # are what those names mean in classes. Defaulted, so a system written before
+    # they existed still validates.
+    section_padding_tight: str = ""
+    section_padding_loose: str = ""
     container: str
+    container_wide: str = ""
+    container_bleed: str = ""
     grid_gap: str
     inline_gap: str          # added after drift-test-01: agents invented these
     stack_tight: str
@@ -151,6 +184,10 @@ class DesignSystem(BaseModel):
 
     imagery_treatment: str
     motion: str
+    # What happens as a reader ARRIVES at a section — order, direction, stagger.
+    # Separate from `motion` because scout cannot measure it: a screenshot holds a
+    # moment, and choreography is a sequence. Defaulted so older systems validate.
+    arrival: str = ""
 
     def color_scale(self) -> Scale[Color]:
         return Scale(items=self.colors, noun="values")
@@ -177,6 +214,21 @@ class Ground(StrEnum):
     MUTED = "muted"
 
 
+class Width(StrEnum):
+    """How far a section spans.
+
+    A page whose every section is the same width reads as a template no matter
+    how good each section is — measured on fernbank2, where ten sections built
+    independently all chose a contained container and the result was ten
+    identical bands of different content. The sources do not do this: ramp.com
+    alternates full-bleed product panels against contained type.
+    """
+
+    CONTAINED = "contained"      # the standard max-width column
+    WIDE = "wide"                # wider than the column, still inset
+    FULL_BLEED = "full-bleed"    # edge to edge
+
+
 class BuildStatus(StrEnum):
     PENDING = "pending"
     BUILT = "built"
@@ -190,6 +242,24 @@ class Section(BaseModel):
     target_path: str
     component_name: str
     ground: Ground = Ground.PAGE
+    # Composition, decided once for the whole page by the design director and
+    # recorded here. §6: the design agent's output is the source of truth and
+    # its recorded decisions are what the builder is held to. That already
+    # covered palette, type and spacing; it did not cover shape, so ten builders
+    # each decided shape alone and each picked the safe median.
+    width: Width = Width.CONTAINED
+    archetype: str = ""          # "split-with-panel", "band", "asymmetric-grid", …
+    contrast: str = ""           # one line: how this differs from its neighbours
+    # Which treatments this section may use, and whether it is the one that
+    # carries the signature. Both are allocation, not vocabulary: the designer
+    # invents what the page CAN do, the composer decides where it happens.
+    # Without this the builder received all five treatments with a request to
+    # apply the relevant ones, and applied most of them everywhere — 24 gradients
+    # and a signature motif repeated down the page, which reads as busy for the
+    # same reason ten identical containers read as flat. Boldness spread evenly
+    # is not boldness.
+    treatments: list[str] = Field(default_factory=list)
+    carries_signature: bool = False
     status: BuildStatus = BuildStatus.PENDING
     attempts: int = 0
     defects: list[str] = Field(default_factory=list)

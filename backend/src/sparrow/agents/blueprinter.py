@@ -23,6 +23,7 @@ import re
 from sparrow.agents.base import Agent
 from sparrow.blackboard.schema import Blueprint, Brief
 from sparrow.providers import Tier
+from sparrow.parse import first_object
 
 SYSTEM = """You write the structural spec for ONE section of a landing page, from
 measurements of how real sites in this category build that section.
@@ -58,6 +59,11 @@ when you use one, and leave it out otherwise.
 SLOTS are the copy the builder writes: eyebrow, headline, body, cta_label, features[],
 question, answer. Every section has slots — a hero with none is a hero with no words.
 
+Repeated content is PARALLEL FLAT LISTS, never a nested path. Three feature cards each
+with a title and a body are `feature_title[]` and `feature_body[]` — two slots, read
+index by index. `features[].title` is not a slot name: nothing downstream can read it,
+and a blueprint that uses one fails the run at the content stage.
+
 An asset is not the only way to show a product. A section can also be built from composed
 markup, inline SVG, a CSS-drawn panel, or an interactive component — and for content that
 is inherently text, like code, logs, diffs, configuration or tabular data, markup carries
@@ -68,7 +74,11 @@ register says which of these the category actually uses.
 ASSETS are imagery someone must produce. Describe each one well enough to act on:
 `product_image` is not a brief; "one 16:9 product capture showing the review packet with
 its checkpoint state" is. A section that needs no imagery gets an empty list, and that is
-a normal answer.
+a normal answer for ONE section — but read `<imagery_density>` before you give it. That
+number is what these sources actually carry. A page whose sections each separately decided
+they needed nothing lands nowhere near it, and reads as a stack of text blocks no matter
+how good the copy is. If this section is one that in the sources shows something, say what
+it shows.
 
 JSON only, no prose, no code fence:
 
@@ -85,7 +95,14 @@ _JSON = re.compile(r"\{.*\}", re.DOTALL)
 
 class Blueprinter(Agent):
     name = "blueprinter"
-    tier = Tier.CHEAP        # structure from evidence — no aesthetic judgement needed
+    # Was CHEAP, on the grounds that structure from evidence needs no aesthetic
+    # judgement. It does. This is the agent that decides whether a section shows
+    # a product at all, and on fernbank it answered "no imagery" for eight of
+    # nine sections against sources carrying twelve large images a page — a
+    # decision no later stage can reverse, because the builder is then told the
+    # section has none. It also now reads a screenshot, which the cheap tier is
+    # weakest at.
+    tier = Tier.MID
     max_tokens = 3000
 
     def write(
@@ -96,6 +113,8 @@ class Blueprinter(Agent):
         candidates: list,
         neighbours: list[str],
         vocabulary: dict | None = None,
+        shot: str | None = None,
+        imagery: str = "",
     ) -> tuple[Blueprint, object]:
         winner = ranking.get("winner")
         won = [c for c in candidates if c.site == winner] or candidates
@@ -132,27 +151,62 @@ class Blueprinter(Agent):
              f"of each. This is what this category actually builds pages out of — ask "
              f"for one by name where it does this section's job better than plain type "
              f"would.\n{counted}</counted_vocabulary>") if counted else "",
+            (f"<imagery_density>\n{imagery}\n</imagery_density>") if imagery else "",
             f"<adopt>\n{adopt}\n</adopt>",
             "<evidence>\n" + "\n".join(evidence) + "\n</evidence>",
             f"<neighbours>\nThis section sits in a page of: {', '.join(neighbours)}.\n"
             "Do not duplicate what an adjacent section already does.\n</neighbours>",
         ] if x)
 
-        res = self.call(system=SYSTEM, user=user)
+        # The winning section's own screenshot. Everything else here is a count,
+        # and `Candidate.line()` says why that is not enough: a hero reduced to
+        # "3 img · 4 btn" carries nothing a model can reproduce a hero from.
+        # 6398b98 gave the shot to the design director and the builder and
+        # stopped there — leaving the agent that decides what is ON the page as
+        # the only one working blind.
+        res = self.call(system=SYSTEM, user=user,
+                        images=[shot] if shot else None)
         m = _JSON.search(res.text)
         if not m:
             raise ValueError(f"blueprinter returned no JSON for {section_type}")
-        d = json.loads(m.group(0))
+        d = first_object(m.group(0), what="blueprinter reply")
         return (
             Blueprint(
                 id=section_type,
                 purpose=d["purpose"].strip(),
-                slots=[str(s).strip() for s in d.get("slots", [])],
+                slots=_flatten_slots(d.get("slots", [])),
                 assets=[" ".join(str(a).split()) for a in d.get("assets", [])],
                 structure=" ".join(d["structure"].split()),
             ),
             res,
         )
+
+
+def _flatten_slots(raw: list) -> list[str]:
+    """`capability_modules[].title` -> `capability_modules_title[]`.
+
+    The prompt asks for parallel flat lists and every blueprint but two obeyed;
+    those two invented a nested path, and the content editor — which validates
+    that the model filled every declared slot — failed the whole run on a name
+    no part of this system can read. Normalising is not politeness to the model:
+    the alternative is that one slot name costs a run its content, design and
+    sources stages, all of which were already paid for.
+
+    The bare parent (`capability_modules[]`) is dropped when it has children,
+    because it is a container, not copy.
+    """
+    names = [str(s).strip() for s in raw if str(s).strip()]
+    parents = {n.split("[].", 1)[0] for n in names if "[]." in n}
+    out: list[str] = []
+    for n in names:
+        if "[]." in n:
+            parent, child = n.split("[].", 1)
+            n = f"{parent}_{child.replace('.', '_')}[]"
+        elif n.rstrip("[]") in parents and n.endswith("[]"):
+            continue
+        if n not in out:
+            out.append(n)
+    return out
 
 
 def to_markdown(bp: Blueprint, component: str) -> str:

@@ -28,3 +28,12 @@ projects/
 __pycache__/
 *.py[cod]
 .uv/
+
+# Wrangler's local cache holds the Cloudflare account id and the signed-in
+# email. Not a token, but not ours to publish either.
+.wrangler/
+
+# Scratch that landed in the tree during a session: a logo screenshot, a
+# sample mp4, and a one-off page that resumes a hardcoded project id.
+logotemp/
+frontend/public/resume.html

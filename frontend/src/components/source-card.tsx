@@ -27,24 +27,8 @@ export function SourceCard({
    * a click means "let me edit this," not "take me to the site." */
   onClickOverride?: () => void;
 }) {
-  return (
-    <a
-      href={source.url}
-      target="_blank"
-      rel="noreferrer"
-      onClick={
-        onClickOverride
-          ? (e) => {
-              e.preventDefault();
-              onClickOverride();
-            }
-          : undefined
-      }
-      className={cn(
-        "group/source flex items-center gap-3 rounded-xl border border-border bg-secondary/40 px-3 py-2.5 text-left transition-colors hover:bg-secondary/70",
-        className
-      )}
-    >
+  const body = (
+    <>
       <div className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground">
         <Favicon url={source.url} className="size-4" />
       </div>
@@ -54,20 +38,65 @@ export function SourceCard({
           {source.domain} · {source.description}
         </p>
       </div>
-      {onRemove && (
+    </>
+  );
+
+  const shell = cn(
+    "group/source flex items-center gap-3 rounded-xl border border-border bg-secondary/40 px-3 py-2.5 text-left transition-colors hover:bg-secondary/70",
+    className
+  );
+
+  // The remove button is a SIBLING of the link, never a child of it. A <button>
+  // inside an <a> is invalid HTML — interactive content may not nest — and the
+  // browser is free to reparent it out of the anchor while parsing, which
+  // detaches React's handler on hydration. The symptom is not a warning or an
+  // error: the X simply does nothing, on the server-rendered first paint only.
+  if (!onRemove) {
+    return (
+      <a
+        href={source.url}
+        target="_blank"
+        rel="noreferrer"
+        onClick={onClickOverride ? (e) => { e.preventDefault(); onClickOverride(); } : undefined}
+        className={shell}
+      >
+        {body}
+      </a>
+    );
+  }
+
+  return (
+    <div className={shell}>
+      {onClickOverride ? (
         <button
           type="button"
-          aria-label="Remove reference"
-          onClick={(e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            onRemove();
-          }}
-          className="shrink-0 rounded-md p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+          onClick={onClickOverride}
+          className="flex min-w-0 flex-1 items-center gap-3 text-left"
         >
-          <X className="size-3.5" />
+          {body}
         </button>
+      ) : (
+        <a
+          href={source.url}
+          target="_blank"
+          rel="noreferrer"
+          className="flex min-w-0 flex-1 items-center gap-3"
+        >
+          {body}
+        </a>
       )}
-    </a>
+      <button
+        type="button"
+        aria-label="Remove reference"
+        onClick={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          onRemove();
+        }}
+        className="shrink-0 rounded-md p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+      >
+        <X className="size-3.5" />
+      </button>
+    </div>
   );
 }

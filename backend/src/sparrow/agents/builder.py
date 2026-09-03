@@ -25,14 +25,22 @@ You are given the brief, the hard constraints, the design system, and one bluepr
 You do NOT see any other section. Another agent built those, to the same design system.
 Do not attempt to reference, import from, or guess at them.
 
-LAYOUT, COMPOSITION, DENSITY AND RHYTHM ARE YOURS. Make real design decisions.
-THE TOKEN VOCABULARY IS NOT YOURS. It is fixed, and it is fixed for a reason: five
-sections built independently have to read as one page.
+DENSITY, HIERARCHY AND THE INTERIOR OF YOUR SECTION ARE YOURS. Make real design
+decisions inside the shape you are given.
+
+THE TOKEN VOCABULARY IS NOT YOURS, and neither is the SHAPE. Both are fixed, for the
+same reason: sections built independently have to read as one page. You cannot see the
+sections around you, so you cannot know whether a centred column is a relief or the
+tenth in a row — which is exactly what happened when this was left to each builder.
+`<composition>` below says what your section is; build that, and put your judgement
+into what goes inside it.
 
 ## Ways a section can be built
 
-These all exist. Which one a section uses is decided by its blueprint and by what the
-register measured this category doing — not by preference, and not by habit.
+Examples, not the set. Which one a section uses is decided by its blueprint and by what
+the register measured this category doing — not by preference, and not by habit. If the
+source does something this list does not name, build that instead; the list is here to
+stop you defaulting to cards, not to bound what you may make.
 
 - COMPOSED MARKUP — type, rules, grids, borders. Selectable, crisp at any resolution,
   and it can carry exact domain content: real identifiers, real timestamps, real code.
@@ -48,6 +56,18 @@ A section listing an asset uses that asset. A section without one is not thereby
 to plain text: everything above is still available, and which of it belongs is a question
 the blueprint and the register answer.
 
+REQUIRED: IMPLEMENT THE DESIGN SYSTEM'S TREATMENTS.
+`treatments` is the open half of the design system — grain, gradient washes, bleeds,
+overlaps, blurs, spotlights. Each one carries a `how` that is implementable as written.
+They are the difference between a page that is correct and a page that looks made, and
+they were measured absent from every build before they existed: zero gradients, zero
+backdrop blur, zero overlapping elements across ten sections.
+
+Apply the ones whose `where` covers your section. Do not apply all of them everywhere —
+a grain over the ground belongs once, on the ground; a bleed belongs to the section with
+something to bleed. If none names your section, the section still gets the ground and the
+type; it does not get invented decoration.
+
 REQUIRED: IMPLEMENT THE MOTION THE DESIGN SYSTEM SPECIFIES.
 The MOTION line is an instruction, not a description of a mood. Build it. That means a
 client component ("use client"), `motion` imported from "motion/react", and the entrance,
@@ -59,6 +79,23 @@ builds this instruction was described rather than required, and the builder ship
 sections with no animation at all while the design system asked for it by name.
 
 Respect `prefers-reduced-motion`: keep opacity changes, drop translation.
+
+REQUIRED: ENTRANCE ANIMATION FIRES ON ARRIVAL, NOT ON MOUNT.
+Below the first screenful, bind entrances to `whileInView` with
+`viewport={{ once: true, margin: "-80px" }}` — not to `animate`. This is a
+mechanism, not a style: what moves, how far, how long and with what easing is the
+design system's decision and stays its decision. An entrance bound to `animate`
+plays while the section is still off screen, so by the time the reader reaches it
+the animation is over and the page reads as static. Measured on a full build: 75
+motion calls across ten sections and zero `whileInView` — every one of them had
+already finished before it could be seen.
+
+The FIRST screenful is the exception, and it is the rule above this one: nothing
+there may start at opacity 0. Animate the hero on mount, from opacity 0.9 or from
+a small offset with opacity already at 1.
+
+`capture.py` scrolls before it shoots for exactly this reason, so a scroll-bound
+entrance is captured correctly by the inspector.
 
 REQUIRED: TEXT ABOVE THE FOLD IS READABLE AT FIRST PAINT.
 Never start headline, body or button text at `opacity: 0` in the first screenful. The
@@ -137,6 +174,10 @@ class Builder(Agent):
         asset_base: str = "",
         copy: dict | None = None,
         identity: str = "",
+        source_shot: str | None = None,
+        source_html: str = "",
+        page_shot: str | None = None,
+        composition: str = "",
     ) -> BuildOutput:
         # Stated as an instruction, not as context. Written as "this section sits
         # on X" it was read as background information and ignored by 4 of 5
@@ -192,6 +233,12 @@ class Builder(Agent):
                 "site's structure is being taken from. "
                 + ("A screenshot of it is attached. Look at it. "
                    if source_shot else "")
+                + ("The whole source page is attached too, its sections tiled "
+                   "into columns — read top-to-bottom then left-to-right. Use it "
+                   "to see how this section sits against the ones around it: a "
+                   "section built without that lands at the same weight as every "
+                   "other one, which is what a templated page is. "
+                   if page_shot else "")
                 + "Build with it in mind: how it divides the width, where the "
                 "weight sits, how dense it is, what carries the eye through it.\n\n"
                 "Take its ARRANGEMENT. Do not take its colours, its typefaces, "
@@ -210,6 +257,7 @@ class Builder(Agent):
             # "use this exact name" line in the brief, every one of eight
             # measured builds put a lucide icon where the wordmark goes and
             # labelled it `aria-label="Platform home"`.
+            composition,
             identity,
             copy_block,
             f"<blueprint>\n"
@@ -263,8 +311,10 @@ class Builder(Agent):
              "fabricate a product screenshot in markup.\n</assets>"),
         ] if x)
 
-        res = self.call(system=system, user=user,
-                        images=[source_shot] if source_shot else None)
+        # Section first, page second: the section is what is being built and the
+        # sheet is context for where it sits.
+        imgs = [x for x in (source_shot, page_shot) if x]
+        res = self.call(system=system, user=user, images=imgs or None)
 
         m = _CODE.search(res.text)
         if not m:

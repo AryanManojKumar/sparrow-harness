@@ -40,12 +40,38 @@ MODELS: dict[str, dict[Tier, str]] = {
         Tier.MID: "gpt-5.6-terra",
         Tier.TOP: "gpt-5.6-sol",
     },
+    # The VoiceOwl APIM gateway serves four deployments and no others; asking for
+    # anything else returns 400 with the allowlist in the message. gpt-5.6-sol is
+    # not among them, so TOP lands on terra — the newest generation exposed, and
+    # the fastest of the four on both text (4.3s) and vision (3.3s), measured
+    # 2026-09-02. There is no /models endpoint published: the 400 body IS the
+    # catalogue, so re-read it rather than trusting this table when calls fail.
+    # One model for all three tiers, deliberately. The tiers still exist and
+    # still mean what they meant — an agent asks for what it needs, and the
+    # mapping is what decides which model answers. Pointing all three at terra
+    # says only that on this gateway there is no cheaper model worth the damage:
+    # the blueprinter ran on the cheap tier and answered "no imagery" for eight
+    # of nine sections, and everything downstream — a design director and a
+    # builder both on better models — inherited that and could not undo it. A
+    # weak agent upstream is not a saving.
+    "azure": {
+        Tier.CHEAP: "gpt-5.6-terra",
+        Tier.MID: "gpt-5.6-terra",
+        Tier.TOP: "gpt-5.6-terra",
+    },
 }
 
 # $ per million tokens (input, output), for the cost ledger. 2026-08-22.
 PRICES: dict[str, dict[Tier, tuple[float, float]]] = {
     "anthropic": {Tier.CHEAP: (0.20, 1.20), Tier.MID: (3.00, 15.00), Tier.TOP: (5.00, 25.00)},
     "openai": {Tier.CHEAP: (0.20, 1.20), Tier.MID: (2.00, 12.00), Tier.TOP: (5.00, 30.00)},
+    # UNVERIFIED — the gateway bills internally and publishes no rate card, so
+    # these mirror the openai line to keep the ledger arithmetic working. Treat
+    # any azure cost figure as an order of magnitude, not an invoice.
+    # Same model on every tier, so the same rate on every tier — a ledger that
+    # bills CHEAP at a tenth of TOP while both run terra is not an estimate, it
+    # is a wrong number that looks like one.
+    "azure": {Tier.CHEAP: (5.00, 30.00), Tier.MID: (5.00, 30.00), Tier.TOP: (5.00, 30.00)},
 }
 
 
@@ -231,10 +257,48 @@ class OpenAIProvider:
         )
 
 
+class AzureAPIMProvider(OpenAIProvider):
+    """The same wire format as OpenAI, behind VoiceOwl's API Management gateway.
+
+    Two differences, both of which produce a 401 that reads like a bad key when
+    you get them wrong. The gateway authenticates on an `api-key` HEADER, not a
+    bearer token: send Authorization instead and APIM answers "missing
+    subscription key" — it never looks at the value. And the subscription key is
+    32 hex characters; a UUID from the portal's Subscriptions blade is the
+    subscription *id* and authenticates as nothing.
+
+    Past auth, the surface is narrower than OpenAI's. `GET /v1/models` is not
+    published (404 with a valid key), so the catalogue lives in MODELS above and
+    is confirmed only by the 400 an unknown model name returns.
+    """
+
+    name = "azure"
+
+    def __init__(self) -> None:
+        from openai import OpenAI
+
+        key = os.environ.get("AZURE_APIM_KEY")
+        if not key:
+            raise RuntimeError("AZURE_APIM_KEY is not set")
+        base = os.environ.get(
+            "AZURE_APIM_BASE_URL",
+            "https://voiceowl-ai-apim-gateway.azure-api.net/openai/v1",
+        )
+        # api_key is required by the SDK constructor and ignored by the gateway,
+        # which reads the header below. Sending the real key in both is harmless
+        # and means a misconfigured base_url fails loudly rather than leaking it
+        # to whatever host was substituted.
+        self.client = OpenAI(base_url=base, api_key=key, default_headers={"api-key": key})
+
+
 def get_provider(name: str | None = None) -> Provider:
     name = (name or os.environ.get("SPARROW_PROVIDER") or "openai").lower()
     if name == "anthropic":
         return AnthropicProvider()
     if name == "openai":
         return OpenAIProvider()
-    raise ValueError(f"unknown provider {name!r}; expected 'openai' or 'anthropic'")
+    if name == "azure":
+        return AzureAPIMProvider()
+    raise ValueError(
+        f"unknown provider {name!r}; expected 'openai', 'anthropic' or 'azure'"
+    )

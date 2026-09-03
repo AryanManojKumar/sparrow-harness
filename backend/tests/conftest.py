@@ -144,8 +144,10 @@ def install_build(monkeypatch, builder, *, blueprints=None, compose=None, repair
         lambda _d: blueprints if blueprints is not None
         else _every_section_has_one(_d))
     monkeypatch.setattr(cli_mod, "_compose_page", compose or (lambda _bb, _ws: None))
+    # (built, spent) since the loop began reporting whether the workspace
+    # actually compiles — the default stub says it did.
     monkeypatch.setattr(cli_mod, "_repair_until_builds",
-                        repair or (lambda _bb, _ws, _p: 0.0))
+                        repair or (lambda _bb, _ws, _p: (True, 0.0)))
     return Blueprint
 
 

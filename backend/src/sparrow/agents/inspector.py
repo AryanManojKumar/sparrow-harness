@@ -26,6 +26,7 @@ from sparrow.agents.base import Agent, stable_system
 from sparrow.blackboard.schema import Blackboard, Section
 from sparrow.capture import PageReport
 from sparrow.providers import Tier
+from sparrow.parse import first_object
 
 SYSTEM = """You are the inspector for a website harness. You look at one built section
 and report what is WRONG with it. You do not write code and you cannot edit anything.
@@ -161,7 +162,7 @@ class Inspector(Agent):
         if not m:
             return [], res
         try:
-            payload = json.loads(m.group(0))
+            payload = first_object(m.group(0), what="inspector reply")
         except json.JSONDecodeError:
             return [], res
         return [

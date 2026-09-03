@@ -37,15 +37,19 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from sparrow import redact
+from sparrow import eleven, redact
 from sparrow.agents.base import Agent
 from sparrow.blackboard.schema import Asset, DesignSystem, Provenance
 from sparrow.providers import Tier
+from sparrow.parse import first_object
 
-IMAGE_MODEL = "gpt-image-2"
+IMAGE_MODEL = eleven.IMAGE_MODEL
 
-# Sizes gpt-image-2 accepts. Everything else is derived locally with Pillow.
-_SIZES = {"wide": "1536x1024", "square": "1024x1024", "tall": "1024x1536"}
+# Shape names, not pixel sizes: KIE takes an aspect ratio and picks the
+# resolution. The three it offers match gpt-image-2's old 1536x1024 /
+# 1024x1024 / 1024x1536 exactly, so blueprint framing is unchanged.
+# Everything else is derived locally with Pillow.
+_SIZES = eleven.SHAPES
 
 
 def _style_clause(ds: DesignSystem) -> str:
@@ -316,17 +320,13 @@ class Curator(Agent):
         the same page's nav showed a lucide phone icon. The uploaded material and
         the generated material advertised two different businesses.
 
-        With a logo, this switches from `images.generate` to `images.edit` with
-        the mark as a reference image — the only way gpt-image-2 is told what a
-        specific mark looks like. `input_fidelity` is NOT sent: gpt-image-2
-        rejects it outright ("does not support the 'input_fidelity' parameter"),
-        which failed the whole assets stage on a live run. The prompt has to
-        say the reference is a reference: given one image and an edit endpoint,
-        the obvious reading is "modify this logo", and the output would be a
-        picture of a logo where a dashboard belongs.
+        With a logo, this switches from the text-to-image model to the
+        image-to-image one with the mark as a reference — the only way either is
+        told what a specific mark looks like. The prompt has to say the
+        reference is a reference: given one image and an edit model, the obvious
+        reading is "modify this logo", and the output would be a picture of a
+        logo where a dashboard belongs.
         """
-        from openai import OpenAI
-
         naming = (
             f"THE PRODUCT SHOWN IS CALLED \"{product_name}\". Wherever this "
             f"interface names itself — a sidebar header, a top bar, a window "
@@ -350,10 +350,7 @@ class Curator(Agent):
         )
 
         if logo is None:
-            r = OpenAI().images.generate(
-                model=IMAGE_MODEL, prompt=prompt, size=_SIZES[shape]
-            )
-            return base64.b64decode(r.data[0].b64_json)
+            return eleven.generate(prompt, shape=shape)
 
         prompt = (
             "The attached image is a REFERENCE, not the thing to edit. It is the "
@@ -365,12 +362,7 @@ class Curator(Agent):
             "its shapes and proportions; recolour it only if the design system "
             "demands it.\n\n" + prompt
         )
-        r = OpenAI().images.edit(
-            model=IMAGE_MODEL,
-            image=[("logo.png", io.BytesIO(_as_png(logo)), "image/png")],
-            prompt=prompt, size=_SIZES[shape],
-        )
-        return base64.b64decode(r.data[0].b64_json)
+        return eleven.generate(prompt, shape=shape, images=[_as_png(logo)])
 
     # ---------------------------------------------------------------- scrubbing
 
@@ -384,7 +376,7 @@ class Curator(Agent):
         if not m:
             return []
         try:
-            found = json.loads(m.group(0)).get("found", [])
+            found = first_object(m.group(0), what="curator reply").get("found", [])
         except json.JSONDecodeError:
             return []
         return [dict(f, text=str(f.get("text", "")).strip(),
@@ -493,8 +485,6 @@ class Curator(Agent):
     # ---------------------------------------------------------------- restyle
 
     def restyle(self, image: bytes, ds: DesignSystem, *, shape: str = "wide") -> bytes:
-        from openai import OpenAI
-
         prompt = (
             "Restyle this screenshot to match a design system. This is a restyle, not a "
             "redesign.\n\n"
@@ -504,17 +494,11 @@ class Curator(Agent):
             "truncated at an edge, leave it truncated. Do not add controls that are not "
             "there. Changing what the interface says is a failure, however well it reads."
         )
-        # Sent as a NAMED file, not a bare BytesIO. Without a name the SDK reports
-        # the part as application/octet-stream and the API rejects the whole call
-        # with "unsupported mimetype" — which is what this path did the first time
-        # anything ever reached it. Nothing had, because until the asset gate
-        # existed every image was generated and `restyle` was unreachable code.
-        r = OpenAI().images.edit(
-            model=IMAGE_MODEL,
-            image=("image.png", io.BytesIO(_as_png(image)), "image/png"),
-            prompt=prompt, size=_SIZES[shape],
-        )
-        return base64.b64decode(r.data[0].b64_json)
+        # _as_png is not optional. The uploader keys off the declared mime type,
+        # and an upload that is not really a PNG comes back from the edit model
+        # as "File type not supported" — at task creation, not at upload, so the
+        # error names the wrong step.
+        return eleven.generate(prompt, shape=shape, images=[_as_png(image)])
 
     # ----------------------------------------------------------------- gating
 

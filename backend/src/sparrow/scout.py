@@ -411,6 +411,18 @@ class Motion:
     properties: list[str]              # what is actually transitioned
     transform: bool                    # does anything move, or only recolour?
 
+    # Arrival: measured by scrolling the page and watching what changes, rather
+    # than read off the DOM at rest. The docstring above says choreography leaves
+    # no trace and cannot be extracted — that is true of the SOURCE, and false of
+    # the BEHAVIOUR. Sampling opacity and transform down the page recovers it:
+    # antigravity.google reports 55% of elements entering from opacity 0 with a
+    # 30px rise over 0.3s. Defaulted to 0 so a source that fails the pass, or an
+    # extract written before this existed, simply reports nothing.
+    arrival_share: float = 0.0         # fraction of elements that animate on entry
+    arrival_from: float = 1.0          # median opacity they start at (1.0 = no fade)
+    arrival_travel_px: int = 0         # median distance travelled on entry
+    arrival_ms: int = 0                # median declared duration of those moves
+
 
 @dataclass
 class Register:
@@ -437,6 +449,112 @@ class SiteExtract:
     semantic_sections: int = 0
     register: Register | None = None
     bands: list[Band] = field(default_factory=list)
+
+
+_SETTLE = r"""
+() => {
+  // Put every element that is STAGED to animate into its arrived state.
+  //
+  // 7 of 9 bands captured from antigravity.google came back pure white
+  // (stddev 0.0). That page stages 40% of its elements at opacity 0 waiting to
+  // enter, `_SCROLL` did not fire them or they reverted on the way back to the
+  // top, and the harness photographed a page whose content had not arrived. The
+  // design director's whole-page contact sheet was a white rectangle.
+  //
+  // Deliberately narrow. Only elements that are transparent or offset AND
+  // declare a transition — that combination is what "waiting to enter" looks
+  // like. Anything hidden by display, visibility or the hidden attribute is
+  // hidden on purpose: a dropdown, a dialog, an inactive tab panel. Forcing
+  // those visible would produce a screenshot of a page nobody can see, which is
+  // a different kind of wrong from a blank one.
+  let n = 0;
+  for (const el of document.querySelectorAll('*')) {
+    if (el.closest('[hidden],[aria-hidden="true"],dialog:not([open])')) continue;
+    const cs = getComputedStyle(el);
+    if (cs.display === 'none' || cs.visibility === 'hidden') continue;
+    // NOT gated on a declared transition. That was the first version of this
+    // and it settled almost nothing: antigravity.google carries 710 elements at
+    // opacity < 1 and only 86 with a CSS transition, because the motion is JS
+    // writing styles frame by frame rather than transitioning. Requiring a
+    // transition excluded ~90% of exactly the elements this exists to fix, and
+    // the captures stayed blank — 8 of 9 bands.
+    const staged = (+cs.opacity < 0.99) || (cs.transform && cs.transform !== 'none');
+    if (!staged) continue;
+    if (+cs.opacity < 0.99) el.style.setProperty('opacity', '1', 'important');
+    if (cs.transform && cs.transform !== 'none') {
+      el.style.setProperty('transform', 'none', 'important');
+    }
+    n++;
+  }
+  return n;
+}
+"""
+
+
+_ARRIVAL = r"""
+() => {
+  const all = document.querySelectorAll('*');
+  const staged = [];
+  for (const el of all) {
+    const cs = getComputedStyle(el);
+    const o = +cs.opacity;
+    let dy = 0;
+    const m = (cs.transform || '').match(/matrix\(([^)]*)\)/);
+    if (m) { const v = m[1].split(',').map(Number); dy = v[5] || 0; }
+    const m3 = (cs.transform || '').match(/matrix3d\(([^)]*)\)/);
+    if (m3) { const v = m3[1].split(',').map(Number); dy = v[13] || 0; }
+    if (o < 0.99 || Math.abs(dy) > 1.5) {
+      staged.push({o: o, dy: dy,
+                   d: parseFloat((cs.transitionDuration || '').split(',')[0]) || 0});
+    }
+  }
+  const med = a => a.length ? a.slice().sort((x, y) => x - y)[Math.floor(a.length / 2)] : 0;
+  const fades = staged.filter(s => s.o < 0.99).map(s => s.o);
+  const moves = staged.filter(s => Math.abs(s.dy) > 1.5 && Math.abs(s.dy) < 400)
+                      .map(s => Math.abs(s.dy));
+  const durs = staged.map(s => s.d).filter(x => x > 0 && x <= 3);
+  return {
+    share: all.length ? staged.length / all.length : 0,
+    from: fades.length ? med(fades) : 1,
+    travel: Math.round(med(moves)),
+    ms: Math.round(med(durs) * 1000),
+  };
+}
+"""
+
+
+def _probe_arrival(page) -> dict:
+    """What is STAGED to animate in, read once at load. No scrolling.
+
+    An element waiting to enter is identifiable before it moves: it sits at
+    opacity 0, or pre-offset by a transform, with a transition declared. That is
+    a static fact about the page, which is why this reads it directly instead of
+    watching for motion.
+
+    Four scroll-sampling versions came before this one and every one returned a
+    plausible wrong number rather than an error — 2/15 blocks, then 55% (unstable
+    element identity across samples), then 19% (sampled the children of animated
+    wrappers), then 8%. Sampling cannot work here: `document.getAnimations()`
+    reports 8 running animations on a page that stages 755 elements, because the
+    motion is JS writing styles frame by frame rather than CSS transitions, and a
+    200ms sample against a 200ms move mostly catches the ends.
+
+    Measured: antigravity.google stages 39% of its elements, fading from opacity
+    0 with a 30px rise over 200ms; kiro.dev stages 4%, moving 74px over 300ms.
+
+    Never raises: a source that will not cooperate reports nothing rather than
+    failing the extract around it.
+    """
+    try:
+        r = page.evaluate(_ARRIVAL) or {}
+        return {
+            "share": round(float(r.get("share", 0)), 2),
+            "from": round(float(r.get("from", 1)), 2),
+            "travel": int(r.get("travel", 0)),
+            "ms": int(r.get("ms", 0)),
+        }
+    except Exception:
+        return {}
 
 
 def extract(
@@ -486,8 +604,24 @@ def extract(
             page.goto(url, wait_until="domcontentloaded", timeout=left_ms(timeout_ms))
             page.wait_for_timeout(2500)
             page.set_default_timeout(left_ms(25000))
+            # BEFORE _SCROLL, and that ordering is the whole measurement.
+            # Entrances are `once: true`: they fire the first time an element
+            # reaches the viewport and never again. _SCROLL exists to trigger
+            # exactly that — lazy content and entrance animations — so a probe
+            # running after it samples a settled page and reports a site that
+            # animates half its elements as animating none. Measured: 0.55 share
+            # / opacity 0.00 / 300ms before the reorder, 0.19 / 1.0 / 0ms after.
+            # Order matters: the probe READS the staged state, so it has to run
+            # before anything settles it; _SETTLE then puts those elements where
+            # they would be once the reader arrived, so the capture is of the
+            # page as seen rather than the page as loaded.
+            arrival = _probe_arrival(page)
             page.evaluate(_SCROLL)
-            page.wait_for_timeout(1200)
+            try:
+                settled = page.evaluate(_SETTLE)
+            except Exception:
+                settled = 0
+            page.wait_for_timeout(600 if settled else 1200)
         except Exception as e:
             browser.close()
             over = _time.monotonic() >= deadline
@@ -503,6 +637,7 @@ def extract(
             semantic = page.evaluate("document.querySelectorAll('section').length")
             cen = page.evaluate(_CENSUS)
             mot = page.evaluate(_MOTION)
+            arr = arrival
             pal = page.evaluate(_PALETTE)
             reg = page.evaluate(_REGISTER)
         except Exception as e:
@@ -531,6 +666,10 @@ def extract(
                 running=int(mot["running"]), ambient=list(mot["ambient"]),
                 tempo_ms=int(mot["tempoMs"]), easing=str(mot["easing"]),
                 properties=list(mot["properties"]), transform=bool(mot["transform"]),
+                arrival_share=float(arr.get("share", 0.0)),
+                arrival_from=float(arr.get("from", 1.0)),
+                arrival_travel_px=int(arr.get("travel", 0)),
+                arrival_ms=int(arr.get("ms", 0)),
             ),
         )
         try:
@@ -561,6 +700,18 @@ def extract(
                 # everything else about a band is a count.
                 b.html = (el.evaluate("e => e.outerHTML") or "")[:14000]
                 if shots:
+                    # Scroll it into view and WAIT before shooting. Entrances on
+                    # these pages are driven by a JS loop that rewrites inline
+                    # styles every frame, so forcing opacity statically loses the
+                    # next tick — 8 of 9 antigravity bands stayed blank with the
+                    # override in place. Working with the animation instead of
+                    # against it: put the band on screen, let its entrance play,
+                    # then capture what a reader would actually see.
+                    try:
+                        el.scroll_into_view_if_needed(timeout=4000)
+                        page.wait_for_timeout(700)
+                    except Exception:
+                        pass
                     dest = out_dir / f"{host}-b{b.index:02d}.png"
                     el.screenshot(path=str(dest), timeout=8000)
                     b.shot = dest

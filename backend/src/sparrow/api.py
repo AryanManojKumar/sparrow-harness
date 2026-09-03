@@ -195,6 +195,7 @@ def _run_for(pid: str) -> Run:
         # which made half of that gate silently unreachable. A stage absent from
         # this dict is not an error — `_advance` treats it as a gate with
         # nothing pending and steps over it.
+        Stage.COMPOSE: steps.step_compose,
         Stage.CONTENT: steps.step_content,
         Stage.GATE_ASSETS: steps.step_asset_gate,
         Stage.ASSETS: steps.step_assets,

@@ -131,8 +131,13 @@ export async function advance(
  * perforated remittance-advice ribbon") is not something a business owner
  * can answer; swatches are. Index -1 is the "none of these" escape hatch,
  * which requires a note saying what to change.
+ *
+ * At the material gate, options split on `kind`:
+ * - "image": asset upload/generate/skip decisions
+ * - "fact": invented copy that needs confirmation (ask_id, draft, invented)
  */
 export type GateOption = {
+  kind?: "image" | "fact";
   choice?: string | number;
   label?: string;
   index?: number;
@@ -140,6 +145,15 @@ export type GateOption = {
   atmosphere?: string;
   type?: string;
   specimen?: string | null;
+  // Fact question fields
+  ask_id?: string;
+  section_id?: string;
+  slot?: string;
+  question?: string;
+  draft?: string;
+  invented?: string;
+  source_example?: string;
+  choices?: { choice: string; label: string; detail?: string; field?: string }[];
 };
 
 export type GateInfo = {
@@ -173,14 +187,31 @@ export function getDirections(projectId: string): Promise<Direction[]> {
 
 export function answerGate(
   projectId: string,
-  choice: string | number,
-  note?: string
-): Promise<{ stage: string }> {
+  payload: {
+    choice?: string | number;
+    note?: string;
+    assets?: Record<string, string>;
+    content?: Record<string, string>;
+  }
+): Promise<{ stage: string; decisions?: Record<string, string>; content_answered?: number }> {
   return fetch(`${API_URL}/projects/${projectId}/gate`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ choice, note }),
+    body: JSON.stringify(payload),
   }).then((r) => asJson(r, "answer gate"));
+}
+
+export function uploadAsset(
+  projectId: string,
+  assetId: string,
+  file: File
+): Promise<{ asset_id: string; stored: string; bytes: number }> {
+  const formData = new FormData();
+  formData.append("file", file);
+  return fetch(`${API_URL}/projects/${projectId}/assets/${assetId}`, {
+    method: "POST",
+    body: formData,
+  }).then((r) => asJson(r, "upload asset"));
 }
 
 export function previewUrl(projectId: string): string {
@@ -196,4 +227,58 @@ export function slugify(text: string): string {
     .slice(0, 40);
   const suffix = Date.now().toString(36).slice(-5);
   return `${base || "project"}-${suffix}`;
+}
+
+/* --------------------------------------------------------------- projects */
+
+/**
+ * One row of GET /projects.
+ *
+ * `project_id` is the directory name and the ONLY id that can be navigated
+ * to — the blackboard carries a field of the same name that can disagree
+ * with it, and reading that one instead is exactly the bug that sent the UI
+ * to the wrong project. Never derive the id from anywhere else.
+ *
+ * A row with `readable: false` predates a schema change and cannot be
+ * parsed, but still carries id, timestamp and preview flag, so it renders as
+ * a disabled card rather than taking the whole list down.
+ */
+export type ProjectSummary = {
+  project_id: string;
+  readable: boolean;
+  reason?: string;
+  product_name?: string;
+  category?: string;
+  stage?: string;
+  sections?: number;
+  built?: number;
+  assets?: number;
+  has_preview?: boolean;
+  updated_at?: number;
+};
+
+/** Already sorted newest-first by the API — render in the order given. */
+export function listProjects(): Promise<ProjectSummary[]> {
+  return fetch(`${API_URL}/projects`).then((r) => asJson(r, "list projects"));
+}
+
+export type ProjectDetail = {
+  project_id: string;
+  stage: string;
+  spent: number;
+  awaiting_gate: string | null;
+  blackboard: {
+    brief?: Brief | null;
+    sections?: unknown[];
+  };
+  log: { stage: string; kind: string; message: string; cost: number }[];
+};
+
+export function getProject(projectId: string): Promise<ProjectDetail> {
+  return fetch(`${API_URL}/projects/${projectId}`).then((r) => asJson(r, "project"));
+}
+
+/** A stage id like "gate:design" means a human is blocking the run. */
+export function isWaitingOnHuman(stage?: string): boolean {
+  return Boolean(stage?.startsWith("gate:"));
 }

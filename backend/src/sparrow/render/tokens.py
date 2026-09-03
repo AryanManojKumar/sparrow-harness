@@ -108,9 +108,32 @@ def to_prompt(ds: DesignSystem) -> str:
     out.append("  No coloured shadows, no glows, nothing larger.")
 
     out.append("")
+    out.append("WIDTHS — the composition pass says which one this section uses.")
+    out.append(f"  contained: {ds.container}")
+    out.append(f"  wide: {ds.container_wide or ds.container}")
+    out.append(f"  full-bleed: {ds.container_bleed or 'w-full'} — no max-width on the "
+               "outer wrapper; inset only what needs reading width")
+    out.append("")
+    out.append("VERTICAL RHYTHM — not every section breathes the same amount.")
+    out.append(f"  standard: {ds.section_padding}")
+    out.append(f"  tight: {ds.section_padding_tight or ds.section_padding}")
+    out.append(f"  loose: {ds.section_padding_loose or ds.section_padding}")
+    if ds.treatments:
+        out.append("")
+        out.append("TREATMENTS — the open half of this system. Implement the ones whose")
+        out.append("`where` covers your section; `how` is written to be used as given.")
+        for t in ds.treatments:
+            out.append(f"  {t.name} — {t.where}")
+            out.append(f"      {t.how}")
+    out.append("")
     out.append(f"IMAGERY TREATMENT\n  {ds.imagery_treatment}")
     out.append("")
     out.append(f"MOTION — implement this; it is a requirement, not a mood\n  {ds.motion}")
+    if ds.arrival:
+        out.append("")
+        out.append("ARRIVAL — what happens as the reader reaches a section. Bind these to")
+        out.append("whileInView below the first screenful, so they play when they are seen.")
+        out.append(f"  {ds.arrival}")
     return "\n".join(out)
 
 

@@ -37,6 +37,7 @@ from sparrow.blackboard.schema import Blackboard, DesignSystem
 from sparrow.providers import Tier
 from sparrow.palette import check as check_palette, report as palette_report
 from sparrow.render.tokens import validate_fonts
+from sparrow.parse import first_object
 
 SYSTEM = """You are the design lead at a small studio known for giving every client a
 visual identity that could not be mistaken for anyone else's. This client has already
@@ -96,6 +97,33 @@ Two more template answers to avoid unless the subject genuinely calls for them: 
 built from a big number with a small label plus supporting stats plus a gradient accent;
 and purple or violet as a primary, which is the reflex choice for software.
 
+## Treatments — the open half of this system
+
+Every other field here names a category somebody thought of in advance: colour, type,
+spacing, radius, shadow, motion. `treatments` is where everything else goes, and it is
+the difference between a page that is correct and a page that is designed.
+
+LOOK AT THE SOURCE SCREENSHOTS AND NAME WHAT THEY ACTUALLY DO TO THEIR SURFACES.
+Grain or noise over the ground. A gradient wash bleeding out of one corner. A panel
+lifted over the section below it. An image bleeding past the container edge. A backdrop
+blur behind a floating bar. A hairline rule that runs the full width while the type stays
+inset. A spotlight behind the focal object. Dotted or gridded ground. A masked fade at the
+edge of a wide screenshot. None of these have a field above. All of them are why that page
+looks made and this one will not without them.
+
+Measured on the last build of this harness: zero gradients, zero backdrop blur, zero
+overlapping elements — on a page built from sources that use all three. Not because the
+model could not, but because nothing asked and nothing recorded it.
+
+Name three to six. Fewer is a page that reads flat. More is noise.
+
+`how` must be implementable as written — real Tailwind v4 utilities, a real gradient, a
+real SVG filter. A treatment named but not specified is a treatment the builder will not
+build: "full-bleed" was passed to ten builders as a word and ten of them returned the
+default container.
+
+Do NOT reach for a treatment the sources do not support. This is evidence, not decoration.
+
 ## The motion vocabulary available to you
 
 These are real components in the project. Colour is a prop on every one, so any of them
@@ -119,7 +147,7 @@ and at YOUR tempo.
 
 ## Work in two passes
 
-FIRST, plan: atmosphere, signature, palette, type, spacing, motion.
+FIRST, plan: atmosphere, signature, palette, type, spacing, motion, treatments.
 
 THEN, before you commit, run the uniqueness test on your own plan. Work through what you
 would produce for a DIFFERENT brief in the same category. Wherever you would arrive
@@ -177,7 +205,11 @@ JSON only. No prose outside it, no code fence.
                   "classes": "exact Tailwind classes",
                   "use": "when to reach for it"}],
   "section_padding": "py-24 md:py-32",
+  "section_padding_tight": "py-12 md:py-16",
+  "section_padding_loose": "py-32 md:py-48",
   "container": "max-w-6xl px-6",
+  "container_wide": "max-w-[88rem] px-6",
+  "container_bleed": "w-full",
   "grid_gap": "gap-8",
   "inline_gap": "gap-3",
   "stack_tight": "space-y-4",
@@ -186,7 +218,13 @@ JSON only. No prose outside it, no code fence.
   "radius_full_allowed": "what may legitimately be fully round",
   "shadow_rest": "shadow-sm", "shadow_hover": "shadow-md",
   "imagery_treatment": "how product imagery is presented",
-  "motion": "what moves, how far, how long"
+  "motion": "what moves, how far, how long",
+  "arrival": "what happens as the reader arrives at a section: what enters, in what
+              order, from where, and how much is staggered. Sequence cannot be measured
+              from a screenshot — the register gives you tempo and easing and stops
+              there — so this is your decision, and without it every section fades in
+              identically.",
+  "treatments": [{"name": "...", "where": "...", "how": "exact classes or CSS"}]
 }
 
 All nine colour tokens are required. Values must be oklch.
@@ -201,10 +239,116 @@ Tailwind classes must be real Tailwind v4 utilities."""
 _JSON = re.compile(r"\{.*\}", re.DOTALL)
 
 
+
+COMPOSE_SYSTEM = """You lay out a whole page. Not one section — the page, as a sequence.
+
+You are given the sitemap in order, the design system already adopted, and screenshots of
+the source page this site takes its structure from. The FIRST screenshot is that whole
+page, tiled into columns, read top-to-bottom then left-to-right.
+
+The problem you exist to solve, stated plainly: every section of this page is built by a
+separate agent that cannot see any other section. Each one, left to decide its own shape,
+picks the same safe shape — a centred column, a heading, a grid of equal cards. Ten good
+sections in identical containers is a template. Rhythm is the thing none of them can
+decide alone, so you decide it here, once, for all of them.
+
+Look at what the source actually does across its length. Where does it go edge to edge and
+where does it pull in? Where does the ground change? Which sections are dense and which
+are almost empty? Where does it put a single large object and where a repeated small one?
+That alternation is the evidence. Reproduce its RHYTHM — not its colours, not its brand.
+
+For every section in the sitemap, decide:
+
+  ground     "page" or "muted". The page ground is the default and should stay the
+             majority. A muted band is a punctuation mark: it separates what is around
+             it, and two adjacent muted sections merge into one grey block that neither
+             builder can see happening. Never place two together.
+
+  width      "contained" — the standard column, for type-led sections.
+             "wide" — wider than the column, still inset. For grids and panels that
+             need room.
+             "full-bleed" — edge to edge. For a section carrying one large object, a
+             band of colour, or a product panel meant to dominate. Use it deliberately
+             and not more than a few times: everything full-bleed is as uniform as
+             nothing full-bleed.
+
+  archetype  the section's shape, in two or three words, from what the source shows:
+             "split-with-panel", "centred-band", "asymmetric-grid", "full-bleed-panel",
+             "stacked-editorial", "tight-logo-row", "large-numbers-row",
+             "quote-with-portrait", "stepped-list". Invent one if the source shows a
+             shape these do not name.
+
+  contrast   one sentence: what makes this section look different from the section
+             directly above it. If you cannot name a difference, the layout is wrong —
+             change the width, the ground, or the archetype until you can.
+
+  treatments the NAMES of the design system's treatments this section may use, from the
+             list given below. Most sections get one, several get none. A treatment
+             applied everywhere stops being a treatment and becomes the background: the
+             last build put a gradient in six sections out of ten and the page read as
+             busy rather than designed. Spend each one where it does the most work.
+
+  signature  exactly ONE section in the whole page sets this true — the section that
+             carries the design system's signature element at full strength. Every other
+             section leaves it alone. This is the "spend your boldness in one place"
+             rule, and it is the difference between a page with a memorable element and
+             a page with a motif repeated until it is wallpaper.
+
+Vary consecutively. Two sections in a row with the same width AND the same archetype is
+the failure this pass exists to prevent.
+
+JSON only, no prose, no code fence:
+
+{ "sections": { "<section id>": { "ground": "...", "width": "...",
+                                  "archetype": "...", "contrast": "...",
+                                  "treatments": ["name", ...],
+                                  "signature": false } },
+  "rhythm": "two sentences on how the page paces itself top to bottom" }"""
+
 class DesignDirector(Agent):
     name = "design_director"
     tier = Tier.TOP          # this agent's ceiling is the product's ceiling
     max_tokens = 12000
+
+    def compose(self, bb: Blackboard, *, shots: list[str] | None = None
+                ) -> tuple[dict, str, object]:
+        """Decide the shape of every section, in one call, seeing the whole page.
+
+        Deliberately separate from `direct`. A direction is chosen by the user at
+        a gate and may be re-rolled; composition follows from whichever direction
+        won and from the sitemap, neither of which exists when the directions are
+        proposed.
+        """
+        order = sorted(bb.sections, key=lambda s: s.order)
+        sitemap = "\n".join(
+            f"  {i + 1}. {s.id}" for i, s in enumerate(order)
+        )
+        parts = [
+            context_block(bb),
+            f"<sitemap>\nThe page, in order:\n{sitemap}\n</sitemap>",
+        ]
+        if bb.design_system is not None:
+            ts = "\n".join(f"  {t.name} — {t.where}"
+                           for t in bb.design_system.treatments) or "  (none)"
+            parts.append(
+                "<design_system>\nAlready adopted and not yours to change here.\n"
+                f"SIGNATURE: {bb.design_system.signature}\n"
+                f"{bb.design_system.atmosphere}\n\n"
+                f"TREATMENTS available to allocate, by name:\n{ts}\n"
+                "</design_system>"
+            )
+        if shots:
+            parts.append(
+                "<source_page>\nThe first image is the whole source page tiled into "
+                "columns; the rest are individual sections at full size. This is the "
+                "page whose rhythm you are reproducing.\n</source_page>"
+            )
+        res = self.call(system=COMPOSE_SYSTEM, user="\n\n".join(parts), images=shots)
+        m = _JSON.search(res.text)
+        if not m:
+            raise ValueError("design director returned no JSON for composition")
+        d = first_object(m.group(0), what="composition reply")
+        return d.get("sections") or {}, str(d.get("rhythm") or ""), res
 
     def direct(
         self, bb: Blackboard, *, sources: str = "",
@@ -241,6 +385,11 @@ class DesignDirector(Agent):
                 "<winning_source>\nThe screenshots below are the source that WON for "
                 "this brief — the page whose structure and pacing this site is being "
                 "built from. Look at them.\n\n"
+                "The FIRST image is the whole page: its sections tiled into columns, "
+                "read top-to-bottom then left-to-right. It is there for pacing — how "
+                "many sections there are, which are dense and which breathe, where "
+                "imagery falls. The images after it are individual sections at full "
+                "size, for detail.\n\n"
                 "Design with them in mind. What makes that page work — how it uses "
                 "width, where it puts weight, how dense or sparse it is, how one "
                 "section differs from the next — is the evidence you are deciding "
@@ -276,7 +425,7 @@ class DesignDirector(Agent):
         m = _JSON.search(res.text)
         if not m:
             raise ValueError(f"design director returned no JSON:\n{res.text[:400]}")
-        payload = json.loads(m.group(0))
+        payload = first_object(m.group(0), what="design director reply")
         revised = payload.pop("revised", "")
         ds = DesignSystem.model_validate(payload)
         ds = self._resolve_fonts(ds)
@@ -316,7 +465,7 @@ Return the COMPLETE list of nine, including the ones you did not change."""
             if not m:
                 break
             try:
-                fixed = json.loads(m.group(0))["colors"]
+                fixed = first_object(m.group(0), what="design director reply")["colors"]
                 ds.colors = [type(ds.colors[0]).model_validate(c) for c in fixed]
             except Exception:
                 break
@@ -354,7 +503,7 @@ JSON only: {"replacements": {"<unavailable family>": "<chosen alternative>"}}"""
             m = _JSON.search(res.text)
             if not m:
                 break
-            repl = json.loads(m.group(0)).get("replacements", {})
+            repl = first_object(m.group(0), what="design director reply").get("replacements", {})
             for field in ("font_display", "font_body", "font_mono"):
                 cur = getattr(ds, field)
                 if cur in repl:

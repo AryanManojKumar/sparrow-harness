@@ -288,6 +288,7 @@ def step_sources(run: Run, urls: list[str]) -> Iterator[Event]:
     from sparrow.agents.blueprinter import Blueprinter, to_markdown
     from sparrow.providers import Tier, get_provider
     from sparrow.rank import (RANKABLE, Candidate, commonality, pick_primary,
+                             primary_order,
                               rank_section, to_design_brief)
     from sparrow.scout import classify, extract
 
@@ -356,6 +357,12 @@ def step_sources(run: Run, urls: list[str]) -> Iterator[Event]:
 
     (out_dir / "design-brief.md").write_text(
         to_design_brief(comm, primary, why, rankings, registers))
+    # Written down because `build` is a separate stage in a separate process and
+    # the per-section winners do not imply it: on fernbank they split brex 5 /
+    # ramp 3 / mercury 1 while the primary — the page whose ORDER AND PACING the
+    # site takes, per the design brief — was ramp. Anything reading pacing off
+    # "whichever site won the most sections" reads it off the wrong page.
+    (out_dir / "primary.txt").write_text(primary)
 
     # The winner's own screenshot and markup, per section type, kept for the
     # stages that run later. `sources` and `build` are separate stages in
@@ -381,7 +388,19 @@ def step_sources(run: Run, urls: list[str]) -> Iterator[Event]:
     bp_dir = run.dir / "blueprints"
     bp_dir.mkdir(parents=True, exist_ok=True)
     bper = Blueprinter(provider)
-    order = comm.typical_order
+    # The primary's own sequence, not the mean of the sources — §5's skeleton.
+    order = primary_order(labelled, primary, comm)
+
+    # Measured, then never shown to the one agent that acts on it. rank.py puts
+    # "large product images: N per page on average" in the design brief, which
+    # the design director reads and the blueprinter does not — and the
+    # blueprinter is what decides whether a section has any imagery at all.
+    _imgs = [r.product_images for r in (registers or {}).values() if r]
+    imagery = (
+        f"These sources carry {sum(_imgs) / len(_imgs):.0f} large product images "
+        f"per page on average, across {len(_imgs)} site(s). Per section that is "
+        f"roughly {sum(_imgs) / len(_imgs) / max(1, len(order)):.1f}."
+    ) if _imgs else ""
 
     # Chrome gets blueprints too, written from whatever the sources showed even
     # though it was never ranked.
@@ -392,7 +411,9 @@ def step_sources(run: Run, urls: list[str]) -> Iterator[Event]:
                 "adopt": [], "unopposed": True}
         bp, u = bper.write(bb.brief, name, stub, cands,
                            [x for x in order if x in rankings],
-                           vocabulary=vocabulary)
+                           vocabulary=vocabulary,
+                           shot=_b64(winners.get(name, {}).get("shot")),
+                           imagery=imagery)
         comp = "".join(w.capitalize() for w in name.replace("-", " ").split())
         (bp_dir / f"{'00' if name == 'nav' else '99'}-{name}.md").write_text(
             to_markdown(bp, comp))
@@ -404,7 +425,9 @@ def step_sources(run: Run, urls: list[str]) -> Iterator[Event]:
             continue
         bp, u = bper.write(bb.brief, t, rankings[t], by_type.get(t, []),
                            [x for x in order if x != t],
-                           vocabulary=vocabulary)
+                           vocabulary=vocabulary,
+                           shot=_b64(winners.get(t, {}).get("shot")),
+                           imagery=imagery)
         comp = "".join(w.capitalize() for w in t.replace("-", " ").split())
         (bp_dir / f"{i + 1:02d}-{t}.md").write_text(to_markdown(bp, comp))
         run.spent += u.cost(provider.name, bper.tier)
@@ -483,7 +506,9 @@ def step_design(run: Run, alternatives: int = 3) -> Iterator[Event]:
     proposals, seen = [], []
     for i in range(alternatives):
         ds, revised, u = dd.direct(bb, sources=sources, avoid=seen or None,
-                                   shots=_winner_shots(run))
+                                   shots=[x for x in
+                                          (_page_sheet(run), *_winner_shots(run))
+                                          if x])
         seen.append(ds)
         proposals.append({"index": i, "signature": ds.signature,
                           "atmosphere": ds.atmosphere,
@@ -614,6 +639,175 @@ def load_content(run: Run) -> dict:
 
 def save_content(run: Run, content: dict) -> None:
     (run.dir / CONTENT_FILE).write_text(json.dumps(content, indent=2))
+
+
+def composition_block(bb, section) -> str:
+    """What shape this section is, what surrounds it, and what it may use.
+
+    The neighbours are named on purpose. "You are full-bleed" is followed
+    without understanding; "you are full-bleed and the section above you is a
+    contained band on muted" is the difference the reader actually sees, and it
+    is the only way a builder that cannot see its neighbours can avoid matching
+    them by accident.
+
+    Treatments and the signature are ALLOCATION, and they are stated as limits
+    rather than options. Given the whole list and asked to pick, the last build
+    put a gradient in six sections of ten and repeated the signature motif down
+    the page — busy for the same reason ten identical containers were flat.
+    """
+    order = sorted(bb.sections, key=lambda x: x.order)
+    i = next((n for n, x in enumerate(order) if x.id == section.id), None)
+    if i is None or not section.archetype:
+        return ""
+
+    def line(x) -> str:
+        return f"{x.id}: {x.width.value}, {x.ground.value} ground, {x.archetype}"
+
+    parts = [
+        "<composition>",
+        "The shape of this section was decided for the whole page at once, by the "
+        "agent that could see all of it. It is not a suggestion and not yours to "
+        "revise — the page's rhythm is the difference between these shapes.",
+        "",
+        f"  YOUR SECTION — {line(section)}",
+        f"  above you — {line(order[i - 1])}" if i > 0 else "  you open the page",
+        f"  below you — {line(order[i + 1])}" if i + 1 < len(order) else "  you close the page",
+        "",
+        f"  what must make yours different: {section.contrast}",
+        "",
+    ]
+    if section.carries_signature:
+        parts += [
+            "  YOU CARRY THE SIGNATURE. This is the one section on the page that states",
+            "  the design system's signature element at full strength. Build it as the",
+            "  thing this page is remembered for.",
+        ]
+    else:
+        parts += [
+            "  You do NOT carry the signature. Another section states it at full",
+            "  strength; restating it here turns the page's one memorable element into",
+            "  a repeated motif. Reference it faintly, or not at all.",
+        ]
+    parts.append("")
+    if section.treatments:
+        parts += [
+            "  YOUR TREATMENTS, by name: " + ", ".join(section.treatments) + ".",
+            "  Apply these and no others. A treatment not named here belongs to a",
+            "  different section; using it anyway is how a page ends up with the same",
+            "  gradient in six places.",
+        ]
+    else:
+        parts += [
+            "  NO TREATMENTS are allocated to this section. Build it from the ground,",
+            "  the type and the layout. That is a deliberate choice, not an omission —",
+            "  a page where every section is treated has no quiet left in it.",
+        ]
+    parts += [
+        "",
+        "  contained — the standard max-width column, centred.",
+        "  wide — wider than the column, still inset from the viewport edge.",
+        "  full-bleed — edge to edge, no side gutter on the outer element.",
+        "  page ground — `bg-background`.  muted ground — `bg-muted`.",
+        "</composition>",
+    ]
+    return "\n".join(parts)
+
+
+def step_compose(run: Run) -> Iterator[Event]:
+    """Decide the shape of every section, once, seeing the whole page.
+
+    Runs after a direction is adopted and before anything is built. It exists
+    because §6's "the design agent's recorded decisions are what the builder is
+    held to" covered palette, type and spacing but never covered SHAPE — and the
+    builder's own prompt tells it "you do NOT see any other section" while also
+    telling it composition is its own. Both cannot hold: rhythm is a property
+    between sections, so ten agents deciding shape alone all pick the median and
+    the page comes out as ten identical bands. Measured on fernbank2: ten
+    sections, one ground, one width, one archetype.
+
+    Idempotent. A section already carrying an archetype keeps it, so a rerun
+    after a rebuild does not re-decide a page that is half built.
+    """
+    from sparrow.agents.design_director import DesignDirector
+    from sparrow.blackboard.schema import Ground, Width
+
+    bb = _bb(run)
+    if bb.design_system is None or not bb.sections:
+        return
+    if all(s.archetype for s in bb.sections):
+        yield Event(Stage.COMPOSE, "progress", "composition already decided — kept")
+        return
+
+    dd = DesignDirector()
+    plan, rhythm, usage = dd.compose(
+        bb, shots=[x for x in (_page_sheet(run), *_winner_shots(run)) if x])
+    run.spent += usage.cost(dd.provider.name, dd.tier)
+
+    prev_ground = None
+    applied = 0
+    for section in sorted(bb.sections, key=lambda s: s.order):
+        spec = plan.get(section.id) or {}
+        try:
+            ground = Ground(str(spec.get("ground", "page")).strip().lower())
+        except ValueError:
+            ground = Ground.PAGE
+        # Two muted bands in a row merge into one grey block that neither builder
+        # can see happening — the same failure drift-test-01 recorded when the
+        # sections chose their own. Enforced here rather than asked for, because
+        # this is the only place that knows what the previous section got.
+        if ground is Ground.MUTED and prev_ground is Ground.MUTED:
+            ground = Ground.PAGE
+        try:
+            width = Width(str(spec.get("width", "contained")).strip().lower())
+        except ValueError:
+            width = Width.CONTAINED
+        section.ground = ground
+        section.width = width
+        section.archetype = " ".join(str(spec.get("archetype", "")).split())[:60]
+        section.contrast = " ".join(str(spec.get("contrast", "")).split())[:200]
+        known = {t.name for t in (bb.design_system.treatments or [])}
+        section.treatments = [str(t) for t in (spec.get("treatments") or [])
+                              if str(t) in known]
+        section.carries_signature = bool(spec.get("signature"))
+        prev_ground = ground
+        applied += 1
+
+    # Exactly one owner. The rule is "spend your boldness in one place", so a
+    # composer that marks three sections has not allocated the signature, it has
+    # spread it — and a composer that marks none leaves the page with no focal
+    # section at all. Settled here rather than asked for again.
+    owners = [x for x in bb.sections if x.carries_signature]
+    if len(owners) != 1:
+        for x in bb.sections:
+            x.carries_signature = False
+        focal = (owners[0] if owners else
+                 next((x for x in sorted(bb.sections, key=lambda y: y.order)
+                       if x.id == "hero"), None) or
+                 sorted(bb.sections, key=lambda y: y.order)[0])
+        focal.carries_signature = True
+
+    # Through Store.apply like every other transition, so the composition leaves
+    # a Decision naming the agent that made it — §3's replayability is the whole
+    # reason the sections carry these fields instead of a sidecar file.
+    rejected = _replace(run, "/sections",
+                        [x.model_dump(mode="json")
+                         for x in sorted(bb.sections, key=lambda x: x.order)],
+                        agent="design-director",
+                        summary=f"composition: {len({s.archetype for s in bb.sections})} "
+                                f"distinct archetype(s)")
+    if rejected:
+        yield Event(Stage.COMPOSE, "blocked",
+                    f"composition decided but not recorded ({rejected.code}): "
+                    f"{rejected.message}")
+    shapes = {(s.width.value, s.archetype) for s in bb.sections}
+    owner = next((x.id for x in bb.sections if x.carries_signature), "?")
+    yield Event(Stage.COMPOSE, "progress",
+                f"{applied} section(s) · {len(shapes)} distinct shape(s) · "
+                f"{sum(1 for s in bb.sections if s.ground is Ground.MUTED)} muted band(s) · "
+                f"signature: {owner} · "
+                f"{sum(len(x.treatments) for x in bb.sections)} treatment placement(s)")
+    if rhythm:
+        yield Event(Stage.COMPOSE, "progress", f"rhythm: {rhythm[:110]}")
 
 
 def step_content(run: Run) -> Iterator[Event]:
@@ -863,6 +1057,83 @@ def _b64(path: str | None) -> str | None:
         return None
     import base64
     return base64.b64encode(p.read_bytes()).decode()
+
+
+# A section's markup is the record of how its parts are arranged, which is the
+# whole reason for showing it — but ramp.com's hero is 60 KB of build-tool class
+# soup, and pasting that whole costs more than the screenshot beside it and
+# teaches the builder less. Truncated to the opening structure, where the
+# arrangement actually lives.
+_MARKUP_CAP = 6000
+
+
+def _source_markup(html: str | None) -> str:
+    if not html:
+        return ""
+    html = html.strip()
+    if len(html) <= _MARKUP_CAP:
+        return html
+    return html[:_MARKUP_CAP] + "\n… markup truncated …"
+
+
+def _page_sheet(run: Run, columns: int = 3) -> str | None:
+    """The winning page as one contact sheet: its bands tiled into columns.
+
+    NOT a full-page screenshot. capture.py works out why that fails: image
+    tokens are (w*h)/750 after a resize to 1568px on the long edge, so a
+    2880x13230 page becomes ~340px wide — a blur that costs real tokens and
+    answers nothing. Tiling into columns keeps the aspect ratio near square, so
+    the resize leaves each band wide enough to read as a band.
+
+    What this is for is rhythm, not detail: how many sections, which are dense
+    and which breathe, where the images fall, how the page paces itself
+    top to bottom. The individual bands are passed alongside it for detail.
+    """
+    from PIL import Image
+
+    src = run.dir / "sources"
+    marker = src / "primary.txt"
+    site = marker.read_text().strip() if marker.is_file() else None
+    if not site:
+        # Older projects have no marker. Most section wins is a guess, but a
+        # better one than "first key in the file", which is just the hero's.
+        from collections import Counter
+        c = Counter(w["site"] for w in load_winners(run).values() if w.get("site"))
+        site = c.most_common(1)[0][0] if c else None
+    if not site:
+        return None
+    host = site.replace(".", "_").replace("https://", "").replace("/", "")
+    bands = sorted(src.glob(f"{host}-b*.png"))
+    if not bands:
+        return None
+
+    cached = src / f"{host}-sheet.png"
+    if not cached.exists():
+        W = 460                       # per-column width after scaling
+        GAP = 12
+        ims = []
+        for b in bands:
+            im = Image.open(b).convert("RGB")
+            ims.append(im.resize((W, max(1, round(im.height * W / im.width)))))
+        total = sum(i.height + GAP for i in ims)
+        per_col = total / columns
+        cols: list[list] = [[]]
+        used = 0.0
+        for im in ims:
+            if used > per_col and len(cols) < columns:
+                cols.append([])
+                used = 0.0
+            cols[-1].append(im)
+            used += im.height + GAP
+        height = max(sum(i.height + GAP for i in c) for c in cols)
+        sheet = Image.new("RGB", (columns * (W + GAP), int(height)), (255, 255, 255))
+        for ci, col in enumerate(cols):
+            y = 0
+            for im in col:
+                sheet.paste(im, (ci * (W + GAP), y))
+                y += im.height + GAP
+        sheet.save(cached)
+    return _b64(str(cached))
 
 
 def _winner_shots(run: Run, limit: int = 4) -> list[str]:
@@ -1537,6 +1808,13 @@ def step_build(run: Run) -> Iterator[Event]:
     ws = run.workspace
     primitives = sorted(p.stem for p in (ws / "src/components/ui").glob("*.tsx"))
     builder = Builder()
+    # The winning source per section, from scout. builder's prompt has asked for
+    # this since 6398b98; the arguments were never passed, so every build raised
+    # NameError on the first section. Loaded once, not per section.
+    winners = load_winners(run)
+    # Built once for the whole stage, not per section — it is the same image
+    # nine times over, and re-tiling it each round is pure latency.
+    sheet = _page_sheet(run)
     built = skipped = 0
 
     for section in sorted(bb.sections, key=lambda s: s.order):
@@ -1566,7 +1844,13 @@ def step_build(run: Run) -> Iterator[Event]:
                                     if a.kind is not AssetKind.LOGO],
                             asset_base=f"/projects/{run.project_id}/preview",
                             copy=(content.get(section.id) or {}).get("slots"),
-                            identity=identity_block(run, bb, section))
+                            identity=identity_block(run, bb, section),
+                            source_shot=_b64(
+                                (winners.get(section.id) or {}).get("shot")),
+                            source_html=_source_markup(
+                                (winners.get(section.id) or {}).get("html")),
+                            page_shot=sheet,
+                            composition=composition_block(bb, section))
         write_section(ws, section, out.code,
                       asset_base=f"/projects/{run.project_id}/preview")
         # Immediately, per section. The file and the record of the file are one
@@ -1587,10 +1871,19 @@ def step_build(run: Run) -> Iterator[Event]:
 
     from sparrow.cli import _compose_page, _repair_until_builds
     _compose_page(bb, ws)
-    run.spent += _repair_until_builds(bb, ws, builder.provider.name)
-    yield Event(Stage.BUILD, "done", "page composed and built"
-                + (f" · {built} built, {skipped} kept from a previous run"
-                   if skipped else ""))
+    ok, spent = _repair_until_builds(bb, ws, builder.provider.name)
+    run.spent += spent
+    kept = (f" · {built} built, {skipped} kept from a previous run"
+            if skipped else "")
+    if not ok:
+        # Raised, not yielded as a warning. VERIFY's first act is to shoot the
+        # static export, so a run that carries on from here fails there instead
+        # — reporting "no static export at workspace/out", which describes the
+        # consequence and names neither the file nor the error that caused it.
+        raise RuntimeError(
+            "the section files were written but the workspace does not compile "
+            "— see the build output above for the failing file" + kept)
+    yield Event(Stage.BUILD, "done", "page composed and built" + kept)
 
 
 class AssetsNotServed(RuntimeError):

@@ -27,6 +27,7 @@ import re
 from sparrow.agents.base import Agent
 from sparrow.blackboard.schema import Brief, Constraint
 from sparrow.providers import Tier
+from sparrow.parse import first_object
 
 _JSON = re.compile(r"\{.*\}", re.DOTALL)
 
@@ -145,7 +146,7 @@ class Interviewer(Agent):
             m = _JSON.search(res.text)
             if not m:
                 return empty
-            d = json.loads(m.group(0))
+            d = first_object(m.group(0), what="interviewer reply")
         except Exception:
             return empty
         rows = [
@@ -168,7 +169,7 @@ class BriefDraft(Agent):
         m = _JSON.search(res.text)
         if not m:
             raise ValueError("interviewer returned no JSON")
-        d = json.loads(m.group(0))
+        d = first_object(m.group(0), what="interviewer reply")
         brief = Brief(
             product_name=str(d.get("product_name", "")).strip(),
             category=d["category"].strip(),
