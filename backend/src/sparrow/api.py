@@ -24,8 +24,10 @@ that works in a browser without a socket.
 from __future__ import annotations
 
 import json
+import queue
 import subprocess
 import re
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -96,6 +98,108 @@ _RUNS: dict[str, Run] = {}
 # generators drive the same stages concurrently, writing the same files and
 # double-charging. One advance per project at a time.
 _ADVANCING: set[str] = set()
+
+
+class _Live:
+    """One in-flight advance, driven on its own thread, fanned out to any
+    number of listeners.
+
+    The run used to be a generator pulled by the HTTP response: Starlette asked
+    for the next event only when the client was there to receive it. That made
+    two things true that the docstring on /advance claimed were false — closing
+    the tab stopped the run mid-stage (one VERIFY died that way, its result
+    never recorded), and nobody but the original caller could watch it. A run
+    started with curl showed in the console as "Stopped at sources" while the
+    server was busy extracting sources.
+
+    Now the generator is consumed here, on a daemon thread, whether or not
+    anyone is listening. Every event is appended to `history` and pushed to
+    each subscriber's queue; a late subscriber gets the history first and then
+    the live tail, so a page opened — or reloaded — mid-run sees the same
+    feed as one that started it.
+    """
+
+    def __init__(self, pid: str, run: Run) -> None:
+        self.pid = pid
+        self.history: list[dict[str, Any]] = []
+        self.subs: list[queue.Queue] = []
+        self.done = False
+        self.lock = threading.Lock()
+        self.thread = threading.Thread(target=self._drive, args=(run,),
+                                       name=f"advance:{pid}", daemon=True)
+
+    def start(self) -> "_Live":
+        _ADVANCING.add(self.pid)
+        _LIVE[self.pid] = self
+        self.thread.start()
+        return self
+
+    def _drive(self, run: Run) -> None:
+        try:
+            for ev in run.advance():
+                self._publish({"stage": ev.stage.value, "kind": ev.kind,
+                               "message": ev.message, "cost": ev.cost,
+                               "data": ev.data, "spent": round(run.spent, 4)})
+        except Exception as e:  # advance() catches stage errors; this is the rest
+            self._publish({"stage": run.stage.value, "kind": "failed",
+                           "message": f"{type(e).__name__}: {e}", "cost": 0,
+                           "data": {}, "spent": round(run.spent, 4)})
+        finally:
+            with self.lock:
+                self.done = True
+                for q in self.subs:
+                    q.put(None)
+            _ADVANCING.discard(self.pid)
+            _LIVE.pop(self.pid, None)
+
+    def _publish(self, payload: dict[str, Any]) -> None:
+        with self.lock:
+            self.history.append(payload)
+            for q in self.subs:
+                q.put(payload)
+
+    def subscribe(self) -> tuple[list[dict[str, Any]], queue.Queue | None]:
+        """A snapshot of everything so far, plus a queue for what follows —
+        or None for the queue if the run already finished."""
+        with self.lock:
+            if self.done:
+                return list(self.history), None
+            q: queue.Queue = queue.Queue()
+            self.subs.append(q)
+            return list(self.history), q
+
+    def unsubscribe(self, q: queue.Queue) -> None:
+        with self.lock:
+            if q in self.subs:
+                self.subs.remove(q)
+
+
+_LIVE: dict[str, _Live] = {}
+
+
+def _sse(live: _Live):
+    """Replay, then tail. Blocking waits are bounded so a listener that went
+    away is noticed at the next keepalive rather than never."""
+    history, q = live.subscribe()
+    try:
+        for payload in history:
+            yield f"data: {json.dumps(payload)}\n\n"
+        if q is None:
+            yield "event: end\ndata: {}\n\n"
+            return
+        while True:
+            try:
+                payload = q.get(timeout=15)
+            except queue.Empty:
+                yield ": keepalive\n\n"
+                continue
+            if payload is None:
+                break
+            yield f"data: {json.dumps(payload)}\n\n"
+        yield "event: end\ndata: {}\n\n"
+    finally:
+        if q is not None:
+            live.unsubscribe(q)
 
 
 class SuggestRequest(BaseModel):
@@ -213,6 +317,7 @@ def _run_for(pid: str) -> Run:
             run.stage = _infer_stage(PROJECTS / pid, bb)
     except (ValueError, KeyError):
         pass          # an unknown stage string: start from the top, as before
+    run.restore_pending()
     _RUNS[pid] = run
     return run
 
@@ -240,7 +345,13 @@ def _infer_stage(d: Path, bb: Blackboard) -> Stage:
         return Stage.GATE_DESIGN
     if (d / "blueprints").is_dir() and any((d / "blueprints").iterdir()):
         return Stage.DESIGN
-    if bb.brief is not None:
+    # Only past BRIEF if the brief is COMPLETE. "Has a brief" was the test, and
+    # a project created a second ago through POST /projects has one — so this
+    # returned SOURCES for every new project and the name gate in `step_brief`
+    # never ran through the API. Measured: a site whose nav read "The platform"
+    # because `product_name` was "" and nothing had asked. The CLI, which does
+    # not infer, asked every time.
+    if bb.brief is not None and bb.brief.product_name.strip():
         return Stage.SOURCES
     return Stage.BRIEF
 
@@ -418,6 +529,14 @@ def list_projects() -> list[dict[str, Any]]:
             # should offer POST /projects/{id}/rebind, not an iframe.
             "preview_bound": steps.preview_bound(_run_for(d.name))
             if (d / "workspace/out/index.html").is_file() else True,
+            # Whether GET /projects/{id}/thumb can answer without launching a
+            # browser. The console shows a card image either way; this only
+            # tells it whether the first paint will be instant.
+            "thumb_ready": (d / "shots/thumb.png").is_file(),
+            # Whether a run is executing on this server right now. Without it
+            # the console showed "Stopped at sources" over a run that was in
+            # the middle of extracting sources.
+            "running": d.name in _ADVANCING,
         }
         try:
             bb = Blackboard.model_validate_json(f.read_text())
@@ -514,34 +633,44 @@ def get_project(pid: str) -> dict[str, Any]:
 def advance(pid: str) -> StreamingResponse:
     """Run until the next gate. Server-sent events, one per stage transition.
 
-    The run keeps going if the client disconnects — closing a tab should not throw
-    away work already paid for. Reconnect with `GET /projects/{id}` for the current
-    stage and the log so far.
+    The run is driven on a server thread, so it keeps going if the client
+    disconnects — closing a tab does not throw away work already paid for.
+    Reconnect with this same call, or read-only with `GET /projects/{id}/events`,
+    to get everything emitted so far and then the live tail.
 
-    A second advance while one is in flight is refused rather than queued, because
-    two generators over the same stages write the same files and bill twice.
+    A second advance while one is in flight ATTACHES to it rather than starting
+    another: there is one generator over the stages, so nothing is written or
+    billed twice.
     """
     run = _run_for(pid)
-    if pid in _ADVANCING:
-        raise HTTPException(
-            409,
-            "this project is already advancing — reconnect with GET /projects/"
-            f"{pid} to follow it, or wait for it to reach a gate",
-        )
+    # Already in flight: attach rather than refuse. There is still exactly one
+    # generator over the stages — the second caller gets its history and then
+    # its tail, and bills nothing. The 409 this used to raise is what left the
+    # console unable to show a run it had not started.
+    live = _LIVE.get(pid) or _Live(pid, run).start()
+    return StreamingResponse(_sse(live), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache",
+                                      "X-Accel-Buffering": "no"})
 
-    def stream():
-        _ADVANCING.add(pid)
-        try:
-            for ev in run.advance():
-                payload = {"stage": ev.stage.value, "kind": ev.kind,
-                           "message": ev.message, "cost": ev.cost, "data": ev.data,
-                           "spent": round(run.spent, 4)}
-                yield f"data: {json.dumps(payload)}\n\n"
+
+@app.get("/projects/{pid}/events", tags=["run"],
+         summary="Follow a run that is already advancing (SSE)")
+def follow(pid: str) -> StreamingResponse:
+    """Everything the in-flight run has emitted so far, then the live tail.
+
+    Read-only: this never starts a run. If nothing is advancing it ends at
+    once with `event: end`, and the caller should read GET /projects/{id} for
+    where the project is parked instead. GET rather than POST so a plain
+    EventSource can use it.
+    """
+    _run_for(pid)  # 404 on an unknown project
+    live = _LIVE.get(pid)
+    if live is None:
+        def nothing():
             yield "event: end\ndata: {}\n\n"
-        finally:
-            _ADVANCING.discard(pid)
-
-    return StreamingResponse(stream(), media_type="text/event-stream",
+        return StreamingResponse(nothing(), media_type="text/event-stream",
+                                 headers={"Cache-Control": "no-cache"})
+    return StreamingResponse(_sse(live), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache",
                                       "X-Accel-Buffering": "no"})
 
@@ -588,7 +717,7 @@ def answer_gate(pid: str, body: GateAnswer) -> dict[str, Any]:
                 raise HTTPException(
                     400, "say what to change — 'darker', 'warmer', 'less green'")
             (PROJECTS / pid / "redirect.txt").write_text(body.note.strip())
-            run.pending = None
+            run.set_pending(None)
             run.stage = Stage.DESIGN
             return {"stage": run.stage.value, "regenerating": True}
         try:
@@ -756,6 +885,26 @@ def preview(pid: str, path: str = "") -> Any:
     return FileResponse(target)
 
 
+@app.get("/projects/{pid}/files/{path:path}", tags=["artifacts"],
+         summary="A produced asset, from the moment it exists")
+def produced_file(pid: str, path: str) -> FileResponse:
+    """Serve `workspace/public/<path>` — the blackboard's `Asset.path` resolves
+    here directly.
+
+    Distinct from `/preview/`, which serves the static EXPORT. The export is
+    written by BUILD, so for the whole of the assets stage — the minutes in
+    which images and a video are actually being generated — every
+    `/preview/assets/…` URL 404s, and a console showing "hero-1 generated ✓"
+    beside an empty box is telling the truth and looking like a lie. The
+    file the stage wrote is in `public/`; this serves it from there.
+    """
+    base = (PROJECTS / pid / "workspace" / "public").resolve()
+    target = (base / path).resolve()
+    if not str(target).startswith(str(base)) or not target.is_file():
+        raise HTTPException(404, path)
+    return FileResponse(target, headers={"Cache-Control": "public, max-age=3600"})
+
+
 @app.get("/projects/{pid}/specimens/{name}", tags=["artifacts"],
          summary="A rendered design direction, or the source palettes")
 def specimen(pid: str, name: str) -> FileResponse:
@@ -766,13 +915,57 @@ def specimen(pid: str, name: str) -> FileResponse:
     return FileResponse(target)
 
 
-@app.get("/projects/{pid}/shots/{name}", tags=["artifacts"], summary="A capture")
+@app.get("/projects/{pid}/shots/{name:path}", tags=["artifacts"], summary="A capture")
 def shot(pid: str, name: str) -> FileResponse:
+    # `{name:path}`, not `{name}`: the captures live one level down in
+    # `shots/sections/`, and a plain path parameter stops at the slash, so
+    # every section shot 404'd and the console fell back to iframing the
+    # whole export. The resolve/startswith check below is what keeps the
+    # wider match from being a traversal.
     base = (PROJECTS / pid / "shots").resolve()
     target = (base / name).resolve()
     if not str(target).startswith(str(base)) or not target.exists():
         raise HTTPException(404, name)
-    return FileResponse(target)
+    return FileResponse(target, headers={"Cache-Control": "public, max-age=31536000"})
+
+
+@app.get("/projects/{pid}/thumb", tags=["artifacts"],
+         summary="A small still of the built page, rendered once and cached")
+def thumb(pid: str) -> FileResponse:
+    """The home screen's card image.
+
+    The console used to thumbnail a project by iframing its real export at
+    desktop width and scaling it down. That is a full Next.js site per card —
+    React and Motion hydrating, fonts, images — and the listing shows every
+    project at once, so opening the home screen booted nineteen websites and
+    the tab stopped responding. A card wants a picture, so serve a picture.
+
+    Rendered from the export on first request and cached on disk next to the
+    other captures, so this costs one Playwright launch per project ever and
+    nothing at all on repeat visits.
+    """
+    d = PROJECTS / pid
+    cached = d / "shots" / "thumb.png"
+    if cached.is_file():
+        return FileResponse(cached, headers={"Cache-Control": "public, max-age=86400"})
+
+    # NOT `shots/sections/desktop-s00.png`, tempting as it is. Section zero is
+    # the nav — a 1440x90 strip — and a card is a 16:10 box, so object-cover
+    # scales that strip to fill the height and the card shows four enormous
+    # letters of a menu item. Every section shot is a crop of its own section
+    # at its own aspect ratio; none of them is a picture of the page. Render
+    # the viewport instead, once, and cache it.
+
+    out = d / "workspace" / "out"
+    if not (out / "index.html").is_file():
+        raise HTTPException(404, f"{pid} has no built export to shoot")
+
+    from sparrow.capture import thumbnail
+    try:
+        thumbnail(out, cached)
+    except Exception as e:
+        raise HTTPException(503, f"could not render a thumbnail: {e}") from e
+    return FileResponse(cached, headers={"Cache-Control": "public, max-age=86400"})
 
 
 @app.get("/projects/{pid}/logs", tags=["artifacts"],

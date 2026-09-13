@@ -2,6 +2,12 @@
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
 
+/* Tailwind v4 scans every file under the project for class candidates, and
+   `.next/` is full of stale compiled output from earlier builds — classes the
+   current sections no longer use, arbitrary values that no longer parse. On a
+   rebuild those come back as CSS and, at minify, as errors. Never scan it. */
+@source not "../../.next";
+
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {

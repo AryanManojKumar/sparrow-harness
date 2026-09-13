@@ -85,27 +85,41 @@
   height: 78vh;
   pointer-events: none;
   z-index: -3;
-  mix-blend-mode: screen;
-  /* Parallax offset, written each frame by components/pointer-glow.tsx. */
+  opacity: 0.85;
+  /* Parallax offset, written by components/pointer-glow.tsx. Translate only,
+   * on its own compositor layer, so moving it never re-runs the filter. */
   transform: translate3d(var(--parallax-x, 0px), var(--parallax-y, 0px), 0);
   will-change: transform;
+  contain: layout paint;
 }
 
-/* The sky breathing — a very slow drift so the backdrop is alive even when
- * the pointer is still. Sits on the inner svg because the wrapper's own
- * transform is owned by the parallax above. */
+/* No `mix-blend-mode: screen` here, and no animation on the svg.
+ *
+ * Both were costing a frame budget the page did not have. Screen-blending a
+ * fixed, full-viewport layer makes the compositor read the backdrop back and
+ * re-blend it on every frame — it cannot fast-path a blended layer. And the
+ * svg under it is two `feTurbulence` filters; a filter result is rasterised
+ * once and cached, but only while the filtered element's geometry holds
+ * still, so animating `scale` on it threw that cache away 60 times a second
+ * and re-ran fractal noise over the whole viewport each time. Together they
+ * pinned a core for as long as the tab was open.
+ *
+ * The clouds now rasterise once and ride the compositor on a translate. The
+ * drift they used to get from `scale` comes from the parallax instead. */
+
+/* The sky breathing, moved off the filtered element and onto the wrapper's
+ * own opacity — compositor-only, and it never touches the filter. */
 .console-clouds > svg {
-  transform-origin: 50% 0%;
-  animation: cloud-drift 42s ease-in-out infinite;
+  animation: cloud-breathe 48s ease-in-out infinite;
 }
 
-@keyframes cloud-drift {
+@keyframes cloud-breathe {
   0%,
   100% {
-    transform: scale(1.04) translate3d(-0.6%, 0, 0);
+    opacity: 0.82;
   }
   50% {
-    transform: scale(1.09) translate3d(0.6%, -1.2%, 0);
+    opacity: 1;
   }
 }
 
@@ -116,8 +130,11 @@
   inset: 0;
   pointer-events: none;
   z-index: -2;
-  mix-blend-mode: screen;
+  /* Blend mode removed for the same reason as the clouds — see above. The
+   * gradient is additive light on a near-black ground, so plain compositing
+   * reads almost identically and costs nothing. */
   opacity: var(--pointer-glow, 0);
+  contain: layout paint;
   background: radial-gradient(
     380px circle at var(--pointer-x, 50%) var(--pointer-y, 30%),
     oklch(0.66 0.09 278 / 9%),
@@ -148,12 +165,18 @@
   z-index: -1;
 }
 
+/* Promoted to their own layers so `star-twinkle` runs as a compositor
+ * opacity animation. Unpromoted, animating opacity on a full-viewport
+ * element repaints the whole viewport every frame, which is what made
+ * scrolling the home screen stutter even after the clouds were fixed. */
 .console-stars::before,
 .console-stars::after {
   content: "";
   position: absolute;
   inset: 0;
   background-repeat: repeat;
+  transform: translateZ(0);
+  will-change: opacity;
 }
 
 .console-stars::before {
@@ -196,5 +219,24 @@
   .console-stars::after {
     animation: none;
     opacity: 0.8;
+  }
+}
+
+/* The sweep across the section BUILD is working on right now, and the
+ * indeterminate bar shown before there is a plan to draw. Transform only —
+ * it runs on the compositor and never touches layout or paint. See
+ * components/build-canvas.tsx. */
+@keyframes canvas-sweep {
+  0% {
+    transform: translateX(0);
+  }
+  100% {
+    transform: translateX(400%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [class*="canvas-sweep"] {
+    animation: none;
   }
 }

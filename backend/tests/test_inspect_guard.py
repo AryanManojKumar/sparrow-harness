@@ -32,7 +32,7 @@ CLEAN = 'export default function Hero() { return <section className="gap-8" />; 
 def report(failed: list[str]) -> PageReport:
     return PageReport(console_errors=[], failed_requests=failed,
                       horizontal_overflow=[], fold_fade=[], spill=[],
-                      contrast_failures=[], sections=[])
+                      jammed_headings=[], contrast_failures=[], sections=[])
 
 
 class ForbiddenInspector:
@@ -146,8 +146,8 @@ def test_console_errors_alone_do_not_stop_the_round(tmp_path, monkeypatch):
     run = prepared(tmp_path)
     stub_capture(monkeypatch, {"desktop": PageReport(
         console_errors=["TypeError: undefined is not a function"], failed_requests=[],
-        horizontal_overflow=[], fold_fade=[], spill=[], contrast_failures=[],
-        sections=[])})
+        horizontal_overflow=[], fold_fade=[], spill=[], jammed_headings=[],
+        contrast_failures=[], sections=[])})
     CountingInspector.built = 0
     monkeypatch.setattr(inspector_mod, "Inspector", CountingInspector)
 

@@ -16,6 +16,21 @@ from enum import StrEnum
 from typing import Protocol
 
 
+# Every model call gets a wall-clock ceiling and bounded retries.
+#
+# Neither existed. Measured on the meridian-engine run: a request to the Azure
+# gateway opened at 19:41:46, never returned, and the backend sat on the socket
+# for 2h17m — 47 seconds of CPU across three and a half hours, three leaked
+# CLOSE-WAIT sockets beside it, and a run that looked alive the whole time
+# because the SSE stream was still connected. The gateway itself was healthy;
+# one request wedged and nothing was watching it.
+#
+# 300s is well past the slowest legitimate call observed (a 116s image, a 45s
+# fixer) and far short of a stall nobody notices.
+CALL_TIMEOUT = float(os.environ.get("SPARROW_CALL_TIMEOUT", "300"))
+CALL_RETRIES = int(os.environ.get("SPARROW_CALL_RETRIES", "2"))
+
+
 class Tier(StrEnum):
     """What an agent needs, not what it runs on.
 
@@ -174,7 +189,7 @@ class AnthropicProvider:
 
         if not os.environ.get("ANTHROPIC_API_KEY"):
             raise RuntimeError("ANTHROPIC_API_KEY is not set")
-        self.client = Anthropic()
+        self.client = Anthropic(timeout=CALL_TIMEOUT, max_retries=CALL_RETRIES)
 
     @_timed
     def complete(
@@ -218,7 +233,7 @@ class OpenAIProvider:
 
         if not os.environ.get("OPENAI_API_KEY"):
             raise RuntimeError("OPENAI_API_KEY is not set")
-        self.client = OpenAI()
+        self.client = OpenAI(timeout=CALL_TIMEOUT, max_retries=CALL_RETRIES)
 
     @_timed
     def complete(
@@ -288,7 +303,9 @@ class AzureAPIMProvider(OpenAIProvider):
         # which reads the header below. Sending the real key in both is harmless
         # and means a misconfigured base_url fails loudly rather than leaking it
         # to whatever host was substituted.
-        self.client = OpenAI(base_url=base, api_key=key, default_headers={"api-key": key})
+        self.client = OpenAI(base_url=base, api_key=key,
+                             default_headers={"api-key": key},
+                             timeout=CALL_TIMEOUT, max_retries=CALL_RETRIES)
 
 
 def get_provider(name: str | None = None) -> Provider:

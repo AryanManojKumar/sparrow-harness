@@ -181,6 +181,16 @@ class DesignSystem(BaseModel):
 
     shadow_rest: str
     shadow_hover: str
+    # SCALES, sized like the source's measured vocabulary. `radius_card` and
+    # `shadow_rest` above are one value each, and the audit held every surface
+    # to them — so every container on the page had the identical corner and
+    # the identical shadow, and thirty of them read as one stamp. Type already
+    # has `type_steps`; radius and shadow get the same shape. List every
+    # utility the page may use, in the order of the role it plays: the register
+    # says how many the sources use, and a scale the size of theirs is the
+    # evidence-backed answer. The single fields stay as the defaults.
+    radius_scale: list[str] = Field(default_factory=list)   # e.g. ["rounded-md", "rounded-xl", "rounded-[2rem]", "rounded-full"]
+    shadow_scale: list[str] = Field(default_factory=list)   # e.g. ["shadow-none", "shadow-sm", "shadow-[0_24px_60px_-30px_oklch(...)]"]
 
     imagery_treatment: str
     motion: str
@@ -202,16 +212,16 @@ class DesignSystem(BaseModel):
 # ----------------------------------------------------------------------- sections
 
 
-class Ground(StrEnum):
-    """Page vs. muted background.
-
-    Owned by `sitemap`, not by the builder. In drift-test-01 two adjacent
-    sections independently chose `muted` and merged into one grey block that
-    neither builder could have seen.
-    """
-
-    PAGE = "page"
-    MUTED = "muted"
+# `Ground` was a two-member enum — "page" or "muted" — and the composer could
+# not say anything else. The scout measured sarvam's full-bleed dark band under
+# a headline and elevenlabs' dark demo panel, the design brief named both, and
+# every page built from them came out on one pale ground end to end, because the
+# only field for the decision had two values and neither was that. Same failure
+# as §6's `treatments` and `archetype`: the schema capped what the pass that saw
+# the evidence was allowed to record. It is now a name and a `how`, like
+# archetype; "page" and "muted" remain valid names with their old meaning.
+GROUND_PAGE = "page"
+GROUND_MUTED = "muted"
 
 
 class Width(StrEnum):
@@ -241,7 +251,12 @@ class Section(BaseModel):
     blueprint_id: str
     target_path: str
     component_name: str
-    ground: Ground = Ground.PAGE
+    ground: str = GROUND_PAGE     # "page", "muted", or a name the composer gave it
+    # HOW that ground is painted, as classes on the section root. Empty for the
+    # two named grounds, which the builder already knows as `bg-background` and
+    # `bg-muted`. Anything else — an inverted band, a wash, a canvas or a
+    # picture the copy sits on — is only real if it is written here.
+    ground_how: str = ""
     # Composition, decided once for the whole page by the design director and
     # recorded here. §6: the design agent's output is the source of truth and
     # its recorded decisions are what the builder is held to. That already
@@ -255,6 +270,22 @@ class Section(BaseModel):
     # of three can carry that. Zero means unmeasured; fall back to `width`.
     content_share: float = 0.0
     archetype: str = ""          # "split-with-panel", "band", "asymmetric-grid", …
+    # HOW that archetype is actually built, as classes the builder can paste.
+    #
+    # The name alone does not survive the trip. Measured across five projects
+    # carrying four different archetype names — split-with-panel,
+    # full-bleed-panel, asymmetric-launch, split-with-confluence — every single
+    # hero rendered copy-left/media-right, and three of the five used the
+    # identical `col-span-5 / col-span-7`. `full-bleed-panel` rendered as a
+    # contained two-column, the opposite of what it says.
+    #
+    # This is §6's treatments lesson, one field over and never carried across:
+    # "full-bleed" was handed to ten builders as a word and ten returned the
+    # default container. A NAME LOSES TO THE MODEL'S PRIOR; CLASSES DO NOT. So
+    # the composer that invents the shape also has to say how it is built, in
+    # terms that survive being read by an agent with a strong prior about what
+    # a hero looks like.
+    archetype_how: str = ""
     contrast: str = ""           # one line: how this differs from its neighbours
     # Which treatments this section may use, and whether it is the one that
     # carries the signature. Both are allocation, not vocabulary: the designer
@@ -266,6 +297,28 @@ class Section(BaseModel):
     # is not boldness.
     treatments: list[str] = Field(default_factory=list)
     carries_signature: bool = False
+    # Whether this section carries the page's ambient video, decided by the pass
+    # that can see the whole page.
+    #
+    # Same shape as `carries_signature`, for the same reason. The blueprinter was
+    # asked to request a [video] "only if this section is the one that would
+    # carry it" — a page-level question put to an agent that sees one section and
+    # cannot know what the others chose. Across every project ever built it
+    # answered no, ten times out of ten, while the sources it was reading put a
+    # 23-second loop behind their hero. An unanswerable question has one safe
+    # answer, and allocation is not a judgement a section-level agent can make.
+    carries_motion: bool = False
+    # WHAT the motion is, in the source's own terms, and how much of the
+    # section it owns — decided by the composer from what the scout measured,
+    # not fixed here. The first version hardcoded every video as "a silent
+    # ambient loop, supporting", which is what vapi's hero footage is and what
+    # none of the next five sources' videos were: antigravity's are a title
+    # card and a product screen recording, deepseek's a demo with controls,
+    # counter-strike's a rail of small loops. A role the composer writes —
+    # "full-bleed atmosphere the headline sits on", "a product recording beside
+    # the copy" — is what the asset gate, the curator and the builder read.
+    motion_role: str = ""
+    motion_prominence: str = ""
     status: BuildStatus = BuildStatus.PENDING
     attempts: int = 0
     defects: list[str] = Field(default_factory=list)

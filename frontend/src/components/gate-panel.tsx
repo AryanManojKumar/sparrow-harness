@@ -2,9 +2,12 @@
 
 import { useState } from "react";
 
+import { Film, Image as ImageIcon, Sparkles, Stamp, Upload } from "lucide-react";
+
 import {
   assetUrl,
   uploadAsset,
+  type AssetKind,
   type Direction,
   type GateInfo,
   type GateOption,
@@ -12,6 +15,45 @@ import {
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+
+/** What the file picker accepts, by asset kind. The server says the same
+ *  thing in prose (`accepts`); this is the machine-readable version, and it
+ *  is what stops an SVG being offered for a screenshot or an MP4 for a logo. */
+const ACCEPT: Record<AssetKind, string> = {
+  image: "image/png,image/jpeg,image/webp",
+  logo: "image/png,image/jpeg,image/webp,image/svg+xml",
+  video: "video/mp4,video/webm,video/quicktime",
+};
+
+const KIND_LABEL: Record<AssetKind, string> = {
+  logo: "Your logo",
+  image: "Images for this page",
+  video: "Video",
+};
+
+const KIND_ICON: Record<AssetKind, React.ReactNode> = {
+  logo: <Stamp className="size-3.5" />,
+  image: <ImageIcon className="size-3.5" />,
+  video: <Film className="size-3.5" />,
+};
+
+/** The one-line meaning of a choice, so a user can tell at a glance what
+ *  will happen to the site — not only what the radio is called. */
+function outcomeOf(choice: string, kind: AssetKind): { icon: React.ReactNode; text: string } {
+  switch (choice) {
+    case "upload":
+      return { icon: <Upload className="size-3" />, text: "your file will be used" };
+    case "generate":
+      return {
+        icon: <Sparkles className="size-3" />,
+        text: kind === "video" ? "a video will be generated" : "an image will be generated",
+      };
+    case "wordmark":
+      return { icon: <Stamp className="size-3" />, text: "your name, set in type" };
+    default:
+      return { icon: null, text: "nothing will be placed here" };
+  }
+}
 
 /**
  * What the run is waiting on a human to decide.
@@ -28,12 +70,16 @@ export function GatePanel({
   directions,
   layout,
   projectId,
+  serverError,
   onAnswerGate,
 }: {
   gate: GateInfo;
   directions: Direction[] | null;
   layout: "wide" | "compact";
   projectId: string;
+  /** The API's reason for refusing the last answer, shown here so the gate
+   *  stays open and answerable instead of collapsing into an error state. */
+  serverError?: string | null;
   onAnswerGate: (payload: {
     choice?: string | number;
     note?: string;
@@ -96,9 +142,26 @@ export function GatePanel({
   const isDesignGate = gate.gate === "gate:design";
   const isMaterialGate = gate.gate === "gate:assets";
 
-  // Split material gate options into images and facts
-  const imageOptions = options.filter((o) => !o.kind || o.kind === "image");
+  // Split material gate options into assets and facts. ASSETS, not images:
+  // the gate also carries the logo and any video slot, each with its own
+  // choices, and a filter that only kept `image` dropped those two rows —
+  // the user could never answer them, and the API (correctly) refused the
+  // incomplete plan with a 400 that named the logo.
+  const assetOptions = options.filter((o) => o.kind !== "fact");
   const factOptions = options.filter((o) => o.kind === "fact");
+  const assetKind = (o: GateOption): AssetKind =>
+    o.kind === "logo" || o.kind === "video" ? o.kind : "image";
+  // Logo first — every generated surface is branded from it — then images,
+  // then video, which is the same order the assets stage produces them in.
+  const KIND_ORDER: AssetKind[] = ["logo", "image", "video"];
+  const grouped = KIND_ORDER.map((k) => ({
+    kind: k,
+    items: assetOptions.filter((o) => assetKind(o) === k),
+  })).filter((g) => g.items.length > 0);
+  const decidedCount = assetOptions.filter(
+    (o) => assetDecisions[o.asset_id ?? String(o.choice)]
+  ).length;
+  const allDecided = decidedCount === assetOptions.length;
 
   // Initialize content answers with draft values
   if (factOptions.length > 0 && Object.keys(contentAnswers).length === 0) {
@@ -270,144 +333,157 @@ export function GatePanel({
       ) : isMaterialGate ? (
         // Material gate needs special handling for both images and facts
         <div className="flex flex-col gap-4">
-          {imageOptions.length > 0 && (
-            <div>
-              <p className="mb-2 text-xs font-medium text-muted-foreground">
-                Images for this page
+          {grouped.map(({ kind, items }) => (
+            <div key={kind}>
+              <p className="mb-2 flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+                {KIND_ICON[kind]}
+                {KIND_LABEL[kind]}
+                <span className="font-normal opacity-70">
+                  · {items.length === 1 ? "one slot" : `${items.length} slots`}
+                </span>
               </p>
               <div className="flex flex-col gap-3">
-                {imageOptions.map((img) => {
-                  const assetId = (img as any).asset_id || img.choice;
-                  const brief = (img as any).brief || "";
-                  const prominence = (img as any).prominence || "";
-                  const currentDecision = assetDecisions[assetId];
-                  
+                {items.map((asset) => {
+                  const assetId = asset.asset_id ?? String(asset.choice);
+                  const current = assetDecisions[assetId];
+                  // The server's own list — three for an image, two for a
+                  // logo, three for a video — each with its label and the
+                  // one-line reason. Rendering this instead of a fixed set of
+                  // radios is what makes the logo and video rows answerable.
+                  const choices = asset.choices ?? [];
+                  const brief = (asset.brief ?? "").replace(/^\[video\]\s*/i, "");
                   return (
                     <div
                       key={assetId}
-                      className="rounded-lg border border-border bg-card/40 p-3"
+                      className={cn(
+                        "rounded-lg border bg-card/40 p-3 transition-colors",
+                        current ? "border-border" : "border-amber-300/30"
+                      )}
                     >
-                      <p className="mb-1 text-sm font-medium text-foreground">
-                        {assetId}
-                        {prominence && (
-                          <span className="ml-2 text-xs text-muted-foreground">
-                            ({prominence})
+                      <div className="mb-1 flex items-baseline justify-between gap-2">
+                        <p className="text-sm font-medium text-foreground">
+                          {assetId}
+                          {asset.prominence && (
+                            <span className="ml-2 text-xs font-normal text-muted-foreground">
+                              {asset.prominence}
+                              {asset.section_id ? ` · ${asset.section_id}` : ""}
+                            </span>
+                          )}
+                        </p>
+                        {current && (
+                          <span className="flex shrink-0 items-center gap-1 text-[11px] text-emerald-300/90">
+                            {outcomeOf(current, kind).icon}
+                            {outcomeOf(current, kind).text}
                           </span>
                         )}
-                      </p>
+                      </div>
                       {brief && (
-                        <p className="mb-2 text-xs text-muted-foreground">{brief}</p>
+                        <p className="mb-2.5 text-xs leading-relaxed text-muted-foreground">{brief}</p>
                       )}
+
                       <div className="flex flex-col gap-2">
-                        {/* Upload option */}
-                        <div>
-                          <label className="flex items-center gap-2 cursor-pointer">
-                            <input
-                              type="radio"
-                              name={`asset-${assetId}`}
-                              value="upload"
-                              checked={currentDecision === "upload"}
-                              onChange={(e) =>
-                                setAssetDecisions({
-                                  ...assetDecisions,
-                                  [assetId]: e.target.value,
-                                })
-                              }
-                              className="size-3"
-                            />
-                            <span className="text-xs text-foreground">Use my own image</span>
-                          </label>
-                          {currentDecision === "upload" && (
-                            <div className="mt-2 ml-5">
-                              <Input
-                                type="file"
-                                accept="image/png,image/jpeg,image/webp"
-                                onChange={(e) => {
-                                  const file = e.target.files?.[0];
-                                  if (file) {
-                                    setUploadedFiles({
-                                      ...uploadedFiles,
-                                      [assetId]: file,
-                                    });
-                                  }
-                                }}
-                                className="text-xs"
+                        {choices.map((c) => (
+                          <div key={c.choice}>
+                            <label className="flex cursor-pointer items-start gap-2">
+                              <input
+                                type="radio"
+                                name={`asset-${assetId}`}
+                                value={c.choice}
+                                checked={current === c.choice}
+                                onChange={() =>
+                                  setAssetDecisions({ ...assetDecisions, [assetId]: c.choice })
+                                }
+                                className="mt-0.5 size-3"
                               />
-                              {uploadedFiles[assetId] && (
-                                <p className="mt-1 text-[10px] text-muted-foreground">
-                                  {uploadedFiles[assetId].name} ({(uploadedFiles[assetId].size / 1024).toFixed(1)}KB)
+                              <span className="min-w-0">
+                                <span className="block text-xs text-foreground">{c.label}</span>
+                                {c.detail && (
+                                  <span className="block text-[11px] leading-relaxed text-muted-foreground/80">
+                                    {c.detail}
+                                  </span>
+                                )}
+                              </span>
+                            </label>
+
+                            {c.choice === "upload" && current === "upload" && (
+                              <div className="ml-5 mt-2">
+                                <Input
+                                  type="file"
+                                  accept={ACCEPT[kind]}
+                                  onChange={(e) => {
+                                    const file = e.target.files?.[0];
+                                    if (file) {
+                                      setUploadedFiles({ ...uploadedFiles, [assetId]: file });
+                                    }
+                                  }}
+                                  className="text-xs"
+                                />
+                                {uploadedFiles[assetId] && (
+                                  <p className="mt-1 text-[10px] text-muted-foreground">
+                                    {uploadedFiles[assetId].name} (
+                                    {(uploadedFiles[assetId].size / 1024).toFixed(1)}KB)
+                                  </p>
+                                )}
+                                <p className="mt-1 text-[10px] text-muted-foreground/70">
+                                  {c.accepts ?? "PNG, JPEG or WebP"}
+                                  {kind === "image" && " · restyled to match your design"}
+                                  {kind === "video" && " · used as it is, up to 25MB"}
+                                  {kind === "logo" && " · used as it is, never redrawn"}
                                 </p>
-                              )}
-                              <p className="mt-1 text-[10px] text-muted-foreground/70">
-                                PNG, JPEG, or WebP up to 25MB. Will be restyled to match your design.
-                              </p>
-                            </div>
-                          )}
-                        </div>
-                        
-                        {/* Generate option */}
-                        <label className="flex items-center gap-2 cursor-pointer">
-                          <input
-                            type="radio"
-                            name={`asset-${assetId}`}
-                            value="generate"
-                            checked={currentDecision === "generate"}
-                            onChange={(e) =>
-                              setAssetDecisions({
-                                ...assetDecisions,
-                                [assetId]: e.target.value,
-                              })
-                            }
-                            className="size-3"
-                          />
-                          <span className="text-xs text-foreground">Generate from description</span>
-                        </label>
-                        
-                        {/* Skip option */}
-                        <label className="flex items-center gap-2 cursor-pointer">
-                          <input
-                            type="radio"
-                            name={`asset-${assetId}`}
-                            value="skip"
-                            checked={currentDecision === "skip"}
-                            onChange={(e) =>
-                              setAssetDecisions({
-                                ...assetDecisions,
-                                [assetId]: e.target.value,
-                              })
-                            }
-                            className="size-3"
-                          />
-                          <span className="text-xs text-foreground">No image - build from layout only</span>
-                        </label>
+                              </div>
+                            )}
+                          </div>
+                        ))}
                       </div>
                     </div>
                   );
                 })}
               </div>
             </div>
-          )}
-          
-          {uploadError && (
+          ))}
+
+          {(uploadError || serverError) && (
             <div className="rounded-lg border border-destructive/30 bg-destructive/10 p-3">
-              <p className="text-xs text-destructive">{uploadError}</p>
+              <p className="text-xs text-destructive">{uploadError ?? serverError}</p>
             </div>
           )}
-          
+
+          {/* What the run will do once this is answered — the same list the
+              assets stage then works through, so nothing that appears later
+              is a surprise. */}
+          {allDecided && assetOptions.length > 0 && (
+            <p className="text-xs text-muted-foreground">
+              {(() => {
+                const n = (d: string) =>
+                  assetOptions.filter((o) => assetDecisions[o.asset_id ?? String(o.choice)] === d);
+                const gen = n("generate");
+                const genVideo = gen.filter((o) => o.kind === "video").length;
+                const genImage = gen.length - genVideo;
+                const parts = [
+                  genImage > 0 && `${genImage} image${genImage === 1 ? "" : "s"} will be generated`,
+                  genVideo > 0 && `${genVideo} video will be generated`,
+                  n("upload").length > 0 && `${n("upload").length} of your own file${n("upload").length === 1 ? "" : "s"} used`,
+                  n("wordmark").length > 0 && "the name set as a wordmark",
+                  n("skip").length > 0 && `${n("skip").length} left out`,
+                ].filter(Boolean);
+                return parts.join(" · ");
+              })()}
+            </p>
+          )}
+
           <Button
             type="button"
             variant="default"
             size="sm"
-            disabled={uploading || (imageOptions.length > 0 && Object.keys(assetDecisions).length < imageOptions.length)}
+            disabled={uploading || !allDecided}
             onClick={handleMaterialGateSubmit}
           >
-            {uploading ? "Uploading..." : "Continue"}
-            {!uploading && imageOptions.length > 0 && 
-              Object.keys(assetDecisions).length < imageOptions.length && (
-                <span className="ml-1.5 text-xs opacity-70">
-                  ({Object.keys(assetDecisions).length}/{imageOptions.length} decided)
-                </span>
-              )}
+            {uploading ? "Uploading…" : "Continue"}
+            {!uploading && !allDecided && (
+              <span className="ml-1.5 text-xs opacity-70">
+                ({decidedCount}/{assetOptions.length} decided)
+              </span>
+            )}
           </Button>
         </div>
       ) : (

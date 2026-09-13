@@ -1,3 +1,4 @@
+import { ConsoleBackdrop } from "@/components/console-backdrop";
 import { TopBar } from "@/components/top-bar";
 import { PromptConsole } from "@/components/prompt-console";
 import { ProjectList } from "@/components/project-list";
@@ -5,6 +6,7 @@ import { ProjectList } from "@/components/project-list";
 export default function Home() {
   return (
     <div className="flex min-h-screen flex-col">
+      <ConsoleBackdrop />
       <TopBar />
       {/* The console stays the hero — centred in the first screenful with the
           sparrow above it. Past work sits below the fold, found by scrolling,

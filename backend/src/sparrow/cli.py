@@ -59,7 +59,7 @@ def cmd_tokens(args) -> int:
 
     # Bind the chosen families, so `font-display` / `font-body` / `font-mono`
     # actually resolve for the builder.
-    imp, consts, rest = font_imports(bb.design_system)
+    imp, consts, rest = font_imports(bb.design_system, ws)
     cls, theme = rest.split("|||")
     layout = ws / "src/app/layout.tsx"
     src = layout.read_text()
@@ -73,7 +73,7 @@ def cmd_tokens(args) -> int:
 
     # Bind the utilities in @theme so Tailwind emits font-display/-body/-mono.
     css_src = css.read_text()
-    css_src = re.sub(r"\n *--font-(display|body|mono): [^;]+;", "", css_src)
+    css_src = re.sub(r"\n *--font-(display|body|mono|weight-\d+): [^;]+;", "", css_src)
     css_src = css_src.replace("@theme inline {", f"@theme inline {{\n{theme}")
     css.write_text(css_src)
     print(f"fonts bound in {layout.name}: {bb.design_system.font_display} / "

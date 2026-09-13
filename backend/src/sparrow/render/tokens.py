@@ -10,6 +10,7 @@ and tailwind.config.ts), one layer up.
 from __future__ import annotations
 
 import re
+import json
 from pathlib import Path
 
 from sparrow.blackboard.schema import DesignSystem
@@ -98,14 +99,22 @@ def to_prompt(ds: DesignSystem) -> str:
     out.append("RADIUS")
     out.append(f"  base: {ds.radius_base}")
     out.append(f"  cards and buttons: {ds.radius_card}")
+    if getattr(ds, "radius_scale", None):
+        out.append(f"  the full radius scale this page may use: {', '.join(ds.radius_scale)}")
     out.append(f"  inputs: {ds.radius_input}")
-    out.append(f"  fully round: {ds.radius_full_allowed} — nothing else")
+    out.append(f"  fully round: {ds.radius_full_allowed}")
 
     out.append("")
-    out.append("SHADOWS — two, and only two.")
+    # "SHADOWS — two, and only two. No coloured shadows, no glows, nothing
+    # larger." was the line here, and it is why every surface on every page
+    # carried the same shadow-sm: a rule of this file's, not a decision of the
+    # designer's. What the page may use is now whatever the designer recorded,
+    # sized from the sources' measured vocabulary, and the audit holds to that.
+    out.append("SHADOWS")
     out.append(f"  resting: {ds.shadow_rest}")
     out.append(f"  hover: {ds.shadow_hover}")
-    out.append("  No coloured shadows, no glows, nothing larger.")
+    if getattr(ds, "shadow_scale", None):
+        out.append(f"  the full shadow scale this page may use: {', '.join(ds.shadow_scale)}")
 
     out.append("")
     out.append("WIDTHS — the composition pass says which one this section uses.")
@@ -160,7 +169,38 @@ def _slug(name: str) -> str:
     return "".join(c for c in name.lower() if c.isalnum())
 
 
-def font_imports(ds: DesignSystem) -> tuple[str, str, str]:
+def family_weights(workspace: Path | None) -> dict[str, list[str]]:
+    """Which weights each family actually publishes, per next/font's own data.
+
+    `next/font/google` types every family's `weight` as a literal union of the
+    weights Google serves for it, so asking for one it does not have is a
+    compile error, not a fallback. Measured on ashfall: the design system chose
+    400-800 and the binder applied that list to all three families — Saira and
+    Saira Condensed publish 800, IBM Plex Mono stops at 700, and the build died
+    on one line of layout.tsx that no section owns and the repairer cannot see.
+
+    Read from the workspace's own node_modules rather than the network: it is
+    the exact table the compiler will check against, it is already on disk, and
+    it cannot drift from the installed Next.
+    """
+    if workspace is None:
+        return {}
+    root = workspace / "node_modules"
+    hits = list(root.glob(".pnpm/next@*/node_modules/next/dist/compiled/@next/font/"
+                          "dist/google/font-data.json"))
+    hits += list(root.glob("next/dist/compiled/@next/font/dist/google/font-data.json"))
+    for f in hits:
+        try:
+            data = json.loads(f.read_text())
+        except (OSError, ValueError):
+            continue
+        return {k: [w for w in (v.get("weights") or []) if w.isdigit()]
+                for k, v in data.items() if isinstance(v, dict)}
+    return {}
+
+
+def font_imports(ds: DesignSystem,
+                 workspace: Path | None = None) -> tuple[str, str, str]:
     """next/font/google declarations for the families the design agent chose.
 
     Returns (import line, const declarations, className expression). A design
@@ -178,15 +218,33 @@ def font_imports(ds: DesignSystem) -> tuple[str, str, str]:
     # ones. Omitting it fails as an opaque "Can't resolve
     # 'next/font/google/target.css'" — the real message only appears one line
     # further down: "Missing weight for Barlow Condensed."
-    weights = ", ".join(f'"{w}"' for w in sorted(ds.font_weights))
+    # PER FAMILY, not one list for all of them. A family that does not publish
+    # the weight it is asked for is a hard compile error in next/font's types.
+    published = family_weights(workspace)
+    want = [str(w) for w in sorted(ds.font_weights)]
+
+    def weights_for(family: str) -> str:
+        have = published.get(family)
+        keep = [w for w in want if w in have] if have else list(want)
+        # Never emit an empty list — that is the opaque "Missing weight for X".
+        return ", ".join(f'"{w}"' for w in (keep or ["400"]))
+
     consts = "\n".join(
         f'const {slug} = {ident}({{ subsets: ["latin"], display: "swap", '
-        f'weight: [{weights}], variable: "--font-{slug}" }});'
-        for ident, slug in uniq.values()
+        f'weight: [{weights_for(name)}], variable: "--font-{slug}" }});'
+        for name, (ident, slug) in uniq.items()
     )
     theme = "\n".join(
         f"    --font-{role}: var(--font-{uniq[name][1]});" for role, name in fams.items()
     )
+    # The recorded weights as utilities too. The director writes its type steps
+    # as `font-500`, the builder copies them, and Tailwind v4 has no such class
+    # unless the theme declares `--font-weight-500` — measured on voiceowl: 112
+    # numeric weight utilities across ten sections, every one silently dropped,
+    # every heading rendered at 400 against a recorded 500. `font-medium` and
+    # `font-500` now both resolve.
+    theme += "\n" + "\n".join(
+        f"    --font-weight-{w}: {w};" for w in sorted(set(ds.font_weights)))
     cls = " ".join(f"${{{slug}.variable}}" for _, slug in uniq.values())
     return imp, consts, f"{cls}|||{theme}"
 

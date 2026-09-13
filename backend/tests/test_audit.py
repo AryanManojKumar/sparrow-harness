@@ -116,5 +116,7 @@ def test_permitted_quotes_the_design_system_verbatim():
     """What the audit forbids and what the fixer is told to use are one derivation."""
     allow = permitted(DS)
     assert allow["off-scale-gap"] == {"gap-8", "gap-3"}
-    assert allow["off-scale-weight"] == {"font-normal", "font-medium", "font-semibold"}
+    # Both spellings: the theme declares `--font-weight-<n>` per recorded weight.
+    assert allow["off-scale-weight"] == {"font-normal", "font-medium", "font-semibold",
+                                         "font-400", "font-500", "font-600"}
     assert "rounded-full" in allow["off-scale-radius"]

@@ -11,13 +11,14 @@ rather than living in whoever is typing the commands.
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
 from collections.abc import Iterator
 from pathlib import Path
 
-from sparrow.blackboard.schema import (AssetKind, Blackboard, BuildStatus, Ground,
+from sparrow.blackboard.schema import (GROUND_PAGE, AssetKind, Blackboard, BuildStatus,
                                        Section)
 from sparrow.blackboard.store import Rejected, Store
 from sparrow.orchestrator import Event, GateRequest, Halt, Run, Stage
@@ -295,6 +296,7 @@ def step_sources(run: Run, urls: list[str]) -> Iterator[Event]:
     bb = _bb(run)
     provider = get_provider()
     labelled: dict[str, list[tuple[str, int]]] = {}
+    extracts: dict[str, object] = {}
     by_type: dict[str, list[Candidate]] = {}
     by_type_all: dict[str, list[Candidate]] = {}   # includes chrome, for blueprints
     registers: dict[str, object] = {}
@@ -314,6 +316,10 @@ def step_sources(run: Run, urls: list[str]) -> Iterator[Event]:
             continue
         if r.register is not None:
             registers[site] = r.register
+            extracts[site] = r
+            # The register report is computed from registers alone; enclosure is
+            # summed over bands, so hand it the bands.
+            r.register._bands = r.bands
         # On the Register, not on the extract. Reading `r.components` raised
         # AttributeError and killed the whole sources stage on a live run — the
         # unit test for this passed because it handed the blueprinter a dict
@@ -327,7 +333,11 @@ def step_sources(run: Run, urls: list[str]) -> Iterator[Event]:
                              b.buttons, b.listItems, b.headings, b.text, b.unrendered,
                              shot=b.shot, html=b.html,
                              content_share=getattr(b, "contentShare", 0.0) or 0.0,
-                             inset=getattr(b, "inset", 0) or 0)
+                             inset=getattr(b, "inset", 0) or 0,
+                             pad_top=getattr(b, "padTop", 0) or 0,
+                             pad_bot=getattr(b, "padBot", 0) or 0,
+                             enclosure=dict(getattr(b, "enclosure", None) or {}),
+                             ground=dict(getattr(b, "ground", None) or {}))
             by_type_all.setdefault(t, []).append(cand)
             if t in RANKABLE:
                 by_type.setdefault(t, []).append(cand)
@@ -342,6 +352,68 @@ def step_sources(run: Run, urls: list[str]) -> Iterator[Event]:
             if getattr(r, "palette", None)}
     if pals:
         (out_dir / "palettes.json").write_text(json.dumps(pals, indent=2))
+
+    # WHAT THE SOURCES DO WITH VIDEO, KEPT. `registers` is built here, used to
+    # phrase one line for the blueprinter, and then dropped when this stage
+    # returns — so the pass that decides which section carries motion, two
+    # stages later, could not see it at all. Nothing downstream could allocate
+    # a video because nothing downstream knew there was any.
+    vids = [dict(v, site=s) for s, r in registers.items()
+            for v in (getattr(r, "videos", None) or [])]
+    if vids:
+        (run.dir / MOTION).write_text(json.dumps(vids, indent=2))
+
+    # And what they draw on canvas — the frames the scout now takes of the
+    # particle fields, glows and generative textures a page keeps where markup
+    # cannot express it. `canvas: 4` was all the design director ever got.
+    surf = [dict(c, site=s) for s, r in registers.items()
+            for c in (getattr(r, "canvases", None) or [])]
+    if surf:
+        (run.dir / SURFACES).write_text(json.dumps(surf, indent=2))
+
+    # And the type each source is set in — measured, so any later stage can
+    # read the register the sources share instead of guessing at it.
+    typo = {s: r.typography for s, r in registers.items()
+            if getattr(r, "typography", None)}
+    if typo:
+        (run.dir / "typography.json").write_text(json.dumps(typo, indent=2))
+
+    # And how each source separates its content, summed over its bands — the
+    # measurement that decides whether a page is built from boxes or from
+    # space, and until now the one the design agent never had.
+    enc: dict[str, dict] = {}
+    for site, r in extracts.items():
+        tot = {"blocks": 0, "bordered": 0, "shadowed": 0, "filled": 0, "rounded": 0, "rules": 0}
+        for b in r.bands:
+            e = getattr(b, "enclosure", None) or {}
+            for k in tot:
+                tot[k] += int(e.get(k, 0) or 0)
+        if tot["blocks"]:
+            enc[site] = dict(tot, enclosed=round((tot["bordered"] + tot["shadowed"]) / tot["blocks"], 3),
+                             filled_share=round(tot["filled"] / tot["blocks"], 3))
+    if enc:
+        (run.dir / "enclosure.json").write_text(json.dumps(enc, indent=2))
+
+    # The GROUND MAP: every band of every source, in order, with what it sits
+    # on. The register counts "2 grounds, 3 changes"; the winners carry only
+    # the bands that won a section. Neither says WHERE down the page a source
+    # drops into a dark band or puts its copy on a picture, and where is the
+    # rhythm. The composer reads this beside the page sheet.
+    grounds: dict[str, list[dict]] = {}
+    for site, r in extracts.items():
+        rows = []
+        for b in r.bands:
+            g = getattr(b, "ground", None) or {}
+            if not g:
+                continue
+            rows.append({"band": b.index, "top": b.top, "height": b.height,
+                         "hex": g.get("hex"), "lum": g.get("lum"),
+                         "differs": bool(g.get("differs")), "layered": bool(g.get("layered")),
+                         "heading": (b.headings or [""])[0][:60]})
+        if rows:
+            grounds[site] = rows
+    if grounds:
+        (run.dir / GROUNDS).write_text(json.dumps(grounds, indent=2))
 
     comm = commonality(labelled)
     primary, why, usage = pick_primary(provider, bb.brief, labelled)
@@ -405,18 +477,45 @@ def step_sources(run: Run, urls: list[str]) -> Iterator[Event]:
         won = next((c for c in by_type.get(t, []) if c.site == r.get("winner")), None)
         if won is None:
             continue
+        # WIDTH COMES FROM THE PRIMARY, not from whichever source won this
+        # section. §5 gives the primary the rhythm and pacing, and width rhythm
+        # is pacing. Measured on this run: vapi.ai alone spans 0.64 to 1.00 with
+        # two full-bleed bands, but taking each section's width from its own
+        # winner across three sources collapsed the page to 0.68-0.86 and lost
+        # both extremes — the same averaging `typical_order` used to do to
+        # section order, one level down. The winner still supplies the shot, the
+        # markup and the arrangement; only the width follows the primary.
+        own = next((c for c in by_type_all.get(t, []) if c.site == primary), None)
         winners[t] = {"site": won.site,
                       "shot": str(won.shot) if won.shot else None,
                       "html": won.html,
-                      "content_share": won.content_share, "inset": won.inset}
+                      "content_share": (own or won).content_share,
+                      "inset": (own or won).inset,
+                      "width_from": (own or won).site,
+                      # The band's own weight, so the composer can see that the
+                      # source's hero holds 29 words and no product image rather
+                      # than only that it is 0.9 wide. Density is a decision the
+                      # composer makes, and it made it blind: every hero came out
+                      # carrying the busiest object on the page under a headline
+                      # the sources leave alone.
+                      "words": won.words, "images": won.images,
+                      "buttons": won.buttons, "height": won.height,
+                      "pad_top": won.pad_top, "pad_bot": won.pad_bot,
+                      "enclosure": won.enclosure, "ground": won.ground}
     for name in CHROME_ORDER:
         cands = by_type_all.get(name, [])
         if cands:
+            own = next((c for c in cands if c.site == primary), None)
             winners[name] = {"site": cands[0].site,
                              "shot": str(cands[0].shot) if cands[0].shot else None,
                              "html": cands[0].html,
-                             "content_share": cands[0].content_share,
-                             "inset": cands[0].inset}
+                             "content_share": (own or cands[0]).content_share,
+                             "inset": (own or cands[0]).inset,
+                             "width_from": (own or cands[0]).site,
+                             "words": cands[0].words, "images": cands[0].images,
+                             "buttons": cands[0].buttons, "height": cands[0].height,
+                             "pad_top": cands[0].pad_top, "pad_bot": cands[0].pad_bot,
+                             "enclosure": cands[0].enclosure, "ground": cands[0].ground}
     (run.dir / WINNERS).write_text(json.dumps(winners, indent=2))
 
     (out_dir / "design-brief.md").write_text(_brief_md)
@@ -508,7 +607,7 @@ def step_sources(run: Run, urls: list[str]) -> Iterator[Event]:
                 # like the sources" turned out to mean. If a design direction
                 # wants a ground change it can ask for one; the default no
                 # longer imposes it.
-                ground=Ground.PAGE)
+                ground=GROUND_PAGE)
         for i, t in enumerate(sitemap, 1)
     ]
     rejected = _replace(run, "/sections",
@@ -562,10 +661,15 @@ def step_design(run: Run, alternatives: int = 3) -> Iterator[Event]:
     dd = DesignDirector()
     proposals, seen = [], []
     for i in range(alternatives):
-        ds, revised, u = dd.direct(bb, sources=sources, avoid=seen or None,
-                                   shots=[x for x in
-                                          (_page_sheet(run), *_winner_shots(run))
-                                          if x])
+        surf_txt = surface_facts(load_surfaces(run))
+        ds, revised, u = dd.direct(
+            bb,
+            sources=sources + (f"\n\n<canvas_layer>\n{surf_txt}\n</canvas_layer>"
+                               if surf_txt else ""),
+            avoid=seen or None,
+            shots=[x for x in
+                   (_page_sheet(run), *_winner_shots(run), *surface_shots(run))
+                   if x])
         seen.append(ds)
         proposals.append({"index": i, "signature": ds.signature,
                           "atmosphere": ds.atmosphere,
@@ -662,7 +766,7 @@ def apply_design_system(run: Run, bb: Blackboard) -> None:
     css_path = ws / "src/app/globals.css"
     css_path.write_text(apply_to_stylesheet(css_path.read_text(), bb.design_system))
 
-    imp, consts, rest = font_imports(bb.design_system)
+    imp, consts, rest = font_imports(bb.design_system, run.workspace)
     cls, theme = rest.split("|||")
     layout = ws / "src/app/layout.tsx"
     src = layout.read_text()
@@ -678,7 +782,7 @@ def apply_design_system(run: Run, bb: Blackboard) -> None:
     layout.write_text(src)
 
     css = css_path.read_text()
-    css = re.sub(r"\n *--font-(display|body|mono): [^;]+;", "", css)
+    css = re.sub(r"\n *--font-(display|body|mono|weight-\d+): [^;]+;", "", css)
     css_path.write_text(css.replace("@theme inline {", f"@theme inline {{\n{theme}"))
 
 
@@ -698,7 +802,7 @@ def save_content(run: Run, content: dict) -> None:
     (run.dir / CONTENT_FILE).write_text(json.dumps(content, indent=2))
 
 
-def composition_block(bb, section) -> str:
+def composition_block(bb, section, source_band: dict | None = None) -> str:
     """What shape this section is, what surrounds it, and what it may use.
 
     The neighbours are named on purpose. "You are full-bleed" is followed
@@ -719,7 +823,7 @@ def composition_block(bb, section) -> str:
 
     def line(x) -> str:
         w = f"{x.content_share:.2f} of the viewport" if x.content_share else x.width.value
-        return f"{x.id}: {w}, {x.ground.value} ground, {x.archetype}"
+        return f"{x.id}: {w}, {x.ground} ground, {x.archetype}"
 
     parts = [
         "<composition>",
@@ -728,6 +832,12 @@ def composition_block(bb, section) -> str:
         "revise — the page's rhythm is the difference between these shapes.",
         "",
         f"  YOUR SECTION — {line(section)}",
+        # The name told the builder nothing it did not already assume. This is
+        # the half that changes the output: classes, sides and ratios, quoted
+        # from the pass that could see the whole page.
+        *([f"  BUILD IT LIKE THIS — {section.archetype_how}",
+           "  That is the skeleton, not a suggestion. If it puts the media left, the "
+           "media goes left."] if section.archetype_how else []),
         f"  above you — {line(order[i - 1])}" if i > 0 else "  you open the page",
         f"  below you — {line(order[i + 1])}" if i + 1 < len(order) else "  you close the page",
         "",
@@ -772,8 +882,34 @@ def composition_block(bb, section) -> str:
          "  wide — wider than the column, still inset from the viewport edge.\n"
          "  full-bleed — edge to edge, no side gutter on the outer element."),
         "  page ground — `bg-background`.  muted ground — `bg-muted`.",
-        "</composition>",
+        *([f"  YOUR GROUND `{section.ground}` IS PAINTED BY — {section.ground_how}",
+           "  Those classes go on the section root; the copy sits on that ground, so ",
+           "  set text colour to read against it."] if section.ground_how else []),
     ]
+    # HOW THE SOURCE BAND SEPARATES ITS CONTENT — measured, per section, from the
+    # same winners record the width line above is read from. Every page built
+    # here put its content in `rounded-lg border border-border bg-card` boxes,
+    # nine to a section, against sources that box 7-17% of their blocks; the
+    # builder had the source's width to the pixel and nothing at all about
+    # whether that source drew edges around things. The number is the source's
+    # own: a source that boxes 40% of its blocks reads that way here and the
+    # builder boxes. A source that boxes none reads that way too.
+    e = (source_band or {}).get("enclosure") or {}
+    n = int(e.get("blocks") or 0)
+    if n:
+        boxed = int(e.get("bordered") or 0) + int(e.get("shadowed") or 0)
+        sep = ("hairline rules" if e.get("rules") and not e.get("filled") else
+               "changes of ground colour" if e.get("filled") else "whitespace alone")
+        if boxed == 0:
+            parts.append(
+                f"  ENCLOSURE, measured off the source band: 0 of {n} blocks are boxed; "
+                f"content is separated by {sep}.")
+        else:
+            parts.append(
+                f"  ENCLOSURE, measured off the source band: {boxed} of {n} blocks are "
+                f"boxed ({e.get('bordered', 0)} bordered all round, {e.get('shadowed', 0)} "
+                f"shadowed); the rest are separated by {sep}.")
+    parts.append("</composition>")
     return "\n".join(parts)
 
 
@@ -793,7 +929,7 @@ def step_compose(run: Run) -> Iterator[Event]:
     after a rebuild does not re-decide a page that is half built.
     """
     from sparrow.agents.design_director import DesignDirector
-    from sparrow.blackboard.schema import Ground, Width
+    from sparrow.blackboard.schema import Width
 
     bb = _bb(run)
     if bb.design_system is None or not bb.sections:
@@ -806,32 +942,97 @@ def step_compose(run: Run) -> Iterator[Event]:
 
     winners_for_share = load_winners(run)
     dd = DesignDirector()
+    # What each section's SOURCE band weighs. The composer decides density and
+    # it decided blind: it knew the source hero was 0.9 wide, not that it held
+    # 29 words, two buttons and no image. Evidence, in the same block as the
+    # rest of what it sees about the page it is reproducing.
+    wf = load_winners(run)
+    def _vertical(w: dict) -> str:
+        pt, pb, h = w.get("pad_top", 0), w.get("pad_bot", 0), w.get("height", 0)
+        if not h or (pt + pb) < h * 0.15:
+            return ""
+        # Stated as the measurement, not a verdict. "HIGH" / "LOW" needed a
+        # ratio and a pixel floor that were mine; the split itself is the
+        # source's and the composer can read a ratio.
+        return f"; content sits {pt}px from the top and {pb}px from the bottom of a {h}px band"
+
+    def _boxes(w: dict) -> str:
+        e = w.get("enclosure") or {}
+        n = e.get("blocks") or 0
+        if not n:
+            return ""
+        boxed = (e.get("bordered", 0) + e.get("shadowed", 0))
+        if boxed == 0:
+            sep = ("rules" if e.get("rules") else "ground changes" if e.get("filled") else "whitespace")
+            return f"; NO boxes — {n} blocks separated by {sep}"
+        return f"; {boxed} of {n} blocks boxed ({e.get('bordered',0)} bordered, {e.get('shadowed',0)} shadowed)"
+
+    def _ground(w: dict) -> str:
+        g = w.get("ground") or {}
+        if not g:
+            return ""
+        lum = g.get("lum", 1.0)
+        if g.get("layered"):
+            return ("; sits on a PICTURE — a canvas, video, image or gradient covers "
+                    f"most of the band (ground {g.get('hex')}, luminance {lum})")
+        if g.get("differs"):
+            return (f"; sits on ITS OWN GROUND {g.get('hex')} (luminance {lum}), "
+                    f"not the page's {g.get('page')}")
+        return ""
+
+    weights = "\n".join(
+        f"  {sid}: {w.get('words', '?')} words, {w.get('images', '?')} image(s), "
+        f"{w.get('buttons', '?')} button(s), {w.get('height', '?')}px tall"
+        f"{_vertical(w)}{_boxes(w)}{_ground(w)} ({w.get('site')})"
+        for sid, w in wf.items() if "words" in w)
+    band_facts = (f"<source_bands>\nWhat each section's winning source band actually "
+                  f"holds — its weight, not its width:\n{weights}\n</source_bands>"
+                  if weights else "")
+    motion_shots = [b for b in (_b64(v.get("frame")) for v in load_motion(run)
+                                if v.get("frame") and v.get("w", 0) >= 240) if b][:3]
+    ground_facts = ground_map(load_grounds(run))
     plan, rhythm, usage = dd.compose(
-        bb, shots=[x for x in (_page_sheet(run), *_winner_shots(run)) if x],
-        observed=to_block(load_reading(run)))
+        bb, shots=[x for x in (_page_sheet(run), *_winner_shots(run), *motion_shots) if x],
+        observed=to_block(load_reading(run))
+        + ("\n\n" + band_facts if band_facts else "")
+        + ("\n\n" + ground_facts if ground_facts else ""),
+        motion=motion_facts(load_motion(run)))
     run.spent += usage.cost(dd.provider.name, dd.tier)
 
-    prev_ground = None
     applied = 0
     for section in sorted(bb.sections, key=lambda s: s.order):
         spec = plan.get(section.id) or {}
-        try:
-            ground = Ground(str(spec.get("ground", "page")).strip().lower())
-        except ValueError:
-            ground = Ground.PAGE
-        # Two muted bands in a row merge into one grey block that neither builder
-        # can see happening — the same failure drift-test-01 recorded when the
-        # sections chose their own. Enforced here rather than asked for, because
-        # this is the only place that knows what the previous section got.
-        if ground is Ground.MUTED and prev_ground is Ground.MUTED:
-            ground = Ground.PAGE
+        # {name, how}, the bare word still accepted. "Two muted bands in a row
+        # merge" used to be enforced here by flipping the second to page; that
+        # was a rule written for sections that chose blind, and this pass sees
+        # the whole page and the source's own ground changes — it can decide.
+        g = spec.get("ground")
+        if isinstance(g, dict):
+            section.ground = " ".join(str(g.get("name", "page")).split()).lower()[:40] or GROUND_PAGE
+            section.ground_how = " ".join(str(g.get("how", "")).split())[:300]
+        else:
+            section.ground = " ".join(str(g or "page").split()).lower()[:40]
+            section.ground_how = ""
+        if section.ground in ("page", "muted"):
+            section.ground_how = ""
+        elif not section.ground_how:
+            # A name with no classes is the archetype failure over again — a
+            # word the builder's prior beats. Without a `how` it is the page.
+            section.ground = GROUND_PAGE
         try:
             width = Width(str(spec.get("width", "contained")).strip().lower())
         except ValueError:
             width = Width.CONTAINED
-        section.ground = ground
         section.width = width
-        section.archetype = " ".join(str(spec.get("archetype", "")).split())[:60]
+        # {name, how}, with the bare string still accepted so a project composed
+        # before `how` existed does not lose its archetype on a rerun.
+        arch = spec.get("archetype")
+        if isinstance(arch, dict):
+            section.archetype = " ".join(str(arch.get("name", "")).split())[:60]
+            section.archetype_how = " ".join(str(arch.get("how", "")).split())[:400]
+        else:
+            section.archetype = " ".join(str(arch or "").split())[:60]
+            section.archetype_how = ""
         section.contrast = " ".join(str(spec.get("contrast", "")).split())[:200]
         known = {t.name for t in (bb.design_system.treatments or [])}
         section.treatments = [str(t) for t in (spec.get("treatments") or [])
@@ -843,7 +1044,16 @@ def step_compose(run: Run) -> Iterator[Event]:
         section.content_share = float(
             (winners_for_share.get(section.id) or {}).get("content_share") or 0.0)
         section.carries_signature = bool(spec.get("signature"))
-        prev_ground = ground
+        mo = spec.get("motion")
+        if isinstance(mo, dict):
+            section.carries_motion = bool(mo.get("carries"))
+            section.motion_role = " ".join(str(mo.get("role", "")).split())[:160]
+            pr = str(mo.get("prominence", "")).strip().lower()
+            section.motion_prominence = pr if pr in ("dominant", "supporting", "thumbnail") else ""
+        else:
+            section.carries_motion = bool(mo)
+            section.motion_role = ""
+            section.motion_prominence = ""
         applied += 1
 
     # Exactly one owner. The rule is "spend your boldness in one place", so a
@@ -859,6 +1069,24 @@ def step_compose(run: Run) -> Iterator[Event]:
                        if x.id == "hero"), None) or
                  sorted(bb.sections, key=lambda y: y.order)[0])
         focal.carries_signature = True
+
+    # AT MOST ONE, AND ONLY IF THE SOURCES ACTUALLY USE VIDEO. Same clamp as the
+    # signature above and for the same reason: a composer that marks four
+    # sections has not allocated the motion, it has scattered it. The difference
+    # from `signature` is the floor — a page with no video is a correct outcome
+    # when the sources have none, so this never promotes one.
+    movers = [x for x in bb.sections if x.carries_motion]
+    if not load_motion(run):
+        for x in movers:
+            x.carries_motion = False
+    elif len(movers) > 1:
+        keep = min(movers, key=lambda x: x.order)
+        for x in movers:
+            x.carries_motion = x is keep
+    for x in bb.sections:
+        if not x.carries_motion:
+            x.motion_role = ""
+            x.motion_prominence = ""
 
     # Through Store.apply like every other transition, so the composition leaves
     # a Decision naming the agent that made it — §3's replayability is the whole
@@ -877,8 +1105,9 @@ def step_compose(run: Run) -> Iterator[Event]:
     owner = next((x.id for x in bb.sections if x.carries_signature), "?")
     yield Event(Stage.COMPOSE, "progress",
                 f"{applied} section(s) · {len(shapes)} distinct shape(s) · "
-                f"{sum(1 for s in bb.sections if s.ground is Ground.MUTED)} muted band(s) · "
+                f"{sum(1 for s in bb.sections if s.ground != GROUND_PAGE)} band(s) off the page ground · "
                 f"signature: {owner} · "
+                f"motion: {next((x.id for x in bb.sections if x.carries_motion), 'none')} · "
                 f"{sum(len(x.treatments) for x in bb.sections)} treatment placement(s)")
     if rhythm:
         yield Event(Stage.COMPOSE, "progress", f"rhythm: {rhythm[:110]}")
@@ -1061,11 +1290,44 @@ def asset_plan(run: Run) -> list[dict]:
             continue
         for i, brief in enumerate(bp.assets, 1):
             out.append({
-                "id": f"{section.id}-{i}", "section_id": section.id, "kind": "image",
+                "id": f"{section.id}-{i}", "section_id": section.id,
+                # A [video]-prefixed brief was still enumerated as an image, so
+                # the gate offered a moving asset as a still and `_prominence`
+                # could mark an ambient loop "dominant" — firing the builder's
+                # "dominant asset owns the section" rule on decoration.
+                "kind": "video" if brief.lstrip().lower().startswith("[video]") else "image",
                 "brief": brief,
                 "prominence": _prominence(len(bp.assets), i).value,
                 "decision": None, "upload": None,
             })
+
+    # THE ALLOCATED VIDEO, WHICH NO BLUEPRINT ASKS FOR ANY MORE. `compose` marks
+    # one section, seeing the whole page and what the sources do; this is where
+    # that decision becomes something the gate can offer and the curator can
+    # execute. Appended rather than folded into the loop above because it is not
+    # blueprint-derived — same reason the logo is not.
+    mover = next((s for s in bb.sections if s.carries_motion), None)
+    if mover is not None and mover.id not in CHROME_SKIP_ASSETS:
+        role = mover.motion_role or "a silent ambient loop in the register the reference sites shoot theirs in"
+        out.append({
+            "id": f"{mover.id}-motion", "section_id": mover.id, "kind": "video",
+            # The brief IS the role the composer wrote from the source facts —
+            # not a fixed sentence about ambient texture. The composer saw the
+            # frames; this did not.
+            "brief": f"[video] {role}",
+            "role": role,
+            # Prominence from the same decision. "supporting" was hardcoded here
+            # and it made every loop a backdrop: a 1920x1080 particle field
+            # cropped to a 316px strip behind a paragraph, where the source ran
+            # the same kind of footage full-bleed under its headline.
+            "prominence": mover.motion_prominence or "supporting",
+            # Whether the source's video has the headline on it — measured by
+            # the scout, carried so the gate can tell atmosphere from content
+            # without reading the role text.
+            "under_heading": any(v.get("under_heading") for v in load_motion(run)
+                                 if v.get("bleed") or v.get("under_heading")),
+            "decision": None, "upload": None,
+        })
     return out
 
 
@@ -1081,6 +1343,9 @@ def decisions_for(entry: dict) -> tuple[str, ...]:
 VIDEO_SUFFIXES = {".mp4", ".webm", ".mov"}
 WINNERS = "winners.json"
 READING = "reading.json"
+MOTION = "motion.json"
+SURFACES = "surfaces.json"
+GROUNDS = "grounds.json"
 
 
 def load_plan(run: Run) -> list[dict]:
@@ -1124,6 +1389,130 @@ def merged_plan(run: Run) -> list[dict]:
 def load_reading(run: Run) -> dict:
     f = run.dir / READING
     return json.loads(f.read_text()) if f.exists() else {}
+
+
+def load_motion(run: Run) -> list[dict]:
+    f = run.dir / MOTION
+    return json.loads(f.read_text()) if f.exists() else []
+
+
+def motion_facts(vids: list[dict]) -> str:
+    """What the sources do with video — each one, in the terms that decide its
+    role. Phrased as evidence for the composer; the role is the composer's."""
+    if not vids:
+        return ""
+    sites = sorted({v.get("site") for v in vids})
+    lines = [f"These sources carry {len(vids)} video(s) across {', '.join(sites)}. "
+             f"Frames of them are attached after the section shots. Per video:"]
+    for v in vids:
+        size = "full-bleed" if v.get("bleed") else f"{v.get('w')}x{v.get('h')}"
+        where = ("the opening section" if v.get("band") == 0 else
+                 f"band {v['band']}" if v.get("band") is not None else "unplaced")
+        kind = []
+        if v.get("controls"):
+            kind.append("has CONTROLS — a demo the reader presses play on")
+        elif v.get("muted") and v.get("loop"):
+            kind.append("muted looping autoplay — nothing to press")
+        if v.get("under_heading"):
+            kind.append("the HEADLINE SITS ON IT")
+        if v.get("secs"):
+            kind.append(f"{v['secs']}s")
+        lines.append(f"  - {v.get('site')}: {size}, {where}; " + "; ".join(kind))
+    lines.append(
+        "Decide from these — and from the frames — what the video on THIS page is for, "
+        "which section carries it, and how much of that section it owns. Put it where "
+        "the sources put theirs, in the role theirs plays.")
+    return "\n".join(lines)
+
+
+def load_grounds(run: Run) -> dict[str, list[dict]]:
+    f = run.dir / GROUNDS
+    if not f.exists():
+        return {}
+    try:
+        return json.loads(f.read_text())
+    except ValueError:
+        return {}
+
+
+def ground_map(grounds: dict[str, list[dict]]) -> str:
+    """Each source's bands down the page and what each sits on — measured.
+
+    Runs of same-ground bands are collapsed so the eye lands on the changes:
+    `bands 1-6 on #fdfcfc · band 7 on #111111 (dark) · bands 8-12 on #fdfcfc`.
+    A source on one ground end to end reads as one run, which is also a fact.
+    """
+    if not grounds:
+        return ""
+    out = ["<source_grounds>",
+           "What each reference site's bands SIT ON, in page order, measured off the "
+           "rendered page. A band on its own ground or on a picture is where that "
+           "page changes register; a page that never does is one that never does."]
+    for site, rows in grounds.items():
+        runs: list[list[dict]] = []
+        for r in rows:
+            key = (r.get("hex"), r.get("layered"))
+            if runs and (runs[-1][0].get("hex"), runs[-1][0].get("layered")) == key:
+                runs[-1].append(r)
+            else:
+                runs.append([r])
+        bits = []
+        for run_ in runs:
+            a, b = run_[0]["band"] + 1, run_[-1]["band"] + 1
+            span = f"band {a}" if a == b else f"bands {a}-{b}"
+            g = run_[0]
+            lum = g.get("lum")
+            tone = ("dark" if isinstance(lum, (int, float)) and lum < 0.45 else "light")
+            what = (f"on a PICTURE (canvas/video/image/gradient over {g.get('hex')})"
+                    if g.get("layered") else f"on {g.get('hex')} ({tone})")
+            head = f' "{g.get("heading")}"' if g.get("heading") and (g.get("differs") or g.get("layered")) else ""
+            bits.append(f"{span} {what}{head}")
+        out.append(f"  {site}: " + " · ".join(bits))
+    out.append("</source_grounds>")
+    return "\n".join(out)
+
+
+def load_surfaces(run: Run) -> list[dict]:
+    f = run.dir / SURFACES
+    return json.loads(f.read_text()) if f.exists() else []
+
+
+def surface_shots(run: Run, limit: int = 3) -> list[str]:
+    """Canvas frames for the design director, biggest first."""
+    surf = sorted(load_surfaces(run), key=lambda c: -(c.get("w", 0) * c.get("h", 0)))
+    out = []
+    for c in surf[:limit]:
+        b = _b64(c.get("frame"))
+        if b:
+            out.append(b)
+    return out
+
+
+def surface_facts(surf: list[dict]) -> str:
+    """What the sources draw on canvas — where, whether it moves, and whether
+    the copy sits on it. Phrased as evidence for a designer; the decision is
+    the designer's."""
+    if not surf:
+        return ""
+    lines = [f"These sources draw {len(surf)} thing(s) on <canvas>. The LAST images "
+             f"attached are frames of them. They are not sections; they are the layer a "
+             f"page keeps where markup cannot express it."]
+    for c in sorted(surf, key=lambda c: -(c.get("w", 0) * c.get("h", 0))):
+        where = "full-bleed" if c.get("bleed") else f"{c.get('w')}x{c.get('h')}"
+        pos = ("the opening section" if c.get("band") == 0 else
+               f"band {c['band']}" if c.get("band") is not None else "across sections")
+        lines.append(
+            f"  - {c.get('site')}: {where}, {pos}, "
+            + ("LIVE (it animates)" if c.get("live") else "static")
+            + (" — the headline sits ON it; it is the page's atmosphere"
+               if c.get("under_heading") else " — beside the copy, as an object"))
+    lines.append(
+        "If one of these is what makes its page feel the way it does, invent a "
+        "treatment for it with `how` the builder can implement as written — an SVG "
+        "filter, a CSS gradient stack, or a small canvas/requestAnimationFrame loop "
+        "described precisely enough to write. `where` should say where the SOURCE "
+        "puts it. Name the technique; do not describe the effect and stop.")
+    return "\n".join(lines)
 
 
 def load_winners(run: Run) -> dict:
@@ -1309,11 +1698,72 @@ def step_asset_gate(run: Run) -> Iterator[Event]:
             "brief": a["brief"],
             "prominence": a["prominence"],
             "uploaded": bool(a["upload"]),
-            "choices": _image_choices(a, upload_url) if _kind(a) == "image"
-                       else _logo_choices(a, upload_url),
+            "choices": _choices_for(a, upload_url),
         } for a in plan],
         artifacts=[],
     ))
+
+
+def _choices_for(a: dict, upload_url: str) -> list[dict]:
+    """The choices the gate shows for one asset, by kind.
+
+    This must agree with `decisions_for`, which is what `record_asset_decisions`
+    validates against. It did not: the dispatch was `image → image choices,
+    everything else → logo choices`, so a VIDEO slot was presented as "Upload
+    our logo / set the name as a wordmark" while the validator would only ever
+    accept upload / generate / skip for it. The one user who reached that gate
+    could not answer it correctly from what they were shown.
+    """
+    kind = _kind(a)
+    if kind == "logo":
+        return _logo_choices(a, upload_url)
+    if kind == "video":
+        return _video_choices(a, upload_url)
+    return _image_choices(a, upload_url)
+
+
+def _video_choices(a: dict, upload_url: str) -> list[dict]:
+    """Same three answers as an image; the words come from what the source's
+    video IS, which the composer decided and `asset_plan` carried in `role`.
+
+    The order changes with the role, and that is the whole point. A video model
+    renders convincing footage and gibberish UI: for atmosphere that is exactly
+    right, for a product recording it is the §2 failure on film. So when the
+    source's video is a recording of its product, the first thing offered is
+    the user's own — and generate stays on the list, because whether to accept
+    the gibberish is theirs to decide, not this function's.
+    """
+    role = (a.get("role") or "").strip()
+    # "Is this a recording of the product" is not read off the role text by a
+    # keyword list of mine; the composer decided the role AND the prominence
+    # from the scout's facts. A dominant, non-atmospheric video is one the
+    # source shows as content — and content is the user's to supply.
+    recording = (a.get("prominence") == "dominant"
+                 and not (a.get("under_heading") or False))
+    upload = {
+        "choice": "upload",
+        "label": "Use our own video",
+        "detail": ("Used exactly as it is — a moving asset is never restyled, "
+                   "scrubbed or cropped." +
+                   (" The reference sites show their actual product here, and a "
+                    "generated clip cannot show yours — its interface will be "
+                    "invented. A screen recording is the real thing."
+                    if recording else " A short silent loop works best.")),
+        "accepts": "MP4, WebM or MOV",
+        "post_file_to": f"{upload_url}/{a['id']}",
+    }
+    generate = {
+        "choice": "generate",
+        "label": "Generate one",
+        "detail": (f"Shot the way the reference sites shoot theirs — {role}. "
+                   if role else "Shot to match the reference sites' own footage. ")
+                  + ("Any interface in frame will be invented, not yours. "
+                     if recording else "")
+                  + "Takes a few minutes.",
+    }
+    skip = {"choice": "skip",
+            "label": "No video — build the section from type and layout"}
+    return [upload, generate, skip] if recording else [generate, upload, skip]
 
 
 def _image_choices(a: dict, upload_url: str) -> list[dict]:
@@ -1366,6 +1816,17 @@ def record_asset_decisions(run: Run, decisions: dict[str, str]) -> list[dict]:
     for a in plan:
         allowed = decisions_for(a)
         choice = decisions.get(a["id"], a.get("decision"))
+        if choice is None:
+            # Distinct from a wrong answer: nothing was said about this one.
+            # The gate lists every slot and the interface has to answer all
+            # of them — an unanswered slot is how the frontend's silent drop
+            # of the logo and video rows surfaced, as a 400 that named the
+            # wrong problem.
+            raise ValueError(
+                f"{a['id']} ({_kind(a)}, {a['section_id']}) was not answered — it "
+                f"needs one of {', '.join(allowed)}. Every image is decided "
+                "individually, including the logo and any video; there is no "
+                "answer for all of them.")
         if choice not in allowed:
             # Refused, never coerced. `generate` on a logo is the single answer
             # this gate exists to make unreachable, and quietly reading it as
@@ -1543,6 +2004,30 @@ def reset_assets(run: Run, asset_ids: list[str]) -> list[str]:
     return [a.id for a in dropped]
 
 
+def _checkpoint_assets(run: Run, made: list) -> None:
+    """Write the assets produced SO FAR, so a later crash does not discard them.
+
+    `step_assets` recorded nothing until the whole loop finished. Measured on
+    meridian-v2: the tenth asset raised, and the nine images already generated,
+    written to disk and paid for were never recorded — so `prior`, which exists
+    precisely to keep an already-produced asset from being made twice, read an
+    empty list on resume and every one of them would have been regenerated at
+    full price. Nine successful network calls thrown away by the tenth failing.
+
+    Deliberately a plain write rather than a `Store.apply` transition. It is a
+    crash checkpoint, not a decision: the authoritative transition still happens
+    once at the end of the stage, so the decision log keeps one entry for the
+    stage instead of one per image.
+    """
+    f = run.dir / "blackboard.json"
+    try:
+        bb = json.loads(f.read_text())
+        bb["assets"] = [a.model_dump(mode="json") for a in made]
+        f.write_text(json.dumps(bb, indent=2))
+    except (OSError, ValueError):
+        pass          # a checkpoint that cannot be written must not kill the run
+
+
 def step_assets(run: Run) -> Iterator[Event]:
     """Execute the plan the asset gate decided. One image, one provenance.
 
@@ -1601,7 +2086,122 @@ def step_assets(run: Run) -> Iterator[Event]:
     # and the file together.
     prior = {a.id: a for a in bb.assets if (run.workspace / "public" / a.path).exists()}
 
+    # ---- the generations, started together instead of one after another ------
+    #
+    # Measured on meridian-engine: 15 images, mean 70s, min 54s, max 116s —
+    # 17.6 minutes in which the harness did nothing but wait on one socket at a
+    # time. The work is network-bound, so threads are the right tool and there is
+    # no async rewrite to do.
+    #
+    # This deliberately does NOT restructure the loop below. Every yield, every
+    # branch and every ordering stays exactly as it was; only the waiting moves.
+    # A future raises at `.result()` in the same place the direct call used to
+    # raise, so failure behaviour is unchanged and one bad asset does not take
+    # the other fourteen with it.
+    #
+    # The LOGO is read before anything is submitted, not produced by the pool:
+    # every generated surface is given the mark as a branding reference, so it
+    # is a barrier, not a peer. It is a file copy, so the barrier costs nothing.
+    if logo_entry is not None and logo_entry.get("decision") == "upload" \
+            and logo_entry.get("upload"):
+        try:
+            logo_bytes = (run.dir / "uploads" / logo_entry["upload"]).read_bytes()
+        except OSError:
+            logo_bytes = None
+
+    # THE SOURCE'S OWN FOOTAGE, so the loop is shot the way theirs is. The
+    # curator has read a source frame and steered generation by it since the
+    # vision pass was written — and this stage never handed it one, so every
+    # loop in every real run was generated blind from a one-line brief. The
+    # result was stock: a woman at three monitors, code legible and head-on,
+    # the design system's colour NAME painted across the screens. The frame
+    # that would have prevented it was on disk the whole time.
+    #
+    # The section's own winning source first, then the primary, then any.
+    def _source_video(section_id: str, role: str = "",
+                      prominence: str = "") -> dict | None:
+        """The source video this loop is modelled on.
+
+        Chosen to match what the composer decided the video IS, not by a
+        preference of this function's. The first version ranked muted+loop
+        first — an "ambient before demo" heuristic — and on voiceowl that
+        picked sarvam's wordmark-over-Taj-Mahal loop over elevenlabs' footage
+        of a woman on a phone call, for a role the composer had written as "a
+        live agent call recording". The frame the curator read had nothing to
+        do with the role, and the clip came out as an abstract render.
+
+        So: the section's own winning source first, then the primary, then
+        the rest — and within that, the video whose measured shape agrees with
+        the decided prominence. Dominant video is content: prefer the ones the
+        source shows as content (controls, or large, or the headline is NOT on
+        it). Supporting/thumbnail video is texture: prefer the muted loops.
+        """
+        # A 22x24 <video> is an animated icon, not footage — cursor.com has one.
+        vids = [v for v in load_motion(run)
+                if v.get("frame") and v.get("w", 0) >= 240 and v.get("h", 0) >= 160]
+        if not vids:
+            return None
+        won = (load_winners(run).get(section_id) or {}).get("site")
+        primary = load_reading(run).get("site")
+        def site_rank(v):
+            return 0 if v.get("site") == won else 1 if v.get("site") == primary else 2
+        content = (prominence == "dominant")
+        def shape_rank(v):
+            ambient = bool(v.get("muted") and v.get("loop") and not v.get("controls"))
+            big = v.get("w", 0) * v.get("h", 0)
+            # content wants non-ambient and large; texture wants ambient
+            return (0 if (ambient != content) else 1, -big)
+        vids.sort(key=lambda v: (site_rank(v), *shape_rank(v)))
+        for v in vids:
+            if Path(v["frame"]).is_file():
+                return v
+        return None
+
+    def _produce(a: dict) -> bytes:
+        brief = a["brief"].lstrip()
+        if brief.lower().startswith("[video]"):
+            src = _source_video(a["section_id"], a.get("role", ""), a.get("prominence", ""))
+            frame = Path(src["frame"]).read_bytes() if src else None
+            # The source video's own aspect, not a fixed "wide": a portrait loop
+            # in a rail wants 9:16, and generating 16:9 for it and letting CSS
+            # crop is how a rail becomes a letterbox.
+            shape = ("tall" if src and src.get("h", 0) > src.get("w", 0) * 1.15
+                     else "wide")
+            return cur.motion(brief[7:].strip(), bb.design_system,
+                              frame=frame, shape=shape, role=a.get("role", ""))
+        return cur.generate(a["brief"], bb.design_system,
+                            product_name=bb.brief.product_name, logo=logo_bytes)
+
+    def _fresh(a: dict) -> bool:
+        keep = prior.get(a["id"])
+        return not (keep is not None and keep.kind.value == _kind(a))
+
+    queue = [a for a in plan
+             if (a.get("decision") or "generate") == "generate"
+             and _kind(a) != "logo" and _fresh(a)]
+    futures: dict[str, object] = {}
+    pool = None
+    if len(queue) > 1:
+        from concurrent.futures import ThreadPoolExecutor
+
+        # Bounded. The provider publishes no concurrency ceiling, and a burst of
+        # fifteen is how you find out it has one.
+        pool = ThreadPoolExecutor(max_workers=int(
+            os.environ.get("SPARROW_ASSET_WORKERS", "4")))
+        futures = {a["id"]: pool.submit(_produce, a) for a in queue}
+        yield Event(Stage.ASSETS, "progress",
+                    f"{len(queue)} generations started {pool._max_workers} at a time")
+
+    def produced(a: dict) -> bytes:
+        """The bytes for one asset — from the pool if it was queued."""
+        f = futures.get(a["id"])
+        return f.result() if f is not None else _produce(a)
+
     for a in plan:
+        # Everything finished before this one, persisted. If the asset below
+        # raises, the work already paid for survives the crash and `prior` keeps
+        # it on the next attempt.
+        _checkpoint_assets(run, made)
         aid, decision = a["id"], a.get("decision") or "generate"
         kind = _kind(a)
 
@@ -1660,7 +2260,12 @@ def step_assets(run: Run) -> Iterator[Event]:
                         f"image model, never redrawn")
             continue
 
-        if _kind(a) == "video":
+        # ONLY the uploaded case. `kind` became "video" for the composer's
+        # allocated loop too, which has no upload — and this branch's first act
+        # is to open one, so a generated video crashed the stage on
+        # `run.dir / "uploads" / None`. A generated loop falls through to the
+        # `[video]`-prefix branch below, which is the path that calls the model.
+        if _kind(a) == "video" and decision == "upload" and a.get("upload"):
             src = run.dir / "uploads" / a["upload"]
             dest = public / f"{aid}{src.suffix}"
             dest.write_bytes(src.read_bytes())
@@ -1728,16 +2333,21 @@ def step_assets(run: Run) -> Iterator[Event]:
             # branding check (there is no legible brand in footage that is
             # deliberately out of focus), and a different file extension.
             path = path.with_suffix(".mp4")
-            path.write_bytes(cur.motion(a["brief"].lstrip()[7:].strip(),
-                                        bb.design_system))
+            path.write_bytes(produced(a))
+            # MEASURED, not assumed. This said 1280x720 whatever the file was,
+            # and the builder is told to respect an asset's aspect ratio — so a
+            # 1920x1080 loop arrived described as 720p and a portrait rail would
+            # arrive described as a landscape banner.
+            vw, vh = _video_size(path)
             made.append(Asset(
                 id=aid, section_id=a["section_id"], kind=AssetKind.VIDEO,
                 brief=a["brief"], prominence=Prominence(a["prominence"]),
                 provenance=Provenance.GENERATED,
-                path=f"assets/{path.name}", width=1280, height=720,
+                path=f"assets/{path.name}", width=vw, height=vh,
             ))
             yield Event(Stage.ASSETS, "progress",
-                        f"{aid} generated · a silent ambient loop, not a demo")
+                        f"{aid} generated · a silent ambient loop, not a demo"
+                        + (f" · {cur.last_motion_note}" if cur.last_motion_note else ""))
             continue
         else:
             # The name and the mark both go in. A generated product surface
@@ -1745,9 +2355,7 @@ def step_assets(run: Run) -> Iterator[Event]:
             # browser tab — and with nothing given it invents one, which is
             # where "Off-Hook" came from on a site whose owner never used that
             # word.
-            made_bytes = cur.generate(
-                a["brief"], bb.design_system,
-                product_name=bb.brief.product_name, logo=logo_bytes)
+            made_bytes = produced(a)
             path.write_bytes(made_bytes)
             provenance = Provenance.GENERATED
             scrubbed = []
@@ -1783,6 +2391,9 @@ def step_assets(run: Run) -> Iterator[Event]:
             rejected=rejected, scrubbed=scrubbed,
         ))
 
+    if pool is not None:
+        pool.shutdown(wait=False)
+
     bb.assets = made
     rejected = _replace(run, "/assets", [a.model_dump(mode="json") for a in made],
                         agent="curator",
@@ -1799,6 +2410,21 @@ def step_assets(run: Run) -> Iterator[Event]:
                 f"{len(made)} asset(s)"
                 + (" · " + ", ".join(f"{v} {k}" for k, v in sorted(tally.items())) if tally else "")
                 + (f" · {skipped} skipped" if skipped else ""))
+
+
+def _video_size(path: Path) -> tuple[int, int]:
+    """A video's real dimensions, or (0, 0) if they cannot be read."""
+    import subprocess
+
+    try:
+        out = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=width,height", "-of", "csv=p=0:s=x", str(path)],
+            capture_output=True, text=True, timeout=60).stdout.strip()
+        w, h = out.split("x")[:2]
+        return int(w), int(h)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return 0, 0
 
 
 def _write_png(data: bytes, path: Path, Image) -> None:
@@ -1951,7 +2577,8 @@ def step_build(run: Run) -> Iterator[Event]:
                             source_html=_source_markup(
                                 (winners.get(section.id) or {}).get("html")),
                             page_shot=sheet,
-                            composition=composition_block(bb, section),
+                            composition=composition_block(
+                                bb, section, load_winners(run).get(section.id)),
                             observed=observed)
         write_section(ws, section, out.code,
                       asset_base=f"/projects/{run.project_id}/preview")
@@ -2017,8 +2644,34 @@ class AssetsNotServed(RuntimeError):
         )
 
 
+# Extensions whose absence changes what the page IS, versus what it SHOWS.
+_RENDER_CRITICAL = (".css", ".js", ".mjs")
+
+
+def _blocks_rendering(url: str) -> bool:
+    """Did this failure stop the page rendering, or just leave a hole in it?
+
+    `AssetsNotServed` exists for the first case — an export served without its
+    stylesheet renders Times New Roman on white with every Motion section frozen,
+    and inspecting that burns paid rounds arguing about a screenshot nobody will
+    see. It is the wrong response to the second case: a page that rendered
+    correctly and is missing one image has plenty worth inspecting, and the
+    missing image is a defect a fixer can actually repair.
+
+    Measured on meridian-v2: five 404s, all <img>, on a page whose CSS and JS
+    loaded fine. Halting there would report "nothing worth inspecting" about a
+    page that was almost entirely right.
+    """
+    path = url.split("?")[0].rstrip("/")
+    tail = path.rsplit("/", 1)[-1]
+    if any(path.endswith(x) for x in _RENDER_CRITICAL):
+        return True
+    return "." not in tail          # the document itself
+
+
 def _inspect_once(run: Run, bb, blueprints, port: int = 4600,
-                  disputed: dict[str, list[str]] | None = None):
+                  disputed: dict[str, list[str]] | None = None,
+                  only: set[str] | None = None):
     """One full look at the built page. Returns (page_findings, per_section, cost).
 
     Raises `AssetsNotServed` BEFORE the first model call if the page could not
@@ -2037,8 +2690,13 @@ def _inspect_once(run: Run, bb, blueprints, port: int = 4600,
         reports = inspect_page(url, run.dir / "shots" / "sections")
 
     failed = sorted({u for r in reports.values() for u in r.failed_requests})
-    if failed:
-        raise AssetsNotServed(failed)
+    # Only the failures that stopped the page rendering abort the inspection.
+    # The rest — a 404 image, a missing poster — stay in `failed_requests` and
+    # come out of `deterministic_defects` below as `request-failed` defects,
+    # attached to the section that referenced them, where the fixer can act.
+    blocking = [u for u in failed if _blocks_rendering(u.split(" ", 1)[-1])]
+    if blocking:
+        raise AssetsNotServed(blocking)
 
     page_level = deterministic_defects(reports)
 
@@ -2055,6 +2713,16 @@ def _inspect_once(run: Run, bb, blueprints, port: int = 4600,
         if pos >= len(ordered):
             break
         sec = ordered[pos]
+        # ONLY WHAT CHANGED. A section the fixer did not write is byte-identical
+        # to the last time it was judged, and judging it again buys one thing:
+        # a different answer. Measured: findings went 1 → 12 → 1 → 4 → 9 across
+        # rounds on a page where the fixer touched two or three sections per
+        # round — the other four or five were being re-read by a nondeterministic
+        # judge and coming back with fresh opinions. The page-level checks above
+        # are deterministic and free and still run over everything; the model
+        # is asked only about files that moved.
+        if only is not None and sec.id not in only:
+            continue
         defects, usage = inspector.inspect_section(
             bb, sec, by_index[idx], page_level, blueprints.get(sec.blueprint_id),
             (disputed or {}).get(sec.id))
@@ -2183,8 +2851,44 @@ def step_verify(run: Run) -> Iterator[Event]:
     from sparrow.loop import Blocked, Outcome, Rounds
 
     bb = _bb(run)
+
+    # SPARROW_SKIP_VERIFY=1 goes straight to the preview gate with the page as
+    # built. Verify is the slowest and most expensive stage — 21+ model calls
+    # and three full rebuilds on a 7-section page — and the person deciding
+    # whether that spend is worth it is the one looking at the page. Nothing is
+    # settled: sections stay BUILT, no verdict is invented, and the gate says
+    # plainly that no one has looked. A later /advance with the flag off runs
+    # verify normally from here.
+    if os.environ.get("SPARROW_SKIP_VERIFY", "").strip() in ("1", "true", "yes"):
+        raise Halt(GateRequest(
+            Stage.GATE_PREVIEW,
+            "The site is built. Verify was SKIPPED (SPARROW_SKIP_VERIFY) — nothing "
+            "has inspected the rendered page. Ship it, or unset the flag and "
+            "advance again to verify?",
+            options=[{"choice": "approve", "label": "Looks good — publish"},
+                     {"choice": "revise", "label": "Send it back with a note",
+                      "needs_note": True}],
+            artifacts=[str(run.workspace / "out")],
+        ))
+
     blueprints = load_dir(run.dir / "blueprints")
     rounds = Rounds("verify", cap=3)
+    # The count lived in this object and this object lives for one call, so a
+    # restart mid-verify began again at 0/3 — the cap in CLAUDE.md §8 was a cap
+    # per process, not per page. Persisted after every round; cleared when the
+    # stage reaches its gate, so the next verify the user asks for is a new one.
+    rounds_path = run.dir / "verify-rounds.json"
+    try:
+        rounds.spent = int(json.loads(rounds_path.read_text()).get("spent", 0))
+    except (OSError, ValueError, TypeError, AttributeError):
+        pass
+    if rounds.spent:
+        yield Event(Stage.VERIFY, "progress",
+                    f"resuming verify at {rounds.spent}/{rounds.cap} attempts spent")
+
+    def _persist_rounds() -> None:
+        rounds_path.write_text(json.dumps({"spent": rounds.spent}))
+
     fixer: Fixer | None = None
     unserved: list[str] = []
     # A disputed defect must not come back next round. Without this the inspector
@@ -2192,12 +2896,19 @@ def step_verify(run: Run) -> Iterator[Event]:
     # budget on one thing nobody is going to change.
     disputed: dict[str, list[str]] = {}
     port = 4600
+    # Verdicts carried between rounds. `None` on the first pass means "look at
+    # everything"; after that, only the sections the fixer wrote are looked at
+    # again and every other section keeps the verdict it already has.
+    touched: set[str] | None = None
+    verdicts: dict[str, list] = {}
 
     while True:
-        findings = audit_dir(run.workspace / "src/components/sections", bb.design_system)
+        findings = audit_dir(run.workspace / "src/components/sections", bb.design_system,
+                             load_winners(run),
+                             {s.id: Path(s.target_path).name for s in bb.sections})
         try:
-            page_level, per_section, cost = _inspect_once(run, bb, blueprints, port,
-                                                          disputed)
+            page_level, fresh, cost = _inspect_once(run, bb, blueprints, port,
+                                                    disputed, only=touched)
         except AssetsNotServed as e:
             # Stop the round before the inspector is asked anything. Nothing in a
             # section file explains a 404, so every model call this round would
@@ -2207,6 +2918,12 @@ def step_verify(run: Run) -> Iterator[Event]:
             unserved = e.urls
             break
         port += 1                       # a fresh port each pass; the last may still be closing
+        # Merge: a re-inspected section's verdict is replaced (cleared if it came
+        # back with nothing); an untouched one keeps its last verdict.
+        for sid in (touched if touched is not None else [s.id for s in bb.sections]):
+            verdicts.pop(sid, None)
+        verdicts.update(fresh)
+        per_section = dict(verdicts)
 
         # Drift is NOT suppressed by `disputed` the way a visual defect is.
         # There is nothing to dispute about arithmetic against a closed scale,
@@ -2250,6 +2967,8 @@ def step_verify(run: Run) -> Iterator[Event]:
 
         fixer = fixer or Fixer()
         fixed_any = False
+        errored = 0
+        touched = set()
         # Every file this round is about to overwrite, as it stood before the
         # overwrite. This is what a failed rebuild is restored from.
         snapshots: dict[Path, str] = {}
@@ -2260,10 +2979,15 @@ def step_verify(run: Run) -> Iterator[Event]:
             try:
                 out, dispute = fixer.fix(bb, section, before, defects)
             except Exception as e:
+                errored += 1
                 yield Event(Stage.VERIFY, "blocked", f"{sid}: fixer failed — {e}")
                 continue
             if dispute:
                 disputed.setdefault(sid, []).append(dispute)
+                # A disputed section is not rewritten, so it is not re-inspected;
+                # its carried verdict has to go with the dispute or the same
+                # defects re-enter `work` every round from memory.
+                verdicts.pop(sid, None)
                 # THE reason this stage got a writer. A dispute changes no field
                 # on the blackboard, suppresses the defect for every later round,
                 # and until now lived only in the `disputed` dict above — which
@@ -2298,6 +3022,7 @@ def step_verify(run: Run) -> Iterator[Event]:
             snapshots.setdefault(path, before)
             write_section(run.workspace, section, out.code,
                           asset_base=f"/projects/{run.project_id}/preview")
+            touched.add(sid)
             # Status stays DEFECTIVE. The file changed; nothing has looked at the
             # result yet, and loop.py's fourth rule is that nothing is marked done
             # on an agent's say-so. The next round's inspection is the evidence,
@@ -2315,15 +3040,31 @@ def step_verify(run: Run) -> Iterator[Event]:
                         cost=out.usage.cost(fixer.provider.name, fixer.tier))
 
         if not fixed_any:
+            if errored and errored >= len(work) - sum(len(v) for v in disputed.values()):
+                # Nothing was fixed because the FIXER COULD NOT BE REACHED, not
+                # because it disagreed. Measured: eight consecutive
+                # APIConnectionErrors during a seven-minute Azure outage were
+                # reported as "every defect was disputed", the round was settled
+                # as superseded, and the gate opened claiming the fixer had
+                # argued its case. An outage is not an argument.
+                rounds.settle(Outcome.ATTEMPTED, f"{errored} fixer call(s) failed")
+                _persist_rounds()
+                yield Event(Stage.VERIFY, "blocked",
+                            f"nothing changed — {errored} fixer call(s) failed to "
+                            f"reach the model. This round is not evidence of anything; "
+                            f"advance again when the provider is reachable.")
+                break
             # Every defect was disputed, so another pass would look at the same
             # page and find the same things. Stop rather than burn the budget.
             rounds.settle(Outcome.SUPERSEDED, "all defects disputed")
+            _persist_rounds()
             yield Event(Stage.VERIFY, "progress",
                         "nothing changed — every defect was disputed")
             break
 
         rounds.settle(Outcome.ATTEMPTED,
                       f"fixed {sum(len(v) for v in work.values())} defect(s)")
+        _persist_rounds()
         ok, output = _run_build(run.workspace)
         if not ok:
             # This branch used to emit "reverting to the last good export" and
@@ -2357,10 +3098,17 @@ def step_verify(run: Run) -> Iterator[Event]:
             break
         yield Event(Stage.VERIFY, "progress", f"rebuilt · {rounds.summary()}")
 
-    findings = audit_dir(run.workspace / "src/components/sections", bb.design_system)
+    findings = audit_dir(run.workspace / "src/components/sections", bb.design_system,
+                             load_winners(run),
+                             {s.id: Path(s.target_path).name for s in bb.sections})
     looked = True
     try:
-        _, per_section, _ = _inspect_once(run, bb, blueprints, port + 10, disputed)
+        _, fresh, _ = _inspect_once(run, bb, blueprints, port + 10, disputed,
+                                    only=touched)
+        for sid in (touched if touched is not None else [s.id for s in bb.sections]):
+            verdicts.pop(sid, None)
+        verdicts.update(fresh)
+        per_section = dict(verdicts)
         left = sum(len(v) for v in per_section.values())
     except AssetsNotServed as e:
         per_section, left, unserved, looked = {}, 0, e.urls, False
@@ -2383,6 +3131,7 @@ def step_verify(run: Run) -> Iterator[Event]:
         "it can be judged. "
         if unserved else "The site is built. "
     )
+    rounds_path.unlink(missing_ok=True)
     raise Halt(GateRequest(
         Stage.GATE_PREVIEW,
         headline

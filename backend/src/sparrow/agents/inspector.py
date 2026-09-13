@@ -188,6 +188,11 @@ def deterministic_defects(reports: dict[str, PageReport]) -> list[Defect]:
             out.append(Defect("high", "request-failed", f"request failed: {f}", bp, "computed"))
         for o in r.horizontal_overflow:
             out.append(Defect("high", "viewport-overflow", f"content overflows the viewport: {o}", bp, "computed"))
+        for j in r.jammed_headings:
+            # High, and deliberately so: this ships an unreadable headline, and
+            # both times it happened the visual pass reported nothing.
+            out.append(Defect("high", "heading-words-collapsed",
+                              f"headline words have run together: {j}", bp, "computed"))
         for sp in r.spill:
             out.append(Defect("high", "text-wider-than-its-box",
                               f"text does not fit its container: {sp}", bp, "computed"))

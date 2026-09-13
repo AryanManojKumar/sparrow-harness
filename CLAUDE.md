@@ -6,7 +6,7 @@
 
 **Status:** built and running. Backend, frontend, and a full pipeline that takes a
 sentence to an exported site. Several projects built end to end.
-**Last updated:** 2026-09-02
+**Last updated:** 2026-09-13
 
 ---
 
@@ -39,6 +39,24 @@ nothing alike and have the same cause — a decision nobody was allowed to make:
 The fix for both is the same shape: **vocabulary open, budget closed.** An agent may
 invent any technique; the pass that can see the whole page decides where it lands and how
 often. See §6.
+
+**First head-to-head, measured (2026-09-13).** The same brief — voice agents for
+enterprises like BPCL, sources elevenlabs.io/agents and sarvam.ai, four real product
+screenshots — given to Emergent and to this harness. Emergent asked five chip questions
+("Light minimal enterprise SaaS") and produced a 3,800px page that a stranger picks
+first: tight, one idea per screen, a 101px hero, finished-looking. It contains **zero
+`<img>`** — the four screenshots were never used; it hand-drew a dashboard in divs. It
+invented the company name (Vocalis), four customers (GAIL, Indian Railways, Utility
+Ops, Telecom Grids), a latency figure, a language count, a voice model and an SAP
+connector. Nothing of either source is in it; it is the template the chip named. This
+harness's page used all four screenshots by role, stated only the facts it was given,
+took sarvam's ground rhythm and elevenlabs' section order, and ran 10,400px against
+sources of 9,500–14,400. It is less polished section by section — bands with air
+inside them, real facts projected into one section instead of every section that
+could carry them. Scored honestly: Emergent 7 as a page and 3 as *this company's*
+page; ours 7 and 8. The gap to close here is polish per section; the gap on the other
+side is identity, and identity is the thesis. Captures in
+`projects/voiceowl/shots/{after-fixes,emergent-vocalis}.jpg`.
 
 Two differentiators. Everything else is infrastructure in service of these.
 
@@ -216,6 +234,37 @@ The split to hold onto: **tokens closed and deterministically audited; treatment
 spot-checked.** They are not equally verifiable and pretending otherwise costs you one or
 the other.
 
+### Measure, don't instruct — and the stack's prior
+
+Every taste rule that was ever written into a prompt here has been removed, and the
+replacement is the same shape each time: the scout **measures** what the sources do,
+the number is persisted, and the agent that decides sees the number. Video (role,
+prominence, whether the headline sits on it), canvas liveness, typography (family,
+weight, size, tracking, horizontal position of the display heading), vertical position
+of content in a band, enclosure (share of blocks that are bordered or shadowed), the
+radius/shadow vocabulary, and — latest — what each band **sits on** (its own ground,
+luminance, or a picture). `ground` was a two-member enum, `page | muted`, so the
+composer could not say "dark band under the headline" no matter what the scout showed
+it; it is now `{name, how}` like `archetype`.
+
+The finding that decides how this harness is built from here: **measurement alone does
+not move the builder's prior. Only an audit that fails and a fixer that acts does.**
+Measured on voiceowl against sources that box 7–17% of their blocks: with the enclosure
+number in the director's prompt, card-recipe treatments went from 8/15 to 9/15; with the
+number in the builder's prompt, boxed share went from 22% to 27%. The number was read
+as context. With a deterministic enclosure audit (ceiling = the highest source share)
+and a fixer that un-boxes, the page went to 16%. The stack is the cause: shadcn's
+`Card` is the one container it ships and the model has seen it ten thousand times, so
+"vocabulary open" is not enough — the closed budget has to be *enforced*, not
+described. Tokens closed and audited; treatments open and spot-checked; **enclosure
+closed and audited** now sits with the first group.
+
+One more of the same family, cheap and invisible: the director records type steps as
+`font-500`; Tailwind v4 has no such utility unless the theme declares
+`--font-weight-500`. 112 weight utilities across ten sections compiled to nothing and
+every heading rendered at 400 against a recorded 500. The theme now declares each
+recorded weight. A recorded decision that does not compile is not a decision.
+
 ### Composition is not the builder's to invent
 
 The builder's prompt said "LAYOUT, COMPOSITION, DENSITY AND RHYTHM ARE YOURS" and, four
@@ -318,11 +367,21 @@ Not speculation — each of these was observed on a real build and none is fixed
   §4's argument: small and complete beats retrieved-maybe.
 - **Six of ten sections carry no imagery**, against a category norm of ~12 large images
   per page. The page reads well for one screen and then flattens into type and icon grids.
-- **Verify never converges.** Three rounds, then `rounds-exhausted` with NO gate — the run
-  stops with nothing a user can answer, which §8 says escalation must never do. The
-  proximate cause is image quality: the judge sees a generated dashboard full of garbled
-  text, correctly concludes the section is wrong, and its only available fix is to delete
-  the image. A guard blocks that, so the rounds burn without progress.
+- **Verify never converged** — three rounds, then `rounds-exhausted` with NO gate. Fixed
+  in three parts: the loop now falls through to the preview gate whatever happened;
+  only the sections the fixer touched are re-inspected, every other verdict carries
+  forward; the round count is persisted (`verify-rounds.json`) so a restart mid-verify
+  does not begin again at 0/3. Fixer connection errors are counted separately from
+  disputes — an outage is not an argument.
+- **Gates lived in process memory.** `run.pending` was lost on every restart, so a run
+  at the design gate came back as `awaiting: false` with nothing to answer. Persisted
+  to `pending.json` and restored with the stage.
+- **Generated video is generic for a content role.** The pipeline is correct end to
+  end — the source's own frame is read, the role is passed verbatim, the loop is
+  seamless — and veo still returns cubes on a gradient for "transcript turns becoming
+  system actions", because a video model cannot render legible interface and the prompt
+  tells it so. Generation fits ambient loops. A dominant content video wants the user's
+  real recording, which is §2's thesis applied to motion.
 - **The generated imagery is unusable at close range.** `qwen3/pro-text-to-image` renders
   convincing dashboard layouts with gibberish labels. Fine for a POC, fatal for §2's
   real-content thesis. It is one env var (`KIE_IMAGE_MODEL`) — a model choice, not an
@@ -331,8 +390,12 @@ Not speculation — each of these was observed on a real build and none is fixed
 - **Entrance animation played before it could be seen.** 75 `motion.` calls across ten
   sections and zero `whileInView` — everything bound to mount, finished before the reader
   scrolled to it. Fixed in the builder prompt; not yet observed on a build.
-- **The stage marker records the stage completed, not the stage entered**, so a run that
-  crashes resumes one stage too early and re-opens a gate the user already answered.
+- **Six of ten sections carried no imagery** is now four real captures placed by role,
+  and a logo wall that tiles industry names because no logo files were supplied. The
+  asset gate asks; the gap is a content gap, not a pipeline one.
+- **The lower half flattened** — every section on one ground — because the schema had
+  two grounds. Fixed (see §6); the first build after it put the nav and footer on the
+  dark band and alternated three muted bands, which is sarvam's map.
 
 ## 12. Open questions
 

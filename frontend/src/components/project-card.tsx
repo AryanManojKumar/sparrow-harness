@@ -1,19 +1,23 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import Link from "next/link";
-import { AlertTriangle, ArrowUpRight, Check, CircleDashed, Hourglass } from "lucide-react";
+import { AlertTriangle, ArrowUpRight, Check, CircleDashed, Hourglass, Loader2 } from "lucide-react";
 
-import { isWaitingOnHuman, previewUrl, type ProjectSummary } from "@/lib/api";
+import { isWaitingOnHuman, previewUrl, thumbUrl, type ProjectSummary } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
-// The thumbnail renders the real export in an iframe at desktop width and
-// scales it down, rather than shipping a screenshot pipeline. It is always
-// current by construction — no capture step to go stale — but it does mean a
-// real page load per card, so the iframe only mounts once the card is near
-// the viewport.
-const FRAME_W = 1440;
-const FRAME_H = 900;
+// The thumbnail is a still, served by GET /projects/{id}/thumb.
+//
+// It used to be the real export in an iframe, scaled down — always current by
+// construction, no capture step to go stale. What that actually cost: every
+// card is a full Next.js site booting React, Motion, fonts and images, the
+// listing renders all of them, and IntersectionObserver only delayed the
+// mount rather than ever unmounting one. Nineteen projects meant nineteen
+// live websites in the tab and a home screen that dropped frames on scroll.
+// A card wants a picture, so it now gets a picture: the endpoint renders one
+// viewport of the export with Playwright the first time it is asked and
+// caches it on disk, so the cost is one browser launch per project ever.
 
 function relativeTime(seconds?: number): string {
   if (!seconds) return "";
@@ -47,19 +51,35 @@ export function ProjectCard({ project }: { project: ProjectSummary }) {
     sections = 0,
     built = 0,
     has_preview,
+    running,
     updated_at,
   } = project;
 
   // product_name is empty on projects that predate the identity work; the
   // directory name is the only other thing guaranteed to be there.
   const title = product_name?.trim() || project_id;
-  const needsYou = isWaitingOnHuman(stage);
+  // Executing on the server right now. Neither "needs you" nor "stopped":
+  // the stage field alone cannot tell a run in progress from one that died
+  // at the same stage, and reading it as the latter is what showed
+  // "Stopped at sources" over a run that was extracting sources.
+  const isRunning = Boolean(running);
+  const needsYou = !isRunning && isWaitingOnHuman(stage);
   const isDone = stage === "done";
-  // has_preview only means an export directory exists. With nothing built
-  // into it that export is the bare scaffold, which thumbnails as an empty
-  // dark rectangle and reads as a broken card — so the thumbnail needs a
-  // built section, while the "open the site" link still follows has_preview.
-  const hasThumb = Boolean(has_preview) && built > 0;
+  // An export on disk is the whole condition. It used to also require
+  // `built > 0`, on the theory that an export with no built sections is the
+  // bare scaffold and would thumbnail as an empty dark rectangle.
+  //
+  // `built` counts sections the BLACKBOARD records as built, and it
+  // under-reports badly on anything written before per-section status was
+  // recorded: measured across the current projects, twelve of seventeen
+  // exports reported 0 built sections while holding a complete, finished
+  // page — the same drift `_infer_stage` exists to paper over on the server.
+  // So the guard was hiding real sites behind "Stopped at …" placeholders.
+  //
+  // The server is the better judge now: it renders the still and 404s when
+  // it cannot, and `onError` below turns that into the placeholder. Ask for
+  // the picture and let the answer decide.
+  const hasThumb = Boolean(has_preview);
 
   // Where the card goes on click, by stage. Opening a project must never
   // trigger /advance — that is billable, and a side-effect spend on a click
@@ -76,35 +96,11 @@ export function ProjectCard({ project }: { project: ProjectSummary }) {
   const href = goesToPreview ? previewUrl(project_id) : workspaceHref;
   const opensExternally = goesToPreview;
 
-  const shellRef = useRef<HTMLDivElement>(null);
-  const [scale, setScale] = useState(0.25);
-  const [near, setNear] = useState(false);
-
-  useEffect(() => {
-    const el = shellRef.current;
-    if (!el || !hasThumb) return;
-
-    const ro = new ResizeObserver(([entry]) => {
-      setScale(entry.contentRect.width / FRAME_W);
-    });
-    ro.observe(el);
-
-    const io = new IntersectionObserver(
-      ([entry]) => {
-        if (entry.isIntersecting) {
-          setNear(true);
-          io.disconnect();
-        }
-      },
-      { rootMargin: "300px" }
-    );
-    io.observe(el);
-
-    return () => {
-      ro.disconnect();
-      io.disconnect();
-    };
-  }, [hasThumb]);
+  // A still can 404 — a project built before the capture step, or one whose
+  // export cannot be rendered. Falling back to the same panel the unbuilt
+  // cards use keeps a missing image from reading as a broken card.
+  const [thumbFailed, setThumbFailed] = useState(false);
+  const showThumb = hasThumb && !thumbFailed;
 
   if (!readable) {
     return (
@@ -130,44 +126,43 @@ export function ProjectCard({ project }: { project: ProjectSummary }) {
         {...(opensExternally ? { target: "_blank", rel: "noreferrer" } : {})}
         className="block"
       >
-        <div
-          ref={shellRef}
-          className="relative aspect-[16/10] overflow-hidden border-b border-border bg-black/30"
-        >
-          {hasThumb ? (
+        <div className="relative aspect-[16/10] overflow-hidden border-b border-border bg-black/30">
+          {showThumb ? (
             <>
-              {near && (
-                <iframe
-                  src={previewUrl(project_id)}
-                  title={`${title} preview`}
-                  aria-hidden="true"
-                  tabIndex={-1}
-                  loading="lazy"
-                  scrolling="no"
-                  className="pointer-events-none absolute left-0 top-0 origin-top-left border-0"
-                  style={{
-                    width: FRAME_W,
-                    height: FRAME_H,
-                    transform: `scale(${scale})`,
-                  }}
-                />
-              )}
-              {/* Keeps the thumbnail from reading as an interactive page and
-                  hides the seam while the frame is still painting. */}
+              {/* eslint-disable-next-line @next/next/no-img-element -- served
+                  by the sparrow API, not a Next-optimisable route */}
+              <img
+                src={thumbUrl(project_id)}
+                alt=""
+                aria-hidden="true"
+                loading="lazy"
+                decoding="async"
+                onError={() => setThumbFailed(true)}
+                className="size-full object-cover object-top transition-transform duration-500 group-hover/card:scale-[1.03]"
+              />
+              {/* Keeps the still from reading as an interactive page and
+                  seats it against the card's own ground. */}
               <div className="absolute inset-0 bg-gradient-to-t from-black/40 via-transparent to-transparent" />
             </>
           ) : (
             // No build yet, so there is nothing to show — say where the run
             // actually got to instead of offering a link that goes nowhere.
             <div className="flex h-full flex-col items-center justify-center gap-2 text-muted-foreground">
-              {/* Nothing is running here — a spinner would imply otherwise. */}
-              {needsYou ? (
+              {/* A spinner only when something is actually running — on a
+                  parked project it would imply work that is not happening. */}
+              {isRunning ? (
+                <Loader2 className="size-5 animate-spin text-indigo-300/80" />
+              ) : needsYou ? (
                 <Hourglass className="size-5 text-amber-300/80" />
               ) : (
                 <CircleDashed className="size-5" />
               )}
-              <p className={cn("text-xs", needsYou && "text-amber-300/90")}>
-                {needsYou ? "Waiting for you" : `Stopped at ${stageLabel(stage).toLowerCase()}`}
+              <p className={cn("text-xs", needsYou && "text-amber-300/90", isRunning && "text-indigo-200/90")}>
+                {isRunning
+                  ? `Running · ${stageLabel(stage).toLowerCase()}`
+                  : needsYou
+                    ? "Waiting for you"
+                    : `Stopped at ${stageLabel(stage).toLowerCase()}`}
               </p>
               {sections > 0 && (
                 <div className="mt-1 flex w-24 gap-0.5">
@@ -203,14 +198,20 @@ export function ProjectCard({ project }: { project: ProjectSummary }) {
             <span
               className={cn(
                 "rounded-full px-1.5 py-0.5",
-                needsYou
-                  ? "bg-amber-400/15 text-amber-300"
-                  : isDone
-                    ? "bg-emerald-400/15 text-emerald-300"
-                    : "bg-muted text-muted-foreground"
+                isRunning
+                  ? "bg-indigo-400/15 text-indigo-200"
+                  : needsYou
+                    ? "bg-amber-400/15 text-amber-300"
+                    : isDone
+                      ? "bg-emerald-400/15 text-emerald-300"
+                      : "bg-muted text-muted-foreground"
               )}
             >
-              {needsYou ? "Needs you" : isDone ? (
+              {isRunning ? (
+                <span className="inline-flex items-center gap-1">
+                  <Loader2 className="size-3 animate-spin" /> Running
+                </span>
+              ) : needsYou ? "Needs you" : isDone ? (
                 <span className="inline-flex items-center gap-1">
                   <Check className="size-3" /> Done
                 </span>
@@ -236,7 +237,7 @@ export function ProjectCard({ project }: { project: ProjectSummary }) {
           href={workspaceHref}
           className="flex items-center justify-center gap-1 border-t border-border py-2 text-xs text-muted-foreground opacity-0 transition-opacity hover:text-foreground group-hover/card:opacity-100"
         >
-          {needsYou ? "Answer the question" : "Open the workspace"}
+          {isRunning ? "Watch it run" : needsYou ? "Answer the question" : "Open the workspace"}
         </Link>
       ) : (
         has_preview && (

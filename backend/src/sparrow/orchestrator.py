@@ -25,6 +25,7 @@ blackboard, so a run resumes from wherever it halted.
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator
+import json
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
@@ -133,6 +134,47 @@ class Run:
     def workspace(self) -> Path:
         return self.dir / "workspace"
 
+    @property
+    def pending_path(self) -> Path:
+        return self.dir / "pending.json"
+
+    # ---------------------------------------------------------------- gates
+
+    def set_pending(self, request: GateRequest | None) -> None:
+        """Record the open gate on disk, or clear it.
+
+        `pending` lived only on this object, so a server restart while a gate
+        was open came back with `awaiting: false` and no way to answer a
+        question the blackboard's stage pointer still said was being asked.
+        Measured on voiceowl: the design gate was lost twice and the run had to
+        be driven by calling `adopt_direction` by hand.
+        """
+        self.pending = request
+        if request is None:
+            self.pending_path.unlink(missing_ok=True)
+            return
+        self.pending_path.write_text(json.dumps({
+            "gate": request.gate.value, "question": request.question,
+            "options": request.options, "artifacts": request.artifacts,
+        }, indent=1))
+
+    def restore_pending(self) -> None:
+        """Reload the open gate after a restart, if it belongs to this stage."""
+        if not self.pending_path.exists():
+            return
+        try:
+            d = json.loads(self.pending_path.read_text())
+            gate = Stage(d["gate"])
+        except (ValueError, KeyError, TypeError):
+            self.pending_path.unlink(missing_ok=True)
+            return
+        if gate is self.stage:
+            self.pending = GateRequest(gate, str(d.get("question", "")),
+                                       list(d.get("options") or []),
+                                       list(d.get("artifacts") or []))
+        else:
+            self.pending_path.unlink(missing_ok=True)
+
     # ------------------------------------------------------------------ drive
 
     def advance(self) -> Iterator[Event]:  # noqa: C901
@@ -167,7 +209,7 @@ class Run:
                     self.spent += ev.cost
                     yield self._emit(ev)
             except Halt as h:
-                self.pending = h.request
+                self.set_pending(h.request)
                 yield self._emit(Event(self.stage, "awaiting", h.request.question,
                                        {"options": h.request.options,
                                         "artifacts": h.request.artifacts}))
@@ -186,7 +228,7 @@ class Run:
         """Answer the open gate and let the run continue."""
         if self.pending is None:
             raise RuntimeError("no gate is open")
-        self.pending = None
+        self.set_pending(None)
         self.stage = next_stage(self.stage)
         self._save_stage()
         self.log.append(Event(self.stage, "progress", f"gate resolved: {choice}"))

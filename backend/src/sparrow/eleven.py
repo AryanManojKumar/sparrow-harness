@@ -70,32 +70,85 @@ def _req(url: str, body: dict | None = None, *, timeout: float = 180.0) -> dict:
         ) from e
 
 
-def _fetch(url: str, *, timeout: float = 180.0) -> bytes:
+def _fetch(url: str, *, timeout: float = 180.0, attempts: int = 4) -> bytes:
+    """Download a finished generation. Retries, because by the time this runs
+    the generation is complete and billed — an SSL handshake timeout on the
+    download (measured, once, on a 19MB clip) threw away a paid render that
+    was sitting on the server waiting to be fetched again."""
     req = urllib.request.Request(url, headers={"User-Agent": "sparrow/1.0"})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        return r.read()
+    last: Exception | None = None
+    for i in range(attempts):
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                return r.read()
+        except (urllib.error.URLError, TimeoutError, OSError) as e:
+            last = e
+            time.sleep(3 * (i + 1))
+    raise ElevenError(f"download failed after {attempts} attempts: {last}")
 
 
 def _run(kind: str, payload: dict) -> bytes:
-    """Create, poll to a terminal state, download. `kind` is "image" or "video"."""
-    res = _req(f"{BASE}/{kind}", payload)
+    """Create, poll to a terminal state, download. `kind` is "image" or "video".
+
+    Every exit from this function is logged — success, provider failure, and
+    timeout alike. It is the only choke point both media paths pass through, so
+    instrumenting it here is what makes a four-minute video call visible in the
+    run log instead of looking like a stall.
+    """
+    from sparrow import telemetry
+
+    started = time.monotonic()
+    model = payload.get("model_id", "?")
+    prompt = str(payload.get("prompt", ""))
+    # Every knob that changes what comes back, so a surprising result can be
+    # explained from the log without re-deriving what was sent.
+    params = {k: v for k, v in payload.items()
+              if k in ("aspect_ratio", "resolution", "quality", "seed",
+                       "generate_audio", "negative_prompt")}
+    if payload.get("images"):
+        params["refs"] = len(payload["images"])
+
+    def _fail(msg: str) -> ElevenError:
+        telemetry.log_media(
+            kind=kind, provider="elevenlabs", model=model, prompt=prompt,
+            duration_ms=int((time.monotonic() - started) * 1000),
+            error=msg[:200], **params)
+        return ElevenError(msg)
+
+    try:
+        res = _req(f"{BASE}/{kind}", payload)
+    except Exception as e:
+        raise _fail(f"create failed: {str(e)[:180]}") from e
     gid = res.get("id")
     if not gid:
-        raise ElevenError(f"{kind}: no generation id in {json.dumps(res)[:200]}")
+        raise _fail(f"{kind}: no generation id in {json.dumps(res)[:200]}")
+    telemetry.log_stage(kind, "progress", f"{kind} {gid} accepted by {model}")
 
     deadline = time.monotonic() + TIMEOUT
+    seen = None
     while True:
         st = _req(f"{BASE}/{kind}/{gid}")
         status = st.get("status")
+        # Transitions only. Polling every 5s for 155s would otherwise put 31
+        # identical "pending" lines in the log for one video.
+        if status != seen:
+            telemetry.log_stage(kind, "progress",
+                                f"{kind} {gid} {seen or 'new'} → {status}")
+            seen = status
         if status in ("completed", "complete", "succeeded", "success"):
             url = st.get("content_url")
             if not url:
-                raise ElevenError(f"{kind} {gid} finished with no content_url")
-            return _fetch(url)
+                raise _fail(f"{kind} {gid} finished with no content_url")
+            blob = _fetch(url)
+            telemetry.log_media(
+                kind=kind, provider="elevenlabs", model=model, prompt=prompt,
+                duration_ms=int((time.monotonic() - started) * 1000),
+                bytes_out=len(blob), generation_id=gid, **params)
+            return blob
         if status in ("failed", "error"):
-            raise ElevenError(f"{kind} {gid} failed: {json.dumps(st)[:200]}")
+            raise _fail(f"{kind} {gid} failed: {json.dumps(st)[:200]}")
         if time.monotonic() > deadline:
-            raise ElevenError(f"{kind} {gid} still {status!r} after {TIMEOUT:.0f}s")
+            raise _fail(f"{kind} {gid} still {status!r} after {TIMEOUT:.0f}s")
         time.sleep(POLL_INTERVAL)
 
 
@@ -135,7 +188,14 @@ def generate(prompt: str, *, shape: str = "wide", quality: str = "medium",
     return _run("image", body)
 
 
-def motion(prompt: str) -> bytes:
+# The video endpoint's shapes. Only two, unlike `SHAPES` — there is no square
+# video on this model, and asking for one is a 422.
+VIDEO_SHAPES = {"wide": "16:9", "tall": "9:16"}
+
+
+def motion(prompt: str, *, shape: str = "wide", resolution: str = "1080p",
+           negative_prompt: str = "", seed: int | None = None,
+           audio: bool = False) -> bytes:
     """Text to video. Returns mp4 bytes.
 
     Ambient footage, not product demonstration. Measured: an 8s clip of a
@@ -143,5 +203,36 @@ def motion(prompt: str) -> bytes:
     gibberish — which is fine at a shallow depth of field behind a section, and
     useless as the thing a reader is meant to read. Anything legible is an
     image; `generate` handles those.
+
+    Every keyword here was already supported and unsent. The body was
+    `{model_id, prompt}` for as long as this function has existed, which left
+    four decisions to the model's defaults:
+
+    - `aspect_ratio` — 16:9 or 9:16, nothing else. A source's video is measured
+      full-bleed behind a band or as a portrait rail, and those are different
+      shapes; generating 16:9 for both and letting CSS crop is how a portrait
+      loop becomes a letterbox.
+    - `resolution` — defaulted to 720p. A full-bleed background at 720p on a
+      1440 viewport is upscaled by the browser.
+    - `negative_prompt` — the "nothing in frame is meant to be read" rules were
+      prose inside the positive prompt, where they compete with the description
+      instead of constraining it.
+    - `generate_audio` — veo returns an AAC track by default and the harness
+      shipped it, muted, on every byte a reader downloads.
+
+    What is NOT supported, confirmed by probing the schema: `duration` and
+    `loop`. The prompt asks for 8 seconds and a seamless loop and gets neither
+    guaranteed, so both are post-processing concerns.
     """
-    return _run("video", {"model_id": VIDEO_MODEL, "prompt": prompt})
+    body: dict = {
+        "model_id": VIDEO_MODEL,
+        "prompt": prompt,
+        "aspect_ratio": VIDEO_SHAPES.get(shape, "16:9"),
+        "resolution": resolution,
+        "generate_audio": audio,
+    }
+    if negative_prompt:
+        body["negative_prompt"] = negative_prompt
+    if seed is not None:
+        body["seed"] = seed
+    return _run("video", body)

@@ -24,7 +24,7 @@ LITERAL_COLOR = re.compile(
     rf"\b(?:text|bg|border|from|via|to|ring|fill|stroke|decoration|outline)-"
     rf"(?:{_PALETTES})(?:-\d{{2,3}})?\b"
 )
-FONT_WEIGHT = re.compile(r"\bfont-(thin|extralight|light|normal|medium|semibold|bold|extrabold|black)\b")
+FONT_WEIGHT = re.compile(r"\bfont-(thin|extralight|light|normal|medium|semibold|bold|extrabold|black|[1-9]00)\b")
 # Both of these also match arbitrary values, because a closed alternation cannot
 # see the thing it most needs to catch. `ide-01` used shadow-[0_2px_0_0_oklch(
 # 0.805_0.032_235)] eleven times against a design system declaring
@@ -90,11 +90,19 @@ def permitted(ds: DesignSystem) -> dict[str, set[str]]:
         return out
 
     return {
-        "off-scale-weight": {f"font-{_WEIGHT_NAMES[w]}" for w in ds.font_weights},
+        # Both spellings: the theme declares `--font-weight-<n>` for each
+        # recorded weight, so `font-500` is as real as `font-medium`.
+        "off-scale-weight": ({f"font-{_WEIGHT_NAMES[w]}" for w in ds.font_weights}
+                             | {f"font-{w}" for w in ds.font_weights}),
         "off-scale-type": {m.group(0) for st in ds.type_steps
                            for m in TEXT_STEP.finditer(st.classes)},
-        "off-scale-shadow": utilities(ds.shadow_rest, ds.shadow_hover),
-        "off-scale-radius": utilities(ds.radius_card, ds.radius_input) | {"rounded-full"},
+        # The recorded SCALE plus the single defaults. A scale recorded from the
+        # source's measured vocabulary permits the surfaces the source has;
+        # nothing here widens on its own.
+        "off-scale-shadow": utilities(ds.shadow_rest, ds.shadow_hover,
+                                      *(getattr(ds, "shadow_scale", None) or [])),
+        "off-scale-radius": utilities(ds.radius_card, ds.radius_input,
+                                      *(getattr(ds, "radius_scale", None) or [])) | {"rounded-full"},
         "off-scale-gap": utilities(ds.grid_gap, ds.inline_gap),
     }
 
@@ -149,10 +157,89 @@ def audit_file(path: Path, ds: DesignSystem) -> list[Finding]:
     return out
 
 
-def audit_dir(sections: Path, ds: DesignSystem) -> list[Finding]:
+# A block that is boxed: a container className carrying a full border AND
+# either a card fill or a shadow. `border-t`/`border-b` alone is a rule, not a
+# box, and is deliberately not matched.
+_BOXED = re.compile(
+    r'className=\{?["`][^"`]*\bborder(?:-2|-\[[^\]]+\])?\b(?![-\w])[^"`]*'
+    r'(?:\bbg-card\b|\bshadow-(?:sm|md|lg|xl|2xl|\[[^\]]+\]))'
+)
+_ANY_BLOCK = re.compile(r'<(?:div|section|article|li|figure|aside)\b')
+
+
+def enclosure_of(path: Path) -> tuple[int, int]:
+    """(boxed containers, all containers) in one section file — the code-side
+    twin of the scout's per-band measurement, so the two are comparable."""
+    src = path.read_text()
+    return len(_BOXED.findall(src)), len(_ANY_BLOCK.findall(src))
+
+
+def audit_enclosure(sections: Path, source_bands: dict[str, dict],
+                    section_files: dict[str, str]) -> list[Finding]:
+    """A section boxed far more than the band it was built from is drift.
+
+    Type, weight, shadow, radius and gap are audited against the design
+    system's RECORDED scale — a closed set the designer chose. Enclosure has no
+    such token; what it has is the source: the scout measures, per band, what
+    share of visible blocks are bordered or shadowed, and that share travels
+    with the winner record. So the reference here is the source band, and the
+    tolerance is not a number picked in this file — a section is flagged only
+    when its boxed share exceeds the HIGHEST share found across every source
+    band on the page. The sources define the envelope. A category that boxes
+    40% of its blocks permits 40% here; one that boxes 7% does not permit 33%.
+
+    Measured on voiceowl before this existed: sources at 7%, 15%, 17%; the
+    built page at 33%, with nine `border-border bg-card` containers in one
+    section. No token was violated, so no audit noticed.
+    """
+    shares = []
+    for w in source_bands.values():
+        e = (w or {}).get("enclosure") or {}
+        n = int(e.get("blocks") or 0)
+        if n:
+            shares.append((int(e.get("bordered") or 0) + int(e.get("shadowed") or 0)) / n)
+    if not shares:
+        return []
+    ceiling = max(shares)
+
+    out: list[Finding] = []
+    for sid, fname in section_files.items():
+        path = sections / fname
+        if not path.is_file():
+            continue
+        boxed, total = enclosure_of(path)
+        if total == 0:
+            continue
+        share = boxed / total
+        src = (source_bands.get(sid) or {}).get("enclosure") or {}
+        src_n = int(src.get("blocks") or 0)
+        src_share = ((int(src.get("bordered") or 0) + int(src.get("shadowed") or 0)) / src_n
+                     if src_n else None)
+        # Flag against the page-wide ceiling; report against the section's own
+        # source so the fixer knows what this band actually looks like.
+        # Flag when the section is boxed beyond the page-wide ceiling AND by
+        # more than one container over what the ceiling would allow for its
+        # size — so a 4-container section at 25% vs a 17% ceiling (one box
+        # either way) is not a finding, and a 15-container one at 40% is.
+        if share > ceiling and boxed > int(ceiling * total) + 1:
+            out.append(Finding(
+                fname, 0, "over-enclosed",
+                f"{boxed} of {total} containers are boxed ({share:.0%}); "
+                + (f"the source band for this section boxes {src_share:.0%}, "
+                   if src_share is not None else "")
+                + f"and no source on this page boxes more than {ceiling:.0%}. "
+                  "Separate by space, rules or ground instead of borders and cards."))
+    return out
+
+
+def audit_dir(sections: Path, ds: DesignSystem,
+              source_bands: dict[str, dict] | None = None,
+              section_files: dict[str, str] | None = None) -> list[Finding]:
     out: list[Finding] = []
     for p in sorted(sections.glob("*.tsx")):
         out.extend(audit_file(p, ds))
+    if source_bands and section_files:
+        out.extend(audit_enclosure(sections, source_bands, section_files))
     return out
 
 

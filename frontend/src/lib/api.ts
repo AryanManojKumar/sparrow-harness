@@ -95,8 +95,32 @@ export async function advance(
     method: "POST",
     signal,
   });
+  return readEvents(res, "advance", onEvent);
+}
+
+/**
+ * Attach to a run that is already advancing — started from another tab, from
+ * curl, or from this tab before a reload. Replays everything emitted so far,
+ * then follows the live tail. Never starts anything: if nothing is running it
+ * ends immediately, and the caller should read `getProject` for where the
+ * project is parked.
+ */
+export async function follow(
+  projectId: string,
+  onEvent: (e: RunEvent) => void,
+  signal?: AbortSignal
+): Promise<void> {
+  const res = await fetch(`${API_URL}/projects/${projectId}/events`, { signal });
+  return readEvents(res, "follow", onEvent);
+}
+
+async function readEvents(
+  res: Response,
+  what: string,
+  onEvent: (e: RunEvent) => void
+): Promise<void> {
   if (!res.ok || !res.body) {
-    throw new Error(`advance failed (${res.status})`);
+    throw new Error(`${what} failed (${res.status})`);
   }
 
   const reader = res.body.getReader();
@@ -113,6 +137,7 @@ export async function advance(
 
     for (const chunk of chunks) {
       if (chunk.includes("event: end")) continue;
+      if (chunk.startsWith(":")) continue; // keepalive comment
       const line = chunk.split("\n").find((l) => l.startsWith("data: "));
       if (!line) continue;
       try {
@@ -136,8 +161,29 @@ export async function advance(
  * - "image": asset upload/generate/skip decisions
  * - "fact": invented copy that needs confirmation (ask_id, draft, invented)
  */
+/** One answer the gate offers for an asset or a fact. */
+export type GateChoice = {
+  choice: string;
+  label: string;
+  detail?: string;
+  /** Facts only: "text" means this answer takes a typed value. */
+  field?: string;
+  /** Uploads only: the human-readable list of formats this slot takes. */
+  accepts?: string;
+  /** Uploads only: where the file goes. */
+  post_file_to?: string;
+};
+
+/** Every kind of thing the material gate can ask about. `logo` and `video`
+ *  are asset kinds alongside `image`; each carries its own `choices`, and
+ *  they differ — a logo can be a wordmark but never generated, a video is
+ *  used untouched if uploaded. Render the choices the server sends rather
+ *  than assuming three radios; that assumption is what dropped the logo and
+ *  video rows on the floor and left the gate impossible to answer. */
+export type AssetKind = "image" | "logo" | "video";
+
 export type GateOption = {
-  kind?: "image" | "fact";
+  kind?: AssetKind | "fact";
   choice?: string | number;
   label?: string;
   index?: number;
@@ -145,6 +191,11 @@ export type GateOption = {
   atmosphere?: string;
   type?: string;
   specimen?: string | null;
+  // Asset fields
+  asset_id?: string;
+  brief?: string;
+  prominence?: string;
+  uploaded?: boolean;
   // Fact question fields
   ask_id?: string;
   section_id?: string;
@@ -153,7 +204,45 @@ export type GateOption = {
   draft?: string;
   invented?: string;
   source_example?: string;
-  choices?: { choice: string; label: string; detail?: string; field?: string }[];
+  choices?: GateChoice[];
+};
+
+/** One row of the asset plan — what the run intends to make or use for a
+ *  slot. `decision` is null until the gate is answered. */
+export type AssetPlanEntry = {
+  id: string;
+  section_id: string;
+  kind?: AssetKind;
+  brief: string;
+  prominence: string;
+  decision?: "upload" | "generate" | "skip" | "wordmark" | null;
+  upload?: string | null;
+};
+
+/** The plan, before or after the gate. 404s until the run has one. */
+export function getAssetPlan(projectId: string): Promise<AssetPlanEntry[]> {
+  return fetch(`${API_URL}/projects/${projectId}/assets`)
+    .then((r) => (r.ok ? r.json() : []))
+    .catch(() => []);
+}
+
+/** Where a produced asset can be fetched from, the moment it exists —
+ *  before BUILD has written the export that `/preview/` serves from. */
+export function producedFileUrl(projectId: string, path: string): string {
+  return `${API_URL}/projects/${projectId}/files/${path}`;
+}
+
+/** An asset the run actually produced, as recorded on the blackboard.
+ *  `path` is relative to `workspace/public`; see `producedFileUrl`. */
+export type BlackboardAsset = {
+  id: string;
+  section_id: string;
+  kind: AssetKind;
+  provenance: "generated" | "user_supplied" | string;
+  path: string;
+  width?: number;
+  height?: number;
+  brief?: string;
 };
 
 export type GateInfo = {
@@ -218,6 +307,22 @@ export function previewUrl(projectId: string): string {
   return `${API_URL}/projects/${projectId}/preview/`;
 }
 
+/**
+ * A still of the built page, for cards and for the workspace's pre-build
+ * poster. Cheap and cached server-side — unlike `previewUrl`, which is a
+ * whole live site and costs a page load every time it is mounted.
+ */
+export function thumbUrl(projectId: string): string {
+  return `${API_URL}/projects/${projectId}/thumb`;
+}
+
+/** One section's capture from the last verify pass. */
+export function sectionShotUrl(projectId: string, index: number,
+                               device: "desktop" | "mobile" = "desktop"): string {
+  const n = String(index).padStart(2, "0");
+  return `${API_URL}/projects/${projectId}/shots/sections/${device}-s${n}.png`;
+}
+
 /** Filesystem-safe, human-readable project id derived from the prompt. */
 export function slugify(text: string): string {
   const base = text
@@ -254,6 +359,10 @@ export type ProjectSummary = {
   built?: number;
   assets?: number;
   has_preview?: boolean;
+  /** Whether `thumbUrl` can answer without launching a browser first. */
+  thumb_ready?: boolean;
+  /** A run is executing on the server right now — follow it, don't offer Resume. */
+  running?: boolean;
   updated_at?: number;
 };
 
@@ -262,17 +371,63 @@ export function listProjects(): Promise<ProjectSummary[]> {
   return fetch(`${API_URL}/projects`).then((r) => asJson(r, "list projects"));
 }
 
+/**
+ * One section of the page, as `compose` left it.
+ *
+ * This is the plan the builder works from, and it exists on the blackboard
+ * well before any of it is built — which is what lets the workspace show the
+ * shape of the page while it is still being made, instead of a spinner.
+ */
+export type Section = {
+  id: string;
+  order: number;
+  blueprint_id: string;
+  component_name?: string;
+  /** compose's call, not the builder's — see CLAUDE.md §6. */
+  ground?: string;
+  width?: string;
+  archetype?: string;
+  archetype_how?: string;
+  /** Why this section looks different from its neighbours. Written for a
+   *  human, so it can be shown to one. */
+  contrast?: string;
+  treatments?: { name?: string; where?: string; how?: string }[];
+  /** Exactly one section on the page carries it. */
+  carries_signature?: boolean;
+  carries_motion?: boolean;
+  status?: string;
+  attempts?: number;
+};
+
 export type ProjectDetail = {
   project_id: string;
   stage: string;
+  /** True while a run is executing on the server. The console used to ignore
+   *  this and show "Stopped" over a run in progress. */
+  advancing?: boolean;
   spent: number;
   awaiting_gate: string | null;
   blackboard: {
     brief?: Brief | null;
-    sections?: unknown[];
+    sections?: Section[];
+    assets?: BlackboardAsset[];
   };
   log: { stage: string; kind: string; message: string; cost: number }[];
 };
+
+/** The page plan alone — cheap enough to re-read whenever a stage lands. */
+export function getSections(projectId: string): Promise<Section[]> {
+  return getProject(projectId)
+    .then((d) => (d.blackboard?.sections ?? []).slice().sort((a, b) => a.order - b.order))
+    .catch(() => []);
+}
+
+/** What the run has produced so far — populated by the assets stage. */
+export function getMadeAssets(projectId: string): Promise<BlackboardAsset[]> {
+  return getProject(projectId)
+    .then((d) => d.blackboard?.assets ?? [])
+    .catch(() => []);
+}
 
 export function getProject(projectId: string): Promise<ProjectDetail> {
   return fetch(`${API_URL}/projects/${projectId}`).then((r) => asJson(r, "project"));

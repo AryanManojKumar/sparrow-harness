@@ -82,6 +82,7 @@ class PageReport:
     horizontal_overflow: list[str]
     fold_fade: list[str]
     spill: list[str]
+    jammed_headings: list[str]
     contrast_failures: list[str]
     sections: list[SectionShot]
 
@@ -140,6 +141,35 @@ def serve(directory: Path, port: int = 4321):
             yield f"http://localhost:{port}{mount}/"
         finally:
             httpd.shutdown()
+
+
+def thumbnail(export: Path, dest: Path, width: int = 1440,
+              height: int = 900, scale: float = 0.5, port: int = 4733) -> Path:
+    """One above-the-fold still of a built export, for the console's cards.
+
+    Deliberately NOT `full_page`: a card is a 16:10 crop of the top of the
+    page, and shooting the whole scroll height produces a 12000px image that
+    is then thrown away by the CSS. Scrolls first for the same reason
+    `capture` does — `whileInView` sections start at opacity 0 — then returns
+    to the top before shooting.
+    """
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    with serve(export, port=port) as url:
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch()
+            page = browser.new_page(
+                viewport={"width": width, "height": height},
+                device_scale_factor=scale,
+            )
+            page.goto(url, wait_until="load")
+            with contextlib.suppress(Exception):
+                page.wait_for_load_state("networkidle", timeout=8000)
+            with contextlib.suppress(Exception):
+                page.evaluate(_SCROLL)
+            page.wait_for_timeout(300)
+            page.screenshot(path=str(dest))
+            browser.close()
+    return dest
 
 
 def capture(
@@ -279,6 +309,37 @@ _FOLD_FADE = r"""
 
 # Content wider than the box that holds it. Distinct from viewport overflow,
 # which only catches things pushing past the page edge: a 45px grid cell holding
+# Headlines whose words have run together.
+#
+# Splitting a headline to animate it word by word wraps each word in an
+# `inline-block`, and an inline-block COLLAPSES ITS TRAILING WHITESPACE — so a
+# separator written as a plain `" "` is removed by the browser and the headline
+# ships as `Buildopen worldswithout compromise.` It survived two full builds and
+# a visual judge that reported no finding either time, because a screenshot of
+# jammed type still looks like type.
+#
+# Detected structurally rather than by reading the words: if a heading is built
+# from N element children and its rendered text contains fewer than N-1 spaces,
+# separators have been swallowed. That is true regardless of language and needs
+# no dictionary.
+_JAMMED = r"""
+() => {
+  const out = [];
+  for (const h of document.querySelectorAll('h1,h2,h3')) {
+    const kids = [...h.children].filter(c => (c.innerText || '').trim().length);
+    if (kids.length < 2) continue;
+    const text = (h.innerText || '').replace(/\s+/g, ' ').trim();
+    // A non-breaking space counts: it is the correct separator.
+    const gaps = (text.match(/[ \u00A0]/g) || []).length;
+    if (gaps < kids.length - 1) {
+      out.push(`"${text.slice(0, 60)}" — ${kids.length} animated parts but only `
+               + `${gaps} space(s); the separators were collapsed`);
+    }
+  }
+  return out;
+}
+"""
+
 # 116px of text spills over its neighbour without the document ever scrolling.
 # Observed on a real build — "change/retry-policy" and "docs/specs/**" painting
 # outside their cells — and invisible to every check in the harness, which is why
@@ -389,6 +450,20 @@ def inspect_page(
             page.on("requestfailed",
                     lambda r: failed.append(f"{r.method} {r.url[:110]}")
                     if r.method == "GET" else None)
+            # AND the 4xx/5xx responses, which `requestfailed` does NOT report.
+            # Playwright fires `requestfailed` only for network-level failures —
+            # DNS, refused, aborted. A 404 is a perfectly successful response
+            # carrying a 4xx status, so an <img> pointing at a file that was
+            # never generated fires nothing at all.
+            #
+            # Measured on meridian-v2: the builder was given ten assets and wrote
+            # markup for fifteen, so product-showcase-2/3/4 and testimonial-2/3
+            # 404'd on every load. This guard exists precisely to stop the run
+            # inspecting a page whose imagery is missing, and it watched five
+            # holes go past because it was listening to the wrong event.
+            page.on("response",
+                    lambda r: failed.append(f"{r.status} {r.url[:110]}")
+                    if r.status >= 400 and r.request.method == "GET" else None)
 
             page.goto(url, wait_until="domcontentloaded")
             # Sample BEFORE anything settles — this is what a visitor sees first.
@@ -430,6 +505,7 @@ def inspect_page(
                 horizontal_overflow=page.evaluate(_OVERFLOW),
                 fold_fade=fold_fade,
                 spill=page.evaluate(_SPILL),
+                jammed_headings=page.evaluate(_JAMMED),
                 contrast_failures=page.evaluate(_CONTRAST),
                 sections=shots,
             )

@@ -16,7 +16,7 @@ import re
 from pathlib import Path
 
 from sparrow.agents.base import FIDELITY_LINE, Agent, context_block, stable_system
-from sparrow.blackboard.schema import AssetKind, Blackboard, Blueprint, Ground, Section
+from sparrow.blackboard.schema import GROUND_MUTED, AssetKind, Blackboard, Blueprint, Section
 from sparrow.providers import Completion, Tier
 
 SYSTEM = """You are the builder for a website harness. You build ONE section per call.
@@ -111,6 +111,25 @@ build sat unreadable for 1.2 seconds this way. If you want the first screen to m
 `y` or `x` from a small offset while opacity stays at 1, or start opacity no lower than 0.9.
 Below the fold, fading in from 0 is fine.
 
+REQUIRED: A PER-WORD ANIMATION SEPARATES ITS WORDS WITH `{{"\\u00A0"}}`, NEVER `{{" "}}`.
+Splitting a headline to animate word by word wraps each word in an element, and the
+usual class for that is `inline-block` — which COLLAPSES ITS TRAILING WHITESPACE. A
+plain `{{" "}}` inside or after an inline-block is removed by the browser and the
+headline ships with every word run together. Measured twice: "Build voice agents that
+hold up in production." rendered as `Buildvoiceagentsthat…`, and a later build shipped
+`Buildopen worldswithout compromise.` on a page that had already passed verify — the
+visual judge flagged neither.
+
+So either use a non-breaking space, which is not collapsed:
+
+  <motion.span className="inline-block">
+    {{word}}{{index < words.length - 1 ? "\\u00A0" : ""}}
+  </motion.span>
+
+or put the gap on the element instead (`mr-[0.25em]` on every word but the last).
+Never a bare space. Also key on the INDEX, not the word — a headline that repeats a
+word gives two spans the same key.
+
 REQUIRED: EVERY ENTRANCE ANIMATION MUST HAVE A GUARANTEED END STATE.
 An element starting at opacity 0 and waiting for an observer is invisible if that
 observer never fires — off-screen, in a headless capture, with JS slow or blocked. Four
@@ -190,7 +209,10 @@ class Builder(Agent):
         # Stated as an instruction, not as context. Written as "this section sits
         # on X" it was read as background information and ignored by 4 of 5
         # sections — see experiments/drift-test-02.
-        ground_class = "bg-background" if section.ground is Ground.PAGE else "bg-muted"
+        # The two named grounds map to their tokens; anything else the composer
+        # decided is carried as the classes it wrote, verbatim.
+        ground_class = (section.ground_how.strip()
+                        or ("bg-muted" if section.ground == GROUND_MUTED else "bg-background"))
 
         # asset_base was declared, passed in from steps.py, and never read — the
         # listing hard-coded a leading "/". A preview is exported with Next's
@@ -278,10 +300,13 @@ class Builder(Agent):
             f"<section>\n"
             f"file: {section.target_path}\n"
             f"component: {section.component_name} (default export)\n"
-            f"REQUIRED: the root <section> element MUST carry the class "
-            f"`{ground_class}`. Section ground alternates across the page and is "
-            f"decided at page level — it is not yours to choose, and omitting it "
-            f"flattens the page rhythm.\n"
+            f"REQUIRED: the root <section> element MUST carry the class(es) "
+            f"`{ground_class}`"
+            + (f" — this section's ground is `{section.ground}`, and those classes "
+               f"are how it is painted; the copy sits ON it, so set text colour to read "
+               f"against it" if section.ground_how else "")
+            + f". Section ground is decided at page level — it is not yours to "
+            f"choose, and omitting it flattens the page rhythm.\n"
             f"</section>",
             # Assets vary per section, so they belong in the user message — putting
             # them in the cached system prefix breaks the prefix for every call.
@@ -398,11 +423,31 @@ def prefix_assets(code: str, asset_base: str) -> str:
     return _ROOT_ASSET.sub(rf"\1{base}/assets/", code)
 
 
+_EASE_TUPLE = re.compile(r"(ease:\s*\[[^\]\n]*\])(?!\s*as\s+const)(?!\s*as\s*\[)")
+
+
+def pin_ease_tuples(code: str) -> str:
+    """`ease: [a, b, c, d]` -> `ease: [a, b, c, d] as const`, everywhere.
+
+    motion v13 types `Easing` as `readonly [number, number, number, number]`.
+    Inline in a JSX prop the literal is contextually typed and passes; inside
+    a helper's return value it widens to `number[]` and the workspace does not
+    compile. The builder knows this rule and applies it MOST of the time —
+    measured across four runs it cast the tuple correctly in 8 sections of 8,
+    then 0 of 3, then 3 of 7. A rule the model gets right most of the time is
+    a rule the harness should not depend on: a fixed stack is fixed precisely
+    so patterns like this can be settled once, deterministically, at the one
+    place every section is written.
+    """
+    return _EASE_TUPLE.sub(r"\1 as const", code)
+
+
 def write_section(workspace: Path, section: Section, code: str,
                   *, asset_base: str = "") -> Path:
     target = workspace / section.target_path
     target.parent.mkdir(parents=True, exist_ok=True)
     code = prefix_assets(code, asset_base)
+    code = pin_ease_tuples(code)
     target.write_text(code if code.endswith("\n") else code + "\n")
     return target
 

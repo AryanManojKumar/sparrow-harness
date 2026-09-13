@@ -211,6 +211,41 @@ def log_llm(
     )
 
 
+def log_media(
+    *, kind: str, provider: str, model: str, prompt: str, duration_ms: int,
+    bytes_out: int = 0, cost: float = 0.0, error: str | None = None,
+    **extra: Any,
+) -> Event:
+    """One image or video generation.
+
+    `log_llm` covered every text call and nothing else, so the two most
+    expensive and slowest things a run does — a 65s image and a 155s video —
+    left no trace in the log at all. A run that spent four minutes inside the
+    video model looked, from the log, like a run that stalled.
+
+    Cost is not estimated. The image and video providers publish no per-call
+    rate the harness can read, and a fabricated number in the same ledger as
+    real token costs is worse than an absent one; `bytes` and `duration_ms` are
+    measured, so they are what gets recorded.
+    """
+    data: dict[str, Any] = {
+        "provider": provider, "model": model, "bytes": bytes_out,
+        "prompt_sha": _digest(prompt), **extra,
+    }
+    if error:
+        data["error"] = error
+    if LOG_PROMPTS:
+        data["prompt"] = _clip(prompt)
+    size = f"{bytes_out / 1e6:.1f}MB" if bytes_out else "-"
+    return emit(
+        Event(time.time(), "error" if error else kind,
+              f"{kind} → {model}", duration_ms=duration_ms,
+              cost=cost or None, span_id=uuid.uuid4().hex[:8], data=data),
+        console=(f"  {kind:<5} {provider:<16} {model:<18} {size:>8}  "
+                 f"{duration_ms}ms" + (f"  ERROR {error}" if error else "")),
+    )
+
+
 def log_stage(name: str, kind: str, message: str, cost: float = 0.0, **data: Any) -> Event:
     return emit(Event(time.time(), "stage", message, stage=name, cost=cost or None,
                       data=data),

@@ -10,6 +10,13 @@
  * ="none"`: the filter runs over a few hundred user units instead of a few
  * million device pixels, which keeps it cheap, and the upscale softens the
  * noise for free.
+ *
+ * Three octaves, not four and five. `feTurbulence` roughly doubles its work
+ * per octave and the upscale blurs the top ones away regardless — at this
+ * stretch factor the fourth and fifth octave were paid for and then thrown
+ * away. Nothing above rasterises this more than once now (see
+ * `.console-clouds` in globals.css), so it is a one-off cost at load, but it
+ * is a one-off cost on every navigation to the home screen.
  */
 export function CloudField() {
   return (
@@ -26,7 +33,7 @@ export function CloudField() {
             <feTurbulence
               type="fractalNoise"
               baseFrequency="0.009"
-              numOctaves="4"
+              numOctaves="3"
               seed="11"
               result="noise"
             />
@@ -47,7 +54,7 @@ export function CloudField() {
             <feTurbulence
               type="fractalNoise"
               baseFrequency="0.018"
-              numOctaves="5"
+              numOctaves="3"
               seed="29"
               result="noise"
             />

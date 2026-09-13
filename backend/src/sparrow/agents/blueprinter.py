@@ -85,15 +85,13 @@ exact values that an image can only approximate. Ask for an asset when the secti
 picture of something; describe the alternative in `structure` when it does not. The
 register says which of these the category actually uses.
 
-A [video] asset is a SILENT AMBIENT LOOP — texture behind or beside a section,
-never something a reader is meant to read. Anything with legible UI, real
-identifiers or numbers is an image: the video model renders a convincing
-workstation whose on-screen code is decorative gibberish, which is fine at a
-shallow depth of field and useless as evidence. Ask for one only where the
-register shows this category using muted looping video. A section may carry up to
-three if the source's own section does — a rail of portrait loops is a real
-pattern — but the page as a whole should not exceed three, because eight seconds
-of footage is the most expensive thing on it.
+DO NOT ASK FOR VIDEO. Describe the imagery this section needs and nothing else.
+Whether the page carries an ambient loop, and which section carries it, is decided
+by the pass that can see the whole page — the same way the signature and the
+treatments are allocated. This paragraph used to ask you to request a [video]
+"only if this section is the one that would carry it", which is a question about
+a page you cannot see; across every project ever built the answer was no, while
+the sources being read ran a 23-second loop behind their hero.
 
 ASSETS are imagery someone must produce. Describe each one well enough to act on:
 `product_image` is not a brief; "one 16:9 product capture showing the review packet with
@@ -109,9 +107,8 @@ JSON only, no prose, no code fence:
 {
   "purpose": "one sentence — what this section is for in this specific page",
   "slots": ["copy slots, lower_snake_case; suffix [] for repeated ones"],
-  "assets": ["one sentence per asset. Prefix a MOVING asset with [video]:",
-             "  \"one 16:9 capture of the review panel filling with results\"",
-             "  \"[video] one 8s silent loop of the editor at night, shallow focus\""],
+  "assets": ["one sentence per asset — still imagery only:",
+             "  \"one 16:9 capture of the review panel filling with results\""],
   "structure": "3-5 sentences. Layout, counts, hierarchy, mobile reflow, and what this
                 section must NOT contain so it does not duplicate its neighbours."
 }"""

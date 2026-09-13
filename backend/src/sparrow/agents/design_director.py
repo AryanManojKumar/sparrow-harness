@@ -118,9 +118,14 @@ model could not, but because nothing asked and nothing recorded it.
 Name three to six. Fewer is a page that reads flat. More is noise.
 
 `how` must be implementable as written — real Tailwind v4 utilities, a real gradient, a
-real SVG filter. A treatment named but not specified is a treatment the builder will not
-build: "full-bleed" was passed to ten builders as a word and ten of them returned the
-default container.
+real SVG filter, or a small drawing routine: a <canvas> with what it draws each frame
+stated plainly enough to code (how many particles, what colour, how they move, what
+clears them). The sources in this category keep their most memorable layer on canvas —
+a live field the headline sits on — and for as long as this list stopped at CSS, every
+version of that layer came back as a static gradient inside a card, because a static
+gradient was the only kind of thing a treatment was allowed to be. A treatment named but
+not specified is a treatment the builder will not build: "full-bleed" was passed to ten
+builders as a word and ten of them returned the default container.
 
 Do NOT reach for a treatment the sources do not support. This is evidence, not decoration.
 
@@ -224,7 +229,9 @@ JSON only. No prose outside it, no code fence.
               from a screenshot — the register gives you tempo and easing and stops
               there — so this is your decision, and without it every section fades in
               identically.",
-  "treatments": [{"name": "...", "where": "...", "how": "exact classes or CSS"}]
+  "radius_scale": ["every corner radius utility this page may use, smallest to largest — the register says how many the sources use; size the scale like theirs"],
+  "shadow_scale": ["every shadow utility this page may use, flattest to deepest — likewise"],
+  "treatments": [{"name": "...", "where": "...", "how": "exact classes, CSS, an SVG filter, or a drawing routine"}]
 }
 
 All nine colour tokens are required. Values must be oklch.
@@ -259,10 +266,25 @@ That alternation is the evidence. Reproduce its RHYTHM — not its colours, not 
 
 For every section in the sitemap, decide:
 
-  ground     "page" or "muted". The page ground is the default and should stay the
-             majority. A muted band is a punctuation mark: it separates what is around
-             it, and two adjacent muted sections merge into one grey block that neither
-             builder can see happening. Never place two together.
+  ground     an OBJECT: {"name": ..., "how": ...}, or the bare word "page" or "muted".
+
+             "page" is the page ground and "muted" the palette's second surface; the
+             builder knows both by token and needs no `how`. Anything else is a
+             ground the source actually shows and those two cannot say — an inverted
+             band, a colour field, a wash, a canvas or picture the copy sits on — and
+             it is only real if `how` carries it as classes on the section root, from
+             the palette's tokens and the design system's treatments: `bg-foreground
+             text-background`, `bg-primary text-primary-foreground`, `relative
+             bg-background` with a named treatment drawn behind. A name without a
+             `how` is dropped to the page ground.
+
+             <source_bands> says which source bands sit on their own ground or on a
+             picture, with the luminance measured; the register says how many grounds
+             each source uses and how often they change. Read the rhythm off that.
+             Where the source stays on one ground for the whole page, so should this;
+             where it drops into a dark or filled band, say where that lands here.
+             Two adjacent bands on the same non-page ground merge into one block —
+             visible to you, invisible to the builders — so if you do it, mean it.
 
   width      "contained" — the standard column, for type-led sections.
              "wide" — wider than the column, still inset. For grids and panels that
@@ -272,11 +294,42 @@ For every section in the sitemap, decide:
              and not more than a few times: everything full-bleed is as uniform as
              nothing full-bleed.
 
-  archetype  the section's shape, in two or three words, from what the source shows:
+  archetype  an OBJECT, not a word: {"name": ..., "how": ...}.
+
+             "name" is the shape in two or three words, from what the source shows:
              "split-with-panel", "centred-band", "asymmetric-grid", "full-bleed-panel",
              "stacked-editorial", "tight-logo-row", "large-numbers-row",
              "quote-with-portrait", "stepped-list". Invent one if the source shows a
              shape these do not name.
+
+             "how" is that shape as Tailwind the builder can paste, and it is the half
+             that matters. A NAME ON ITS OWN DOES NOT SURVIVE: measured across five
+             pages carrying four different archetype names, every hero came out
+             copy-left / media-right and three used the identical col-span-5 +
+             col-span-7 — and the one named "full-bleed-panel" rendered as a contained
+             two-column, the opposite of its name. The builder has a strong prior for
+             what a section of this type looks like, and a word loses to it.
+
+             So say the grid, the ratio, WHICH SIDE each thing goes on, what is stacked
+             against what — and WHERE THE CONTENT SITS VERTICALLY. The design system's
+             `py-*` padding is symmetric by definition, so left to it every section
+             centres its content between equal margins; measured across every page
+             built here, six sections in a row at 0.50. The sources do not do that:
+             <source_bands> says where each one's content sits and how much ground it
+             leaves empty. When a source pins content to the top of a tall band and
+             leaves the rest as air, say so in classes — `pt-24 pb-64`, `min-h-[80svh]
+             items-start`, `justify-end` — because that void is a decision, and it is
+             the one the rhythm is made of. Be specific enough that two different
+             builders would produce the same skeleton:
+               "grid lg:grid-cols-12 gap-10; media lg:col-span-7 lg:order-1; copy
+                lg:col-span-5 lg:order-2 self-end — MEDIA LEFT, copy right"
+               "single column max-w-3xl mx-auto text-center; the number row below at
+                grid-cols-3 divide-x"
+               "no grid: one full-bleed media layer, copy absolutely positioned over its
+                lower-left third"
+             Where the source puts its headline is measured — <source_bands> and the
+             TYPE line in the register carry each display heading's horizontal position
+             (0.5 is centred, 0.27 is left-set) — so read it there rather than assume.
 
   contrast   one sentence: what makes this section look different from the section
              directly above it. If you cannot name a difference, the layout is wrong —
@@ -287,6 +340,28 @@ For every section in the sitemap, decide:
              applied everywhere stops being a treatment and becomes the background: the
              last build put a gradient in six sections out of ten and the page read as
              busy rather than designed. Spend each one where it does the most work.
+
+  motion     an OBJECT on at most ONE section: {"carries": true, "role": ..., "prominence": ...}
+             and {"carries": false} everywhere else. Only if the <motion> block below says
+             these sources actually use video; if it is absent, carries is false everywhere.
+
+             It is allocation exactly like "signature": the agent that writes a single
+             section cannot know whether it is the one, so it is decided here.
+
+             "role" is WHAT the video is, in the source's own terms, read from the
+             <motion> facts and the video frames attached. Sources use video in very
+             different ways and the facts tell them apart: full-bleed with the headline
+             sitting on it is the page's atmosphere; a contained loop of legible product
+             UI is a product recording; a clip with controls is a demo the reader chooses
+             to watch; several small loops in one band are a rail. Write it as a phrase
+             the builder and the curator can act on — "full-bleed atmosphere the headline
+             sits on", "a contained product recording beside the copy", "a title card".
+             Put it where the source puts it.
+
+             "prominence" is "dominant", "supporting" or "thumbnail" — how much of the
+             section the video owns, from the source's own measurements. Atmosphere the
+             copy sits on is dominant; a loop in a card beside copy is supporting; one of
+             a rail is thumbnail.
 
   signature  exactly ONE section in the whole page sets this true — the section that
              carries the design system's signature element at full strength. Every other
@@ -299,9 +374,11 @@ the failure this pass exists to prevent.
 
 JSON only, no prose, no code fence:
 
-{ "sections": { "<section id>": { "ground": "...", "width": "...",
-                                  "archetype": "...", "contrast": "...",
+{ "sections": { "<section id>": { "ground": "page" | "muted" | {"name": "...", "how": "..."}, "width": "...",
+                                  "archetype": {"name": "...", "how": "..."},
+                                  "contrast": "...",
                                   "treatments": ["name", ...],
+                                  "motion": {"carries": false} | {"carries": true, "role": "...", "prominence": "..."},
                                   "signature": false } },
   "rhythm": "two sentences on how the page paces itself top to bottom" }"""
 
@@ -311,7 +388,7 @@ class DesignDirector(Agent):
     max_tokens = 12000
 
     def compose(self, bb: Blackboard, *, shots: list[str] | None = None,
-                observed: str = "") -> tuple[dict, str, object]:
+                observed: str = "", motion: str = "") -> tuple[dict, str, object]:
         """Decide the shape of every section, in one call, seeing the whole page.
 
         Deliberately separate from `direct`. A direction is chosen by the user at
@@ -339,6 +416,12 @@ class DesignDirector(Agent):
             )
         if observed:
             parts.append(observed)
+        # What the sources do with video, so "which section carries it" is a
+        # question this pass can actually answer. Without it the motion field is
+        # guesswork and the safe answer is false everywhere — which is exactly
+        # what the blueprinter used to do.
+        if motion:
+            parts.append(f"<motion>\n{motion}\n</motion>")
         if shots:
             parts.append(
                 "<source_page>\nThe first image is the whole source page tiled into "

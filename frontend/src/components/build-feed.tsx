@@ -1,11 +1,12 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import Link from "next/link";
 import { AlertTriangle, Check, CircleDashed, Loader2, Play } from "lucide-react";
 
 import { cn } from "@/lib/utils";
-import type { Direction, GateInfo, RunEvent } from "@/lib/api";
+import type { AssetPlanEntry, BlackboardAsset, Direction, GateInfo, RunEvent } from "@/lib/api";
+import { AssetTray } from "@/components/asset-tray";
 import { SparrowMark } from "@/components/sparrow-mark";
 import { SourceCard } from "@/components/source-card";
 import { GatePanel } from "@/components/gate-panel";
@@ -33,25 +34,52 @@ const DISPLAY_STAGES: { key: string; label: string }[] = [
 
 type StageStatus = "pending" | "active" | "done" | "failed";
 
-function stageStatus(
-  stageKey: string,
+/**
+ * Status for every displayed stage, in one pass over the events.
+ *
+ * This used to be a per-stage function that filtered and scanned the whole
+ * event array, called twice per row (once for the icon, once for the text
+ * colour) — sixteen full scans of a list that grows all run, on every one of
+ * the hundreds of SSE events that arrive. Same answers, one pass, and the
+ * result is memoised so a re-render that did not add an event is free.
+ */
+function stageStatuses(
   events: RunEvent[],
   stoppedStage?: string | null
-): StageStatus {
-  const idx = FULL_ORDER.indexOf(stageKey);
-  const own = events.filter((e) => e.stage === stageKey);
-  if (own.some((e) => e.kind === "failed")) return "failed";
-  if (events.some((e) => FULL_ORDER.indexOf(e.stage) > idx)) return "done";
-  if (own.some((e) => e.kind === "done")) return "done";
-  if (own.length > 0) return "active";
+): Record<string, StageStatus> {
+  // How far the run has got overall: the furthest-ordered stage seen. Any
+  // display stage before it has necessarily finished, which is what covers
+  // design and verify — they end at a gate and never emit their own "done".
+  let furthest = -1;
+  const own = new Map<string, { any: boolean; done: boolean; failed: boolean }>();
+
+  for (const e of events) {
+    const at = FULL_ORDER.indexOf(e.stage);
+    if (at > furthest) furthest = at;
+    const rec = own.get(e.stage) ?? { any: false, done: false, failed: false };
+    rec.any = true;
+    if (e.kind === "done") rec.done = true;
+    if (e.kind === "failed") rec.failed = true;
+    own.set(e.stage, rec);
+  }
+
   // A resumed project has no event stream behind it — the only record of how
   // far it got is the stage the API reports, so anything ordered before that
   // stage has already run.
-  if (stoppedStage) {
-    const at = FULL_ORDER.indexOf(stoppedStage);
-    if (at > -1 && idx < at) return "done";
+  const stoppedAt = stoppedStage ? FULL_ORDER.indexOf(stoppedStage) : -1;
+
+  const out: Record<string, StageStatus> = {};
+  for (const { key } of DISPLAY_STAGES) {
+    const idx = FULL_ORDER.indexOf(key);
+    const rec = own.get(key);
+    if (rec?.failed) out[key] = "failed";
+    else if (furthest > idx) out[key] = "done";
+    else if (rec?.done) out[key] = "done";
+    else if (rec?.any) out[key] = "active";
+    else if (stoppedAt > -1 && idx < stoppedAt) out[key] = "done";
+    else out[key] = "pending";
   }
-  return "pending";
+  return out;
 }
 
 const STATUS_ICON: Record<StageStatus, React.ReactNode> = {
@@ -81,6 +109,10 @@ export function BuildFeed({
   showGateInline,
   projectId,
   stoppedStage,
+  gateError,
+  assetPlan = [],
+  madeAssets = [],
+  previewReady = false,
   onResume,
   onAnswerGate,
 }: {
@@ -103,6 +135,10 @@ export function BuildFeed({
   showGateInline: boolean;
   projectId: string;
   stoppedStage: string | null;
+  gateError?: string | null;
+  assetPlan?: AssetPlanEntry[];
+  madeAssets?: BlackboardAsset[];
+  previewReady?: boolean;
   onResume: () => void;
   onAnswerGate: (payload: {
     choice?: string | number;
@@ -112,6 +148,10 @@ export function BuildFeed({
   }) => void;
 }) {
   const logRef = useRef<HTMLDivElement>(null);
+  const statuses = useMemo(
+    () => stageStatuses(events, stoppedStage),
+    [events, stoppedStage]
+  );
 
   useEffect(() => {
     logRef.current?.scrollTo({ top: logRef.current.scrollHeight });
@@ -171,10 +211,10 @@ export function BuildFeed({
             <ul className="mb-4 flex flex-col gap-2.5">
               {DISPLAY_STAGES.map(({ key, label }) => (
                 <li key={key} className="flex items-center gap-2.5 text-sm">
-                  {STATUS_ICON[stageStatus(key, events, stoppedStage)]}
+                  {STATUS_ICON[statuses[key]]}
                   <span
                     className={cn(
-                      stageStatus(key, events, stoppedStage) === "pending"
+                      statuses[key] === "pending"
                         ? "text-muted-foreground"
                         : "text-foreground"
                     )}
@@ -201,6 +241,22 @@ export function BuildFeed({
           </div>
         )}
 
+        {/* Once the preview has the main pane the canvas (and its tray) is
+            gone, so the record of what was made moves here — small, next to
+            the site it went into. Not shown while the canvas is up: the same
+            list twice, one of them cramped, helps nobody. */}
+        {previewReady && assetPlan.length > 0 && (
+          <div className="mb-4">
+            <AssetTray
+              plan={assetPlan}
+              made={madeAssets}
+              events={events}
+              projectId={projectId}
+              compact
+            />
+          </div>
+        )}
+
         {/* Only when the preview pane isn't already showing it — see
             build-workspace.tsx, which gives the design gate the main pane
             while there is nothing built to preview. */}
@@ -210,6 +266,7 @@ export function BuildFeed({
             directions={directions}
             layout="compact"
             projectId={projectId}
+            serverError={gateError}
             onAnswerGate={onAnswerGate}
           />
         )}

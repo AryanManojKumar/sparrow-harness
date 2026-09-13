@@ -35,6 +35,7 @@ import io
 import json
 import re
 from dataclasses import dataclass
+import pathlib
 from pathlib import Path
 
 from sparrow import eleven, redact
@@ -52,6 +53,47 @@ IMAGE_MODEL = eleven.IMAGE_MODEL
 _SIZES = eleven.SHAPES
 
 
+# Reading a source's footage instead of guessing at it.
+#
+# §5 draws the line this sits on: structural and layout patterns are fair to
+# extract, a competitor's distinctive look is not. So this deliberately does NOT
+# return the frame, and does not describe the subject as a thing to copy — it
+# reads the CRAFT of the shot: grade, key, depth of field, camera, tempo. Those
+# are the properties that make ambient footage sit under type without fighting
+# it, and they are the ones a text-to-video model can actually be steered with.
+#
+# It is also the half the harness was missing. `_footage_clause` phrased the
+# design system for a camera and got as far as an oklch string, which a video
+# model cannot parse; the source frame says what the light actually does.
+# What must NOT be in frame. This lived inside the positive prompt as prose,
+# where "no captions, no titles" competes with the description for the model's
+# attention instead of constraining it. The endpoint takes a negative_prompt and
+# never got one.
+# Only what the model structurally gets wrong: rendered text is gibberish and
+# a hard cut breaks a loop. Nothing here about pace, flare, saturation or
+# style — those are the source's to set, via `observed`, and a fixed list of
+# them was a taste rule that stopped fast, flared, saturated sources from
+# being matched.
+MOTION_NEGATIVE = "legible text, captions, subtitles, watermarks, hard cuts"
+
+
+READ_MOTION = """You are looking at ONE FRAME of a video from a marketing website.
+
+Describe how the footage is SHOT, in the vocabulary a director of photography
+would use. Colour grade, key and fill, contrast, depth of field, focal length,
+camera height and movement, grain, how much of the frame is out of focus.
+
+IGNORE any text, buttons, logos or interface drawn on top of the frame. That is
+the website's markup sitting over the video, not part of the footage.
+
+Do NOT name the company, the product, or the specific subject as something to
+reproduce. Say "a person at a desk, mid-ground, back to camera" — never "copy
+this shot". What is wanted is the register, not the scene.
+
+Six sentences at most. No preamble, no list, no headings — plain prose a video
+model can be steered with."""
+
+
 def _footage_clause(ds: DesignSystem) -> str:
     """The design system, phrased for a camera rather than a stylesheet.
 
@@ -59,18 +101,47 @@ def _footage_clause(ds: DesignSystem) -> str:
     borders over filled cards", "no gradients". Those are CSS, and a video model
     given them is being told about border radius. Light, palette and register
     are the parts of a design system that a lens can actually honour.
+
+    NO TOKEN NAMES AND NO OKLCH. The first version said "the world is lit like
+    Control Room Navy — oklch(0.20 0.025 250)", and the video model, which reads
+    words and not colour spaces, painted CONTROL ROOM NAVY across three monitors
+    in the shot. A colour reaches a camera as light: dark or pale, warm or cool,
+    and which hue the one saturated note is. That is all it can use and all it
+    is given.
     """
     pick = {c.token: c for c in ds.colors}
+
+    def _describe(value: str) -> str:
+        """oklch(L C H) -> words a DP would use."""
+        m = re.search(r"oklch\(\s*([\d.]+)\s+([\d.]+)\s+([\d.]+)", value or "")
+        if not m:
+            return ""
+        L, C, H = float(m.group(1)), float(m.group(2)), float(m.group(3))
+        tone = ("near-black" if L < 0.25 else "dark" if L < 0.45 else
+                "mid" if L < 0.7 else "pale" if L < 0.93 else "near-white")
+        if C < 0.03:
+            hue = "neutral"
+        else:
+            hue = ("red" if H < 25 or H >= 345 else "orange" if H < 55 else
+                   "amber" if H < 80 else "green" if H < 165 else
+                   "teal" if H < 200 else "blue" if H < 260 else
+                   "violet" if H < 300 else "magenta")
+        sat = "" if C < 0.03 else (" muted" if C < 0.08 else " saturated")
+        return f"{tone}{sat} {hue}".strip()
+
     ground = pick.get("background")
     accent = pick.get("primary")
+    g = _describe(ground.value) if ground else ""
+    a = _describe(accent.value) if accent else ""
     return (
         "Match the register of this design system:\n"
-        + (f"- the world is lit like {ground.name} — {ground.value} is the ground "
-           f"this footage sits on, so key it to match\n" if ground else "")
-        + (f"- the one saturated note in frame is {accent.name} ({accent.value}); "
-           "everything else stays desaturated\n" if accent else "")
+        + (f"- the world is lit {g}: the ground this footage sits on is {g}, "
+           f"so key the scene to that\n" if g else "")
+        + (f"- the one saturated note in frame is {a}; everything else stays "
+           f"desaturated\n" if a else "")
         + f"- the mood is: {ds.atmosphere}\n"
-        + "- no on-screen graphics, no lower thirds, no logos, no product UI in focus"
+        + "- no on-screen graphics, no lower thirds, no logos, no product UI in focus, "
+          "and NO WORDS OF ANY KIND written anywhere in the frame"
     )
 
 
@@ -322,7 +393,83 @@ def _same_value(text: str, among: list[dict]) -> dict | None:
     return None
 
 
+def seamless_loop(mp4: bytes, *, crossfade: float = 1.0) -> tuple[bytes, str]:
+    """Make an ambient loop actually loop, and weigh what a hero can afford.
+
+    The video endpoint supports neither `duration` nor `loop` — confirmed by
+    probing its schema — so the prompt asking for "8 seconds, beginning and
+    ending on the same framing" is a wish the model is free to ignore, and it
+    does. Measured: first-vs-last-frame RMS of 37.4 on a clip whose prompt
+    demanded a clean loop, which is a visible jump every eight seconds. The same
+    clip after this pass measured 2.9.
+
+    The trick is to spend the first second twice. Output is `[x .. D-x]`
+    followed by the tail `[D-x .. D]` crossfaded into the head `[0 .. x]`, so
+    the last frame is dissolved back to the frame the output starts on. The clip
+    loses `x` seconds and gains a seam nobody sees.
+
+    Re-encoding is the other half. veo returns 11.3MB for eight seconds at
+    1080p, which is a quarter of the page's weight for a decoration sitting
+    behind type; CRF 28 with faststart brings that to roughly a tenth with no
+    difference visible at the size and blur an ambient loop is shown at.
+
+    Returns the processed bytes and a one-line note, or the ORIGINAL bytes and
+    the reason if anything goes wrong. A loop with a seam is a blemish; a
+    stage that raises because ffmpeg is missing is a dead run.
+    """
+    import shutil
+    import subprocess
+    import tempfile
+
+    if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
+        return mp4, "ffmpeg not available — shipped as generated"
+
+    with tempfile.TemporaryDirectory() as d:
+        src = pathlib.Path(d) / "in.mp4"
+        dst = pathlib.Path(d) / "out.mp4"
+        src.write_bytes(mp4)
+        try:
+            dur = float(subprocess.run(
+                ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                 "-of", "csv=p=0", str(src)],
+                capture_output=True, text=True, timeout=60).stdout.strip())
+        except (ValueError, subprocess.SubprocessError):
+            return mp4, "could not read duration — shipped as generated"
+
+        # Clamp to a third of the clip, not an eighth: `min(crossfade, dur/8)`
+        # pinned an 8s clip to exactly 1.0s whatever was asked for, so the
+        # parameter did nothing and every measurement came back identical.
+        x = max(0.4, min(crossfade, dur / 3))
+        if dur <= 2 * x + 0.5:
+            return mp4, f"only {dur:.1f}s — too short to loop cleanly"
+
+        chain = (
+            f"[0:v]trim={x}:{dur - x},setpts=PTS-STARTPTS[body];"
+            f"[0:v]trim={dur - x}:{dur},setpts=PTS-STARTPTS[tail];"
+            f"[0:v]trim=0:{x},setpts=PTS-STARTPTS[head];"
+            f"[tail][head]xfade=transition=fade:duration={x}:offset=0[blend];"
+            f"[body][blend]concat=n=2:v=1:a=0[out]"
+        )
+        r = subprocess.run(
+            ["ffmpeg", "-v", "error", "-i", str(src), "-filter_complex", chain,
+             "-map", "[out]", "-an", "-c:v", "libx264", "-crf", "28",
+             "-preset", "medium", "-pix_fmt", "yuv420p",
+             "-movflags", "+faststart", "-y", str(dst)],
+            capture_output=True, text=True, timeout=600)
+        if r.returncode != 0 or not dst.exists() or dst.stat().st_size == 0:
+            return mp4, f"loop pass failed — shipped as generated ({r.stderr[:80]})"
+
+        done = dst.read_bytes()
+        return done, (f"looped and re-encoded · {len(mp4) / 1e6:.1f}MB → "
+                      f"{len(done) / 1e6:.1f}MB · {dur:.0f}s → {dur - x:.0f}s")
+
+
 class Curator(Agent):
+    # What `seamless_loop` did to the last clip, for the stage to report. A
+    # class attribute so reading it before any video is generated is "" rather
+    # than an AttributeError.
+    last_motion_note: str = ""
+
     name = "curator"
     tier = Tier.MID          # transcription and judgement, not design direction
     max_tokens = 8000       # a dense dashboard scrubs to ~30 findings
@@ -331,26 +478,65 @@ class Curator(Agent):
 
     # The prompt is built separately from the call so it can be inspected, and
     # tested, without spending eight seconds of Veo on finding out what it says.
-    def motion_prompt(self, brief: str, ds: DesignSystem) -> str:
-        """The prompt a moving asset would be generated from."""
-        return (
-            f"{brief}\n\n"
-            "Render this as live-action or rendered footage — a short silent loop "
-            "that sits behind or beside a section as texture. It is not a product "
-            "demonstration and nobody will press play on it.\n\n"
-            "NOTHING IN FRAME IS MEANT TO BE READ. No captions, no titles, no UI "
-            "copy the viewer is expected to parse. Any screen visible in shot is "
-            "out of focus or oblique. A video model renders a convincing "
-            "workstation whose on-screen code is gibberish; at a shallow depth of "
-            "field that reads as atmosphere, and head-on it reads as a mistake.\n\n"
-            "It must loop without a visible cut: begin and end on the same framing, "
-            "with no camera move that cannot return to where it started.\n\n"
-            f"{_footage_clause(ds)}\n\n"
-            "Slow and deliberate. No whip pans, no speed ramps, no lens flares, "
-            "nothing that pulls attention off the copy it sits behind."
-        )
+    def read_motion(self, frame: bytes) -> str:
+        """How the source's own footage is shot, in words.
 
-    def motion(self, brief: str, ds: DesignSystem) -> bytes:
+        The frame comes from the scout, which screenshots the source's <video>
+        element. That screenshot composites whatever markup sits over the video
+        — vapi's hero copy is painted across its own background loop — so the
+        prompt is explicit that overlaid text is not part of the footage.
+
+        Words rather than the frame itself, deliberately. Passing the frame to
+        the video model as a style reference is one field away and produces a
+        closer match; it also reproduces a specific company's distinctive look
+        for a competitor, which is the line §5 draws. A description generalises
+        to sources that carry no video at all, and it is ours.
+        """
+        res = self.call(
+            system=READ_MOTION,
+            user="Describe how this footage is shot.",
+            images=[base64.b64encode(frame).decode()],
+        )
+        return " ".join((res.text or "").split())[:900]
+
+    def motion_prompt(self, brief: str, ds: DesignSystem,
+                      observed: str = "", role: str = "") -> str:
+        """The prompt a moving asset is generated from.
+
+        Three inputs, all measured or decided upstream, none of them mine:
+        the brief (what the composer asked for), `observed` (how the source's
+        own footage is shot, read off its frame), and `role` (what the source's
+        video IS, decided by the composer from the scout's facts). The prompt
+        hands those to the model and asks it to reason about what follows —
+        whether anything in frame should be legible is a consequence of the
+        role, and the model can draw it.
+
+        An earlier version bucketed `role` by keyword into three categories of
+        my naming and applied a fixed rule-set to each, bolted on a fixed
+        negative list ("no lens flares, no oversaturated colour") and a fixed
+        camera instruction ("slow and deliberate, no whip pans"). Every one of
+        those was a taste rule dressed as guidance, and every one would stop a
+        source that IS fast, flared and saturated from being matched.
+        """
+        parts = [brief]
+        if role:
+            parts.append(f"WHAT THIS VIDEO IS, in the reference site's own terms: {role}. "
+                         "Reason from that about what belongs in frame. A video model "
+                         "cannot render legible interface or text — anything that must "
+                         "be read will come out as gibberish — so where the role calls "
+                         "for a screen or a word, keep it oblique, defocused or cropped "
+                         "and let framing and light carry it.")
+        if observed:
+            parts.append("HOW THE REFERENCE SITE'S OWN FOOTAGE IS SHOT — match this: "
+                         f"grade, key, depth of field, camera, tempo.\n{observed}")
+        parts.append(
+            "It must loop without a visible cut: begin and end on the same framing, "
+            "with no camera move that cannot return to where it started.")
+        parts.append(_footage_clause(ds))
+        return "\n\n".join(parts)
+
+    def motion(self, brief: str, ds: DesignSystem, *, frame: bytes | None = None,
+               shape: str = "wide", seed: int | None = None, role: str = "") -> bytes:
         """A silent ambient loop, as mp4 bytes.
 
         Separate from `generate` because the two are not interchangeable and the
@@ -358,7 +544,23 @@ class Curator(Agent):
         and it returns beautiful footage of a dashboard nobody can read, which
         looks like success until someone tries to read it.
         """
-        return eleven.motion(self.motion_prompt(brief, ds))
+        observed = self.read_motion(frame) if frame else ""
+        raw = eleven.motion(
+            self.motion_prompt(brief, ds, observed, role),
+            shape=shape,
+            # A full-bleed background is painted at viewport width; 720p there is
+            # upscaled by the browser. A portrait rail is small enough that 720p
+            # holds, and it is the cheaper render.
+            resolution="1080p" if shape == "wide" else "720p",
+            negative_prompt=MOTION_NEGATIVE,
+            seed=seed,
+            audio=False,
+        )
+        # The endpoint cannot loop and cannot be told a duration, so both are
+        # done here. Never raises: a seam is a blemish, a dead run is not.
+        out, note = seamless_loop(raw)
+        self.last_motion_note = note
+        return out
 
     def generate(self, brief: str, ds: DesignSystem, *, shape: str = "wide",
                  product_name: str = "", logo: bytes | None = None) -> bytes:

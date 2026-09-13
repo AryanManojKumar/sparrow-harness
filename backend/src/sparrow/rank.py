@@ -80,6 +80,16 @@ class Candidate:
     # 0.36-0.94, and a harness that builds everything at max-w-6xl sits at a
     # flat 0.80 — between the two, matching neither.
     content_share: float = 0.0
+    # Content's distance from the band's top and bottom edges, in px. The
+    # composer reads these to see that a source pins its content high and
+    # leaves a void — a rhythm `py-*` cannot express.
+    pad_top: int = 0
+    pad_bot: int = 0
+    # Share of the band's visible blocks that are boxed (border all round, or
+    # shadow), plus the raw counts. See scout `_SEGMENT`.
+    enclosure: dict = field(default_factory=dict)
+    # What the band sits on — {hex, lum, page, differs, layered}. See scout `Band`.
+    ground: dict = field(default_factory=dict)
     inset: int = 0
 
     def line(self) -> str:
@@ -334,8 +344,90 @@ def register_report(registers: dict[str, object]) -> str:
         if secs:
             lines.append(f"    typical length {sorted(secs)[len(secs) // 2]}s")
     lines.append(f"  pages using canvas:    {canvas}/{n}")
+    # What is ON the canvas, and where. "3/3 use canvas" told the design agent
+    # nothing it could invent a treatment from. A 1440x900 field that the
+    # headline sits on and that moves is a page's atmosphere; an 800px orb in a
+    # corner is an ornament; both count as one. Per site, with the frames that
+    # were taken attached separately so the agent can look.
+    surfaces = [(s, c) for s, r in registers.items()
+                for c in (getattr(r, "canvases", None) or [])]
+    for site, c in surfaces:
+        where = ("full-bleed" if c.get("bleed") else f"{c.get('w')}x{c.get('h')}")
+        pos = (f"at band {c['band']}" + (", the opening section" if c.get("band") == 0 else "")
+               if c.get("band") is not None else "spanning sections")
+        lines.append(
+            f"    {site}: a {where} canvas {pos}, "
+            + ("LIVE — it animates" if c.get("live") else "static")
+            + (", and THE HEADLINE SITS ON IT — this is the page's atmosphere, "
+               "not a picture in a card" if c.get("under_heading") else ""))
     lines.append(f"  pages showing code:    {code}/{n}")
+
+    # TYPE. Never measured before, so the design agent chose from its prior
+    # and its prior was the same face every time — Space Grotesk on every
+    # project built, against sources set in Google Sans Flex, Montserrat and a
+    # custom grotesk. Reported per site, as evidence in the source's own
+    # register: family, weight, size, tracking, alignment. Not a face to copy
+    # — §5 draws that line — but the register a face should be chosen in.
+    typed = [(s, r.typography) for s, r in registers.items()
+             if getattr(r, "typography", None)]
+    if typed:
+        lines.append("  TYPE, measured from computed styles:")
+        for site, ty in typed:
+            d, b = ty.get("display") or {}, ty.get("body") or {}
+            if d:
+                lines.append(
+                    f"    {site}: display {d.get('family')} {d.get('weight')} at "
+                    f"{d.get('size')}px, tracking {d.get('tracking')}em, "
+                    f"{d.get('align')}-aligned"
+                    + (" and CENTRED on the page" if d.get("align") == "center" else "")
+                    + (f"; body {b.get('family')} {b.get('weight')} {b.get('size')}px "
+                       f"lh {b.get('lineHeight')}" if b else "")
+                    + (f"; mono {ty.get('mono')}" if ty.get("mono") else "")
+                    + (f"; {len(ty.get('families') or [])} famil"
+                       f"{'y' if len(ty.get('families') or []) == 1 else 'ies'} loaded"))
     lines.append(f"  large product images:  {imgs:.0f} per page on average")
+
+    # HOW THE CATEGORY SEPARATES CONTENT — boxes, or space. Never measured, so
+    # every page built here was a grid of bordered cards regardless of what the
+    # sources did: measured on one run, 30+ `border-border bg-card` containers
+    # against sources that use none. Reported per site from the scout's own
+    # count of visible blocks, so the design agent can see that a category that
+    # separates by ground change and air is not asking for cards.
+    encl = []
+    for site, r in registers.items():
+        tot = {"blocks": 0, "bordered": 0, "shadowed": 0, "filled": 0, "rules": 0}
+        for b in getattr(r, "_bands", []) or []:
+            e = getattr(b, "enclosure", None) or {}
+            for k in tot:
+                tot[k] += int(e.get(k, 0) or 0)
+        if tot["blocks"]:
+            encl.append((site, tot))
+    if encl:
+        # And the vocabulary: how many DISTINCT corner radii and shadows each
+        # source uses. A design system that records one of each, audited, is a
+        # page of identical boxes; the sources here use several because they
+        # have several kinds of surface. Reported so the scale you record can
+        # be sized like theirs.
+        for site, r in registers.items():
+            radii, shadows = set(), set()
+            for b in getattr(r, "_bands", []) or []:
+                e = getattr(b, "enclosure", None) or {}
+                radii.update(str(x) for x in e.get("radii", [])); shadows.update(e.get("shadows", []))
+            if radii or shadows:
+                lines.append(f"    {site} surface vocabulary: {len(radii)} distinct radii "
+                             f"({', '.join(sorted(radii, key=lambda s: (s=='full', int(s) if s.isdigit() else 0)))}px), "
+                             f"{len(shadows)} distinct shadows")
+        lines.append("  ENCLOSURE — how each source separates its content, counted over visible blocks:")
+        for site, e in encl:
+            boxed = e["bordered"] + e["shadowed"]
+            share = boxed / e["blocks"]
+            if share < 0.05:
+                sep = ("hairline rules" if e["rules"] > e["filled"] else
+                       "ground changes" if e["filled"] else "whitespace alone")
+                lines.append(f"    {site}: {share:.0%} boxed — separates by {sep}, not by cards")
+            else:
+                lines.append(f"    {site}: {share:.0%} of blocks boxed "
+                             f"({e['bordered']} bordered, {e['shadowed']} shadowed)")
 
     # Saturation was measured and discarded. Every palette produced before this
     # came back near-grey (mean chroma 0.05) against sources carrying brand
@@ -430,16 +522,22 @@ def register_report(registers: dict[str, object]) -> str:
             lines.append("    Nothing on these sources is staged to animate in. A page that")
             lines.append("    moves anyway is your decision, not theirs.")
 
-        # Named, because it is the part of these pages that CANNOT be reproduced:
-        # nothing in this harness emits canvas or video. Saying so keeps the
-        # design agent spending its effort where the effort can land, instead of
-        # chasing a quality the output has no mechanism to reach.
+        # This used to say the opposite: "nothing in this harness emits canvas
+        # or video — do not plan a page that depends on it." True when written,
+        # and the single line most responsible for every ambient layer arriving
+        # as a static gradient: the design agent read it, believed it, and
+        # scoped the source's live particle field down to a CSS wash inside a
+        # card. Both are now produced — the curator generates and loops video,
+        # and the builder writes canvas — so the fact reported here is what the
+        # sources DO, with the decision left where §6 puts it.
         rendered = sum(1 for r in registers.values() if r.canvas or r.video)
         if rendered:
             lines.append(f"    {rendered}/{n} of these sources animate in CANVAS or VIDEO.")
-            lines.append("      That motion is rendered, not styled, and this harness has no")
-            lines.append("      way to produce it. Do not plan a page that depends on it —")
-            lines.append("      reach the same register with type, layout and CSS motion.")
+            lines.append("      Both can be produced here: an ambient video loop is generated")
+            lines.append("      and placed by the composer, and a canvas loop is a treatment")
+            lines.append("      whose `how` names the drawing routine — the builder writes it.")
+            lines.append("      Whether this page carries one is your decision; that the")
+            lines.append("      sources do is the fact.")
     lines.append("")
     lines.append("  These are conventions, not requirements. Following one is a choice you")
     lines.append("  should be able to justify; departing from one is also a choice. What you")

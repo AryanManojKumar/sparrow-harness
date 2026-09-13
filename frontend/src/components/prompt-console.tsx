@@ -21,11 +21,17 @@ import { Button } from "@/components/ui/button";
 
 // The scout stage needs at least two readable reference sites to rank
 // against (backend/src/sparrow/steps.py: step_sources) — there is no way to
-// run for real with fewer. Prefilled with two sites confirmed to extract
-// cleanly through Playwright — stripe.com was tried first and hung
-// indefinitely under scout.extract(), almost certainly its bot detection;
-// these two are what backend/API.md's own example uses.
-const DEFAULT_URLS = ["https://linear.app", "https://kiro.dev"];
+// run for real with fewer. So the box opens with two EMPTY slots: the count
+// is the requirement made visible, and each slot renders as an
+// `https://…` input until it holds a real URL.
+//
+// They are not prefilled with real sites. They used to be (linear.app and
+// kiro.dev, from backend/API.md's example), which read as two references the
+// user had chosen rather than as example values — and since the whole point
+// of §5 is that the primary reference decides the page's skeleton, a run
+// started without noticing them was a run designed against somebody else's
+// defaults. An empty slot cannot be mistaken for a decision.
+const DEFAULT_URLS = ["", ""];
 
 const MIN_CHARS = 8;
 // Long enough to clear a normal pause between words/sentences while typing,
@@ -145,7 +151,15 @@ export function PromptConsole() {
     setUrls((prev) => {
       const target = prev[index]?.trim().toLowerCase();
       if (target) dismissedRef.current.add(target);
-      return prev.filter((_, i) => i !== index);
+      const next = prev.filter((_, i) => i !== index);
+      // Never collapse below the two slots the run actually requires. Now
+      // that the slots start empty, clearing both is a couple of clicks
+      // away, and it used to leave the panel with a heading, no inputs and
+      // an "+ Add another site" link as the only way back — a dead end that
+      // hid the requirement instead of stating it. Removing a filled row
+      // still visibly empties it; it just leaves the slot behind.
+      while (next.length < DEFAULT_URLS.length) next.push("");
+      return next;
     });
     setUrlError(null);
   }
