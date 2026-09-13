@@ -163,7 +163,7 @@ inventories; sources are matched against the brief.
 **Purpose.** Decide the direction: which primary skeleton, the palette, type scale, spacing,
 imagery treatment, page count, section order. Owns **Gate 2**.
 **Model.** Frontier. This is the agent whose ceiling sets the product's ceiling.
-**Owns.** `design_system`, `sitemap`, `sections[].blueprint`
+**Owns.** `design_system`, `sitemap`, `sections[].blueprint`, `sections[].ground`
 **Reads.** `brief`, `constraints`, `sources`.
 
 | Tool | Kind | Notes |
@@ -177,6 +177,11 @@ imagery treatment, page count, section order. Owns **Gate 2**.
 **Never.** Specify composition. `design_system` carries **vocabulary** — palette, type scale,
 spacing scale, radii, shadows, imagery treatment, motion character. Section layout, density, and
 what-goes-where belong to `sitemap` and to the builder. (See `AGENT-RESEARCH.md` §12.)
+
+**One exception, learned the hard way.** Section **ground** (page vs. muted) is a page-level
+decision and belongs to `sitemap`. In `experiments/drift-test-01`, pricing and FAQ independently
+chose the muted ground, landed adjacent, and merged into one undifferentiated grey block a third
+of the page tall. Neither builder could have seen it. Alternation is not a section-local call.
 **Done when.** `design_system` + `sitemap` exist, contrast passes, and the user has approved the
 direction. **Gate 2.**
 
@@ -283,7 +288,7 @@ three sections is a signal the direction was wrong — surface it, don't absorb 
 
 | Tool | Kind | Notes |
 |---|---|---|
-| `screenshot(breakpoints[], scale=2)` | io | |
+| `screenshot(breakpoints[], scale=2)` | io | **Must scroll the full page first** — `whileInView` entrance animations start at `opacity: 0` and never fire under a non-scrolling `fullPage` capture, so every below-fold section reads as empty. Confirmed in `experiments/drift-test-01` |
 | `get_a11y_tree()` | io | |
 | `click`, `fill`, `scroll` | io | Interaction, not just static capture |
 | `read_console()`, `read_network()` | io | Lovable mandates debugging tools *before* reading code |
@@ -375,14 +380,16 @@ blueprint cleanliness over output quality, which is the wrong trade for this pro
 
 | Layer | Choice | Pin |
 |---|---|---|
-| Framework | **Next.js 16, App Router, static export** | SSG output — SEO works, which is non-negotiable for business sites |
-| Language | **TypeScript 5**, React 19 | |
-| CSS | **Tailwind v4**, CSS-first `@theme`, **OKLCH** tokens | Not v3. See below — this one matters more than it looks |
-| Components | **shadcn/ui** | Primitive layer, customized via tokens, never ad-hoc styles |
-| Animation | **Motion v12** | Package is `motion`, import from `motion/react` — **never `framer-motion`** |
-| Icons | **lucide-react** | Never emoji as icons |
-| Images | `next/image` + sharp | |
-| Package manager | **pnpm** | |
+| Framework | **Next.js 16.3.1**, App Router, `output: "export"` | SSG output — SEO works, which is non-negotiable for business sites |
+| Language | **TypeScript 5.9.3**, React 19.2.8 | |
+| CSS | **Tailwind 4.3.3**, CSS-first `@theme`, **OKLCH** tokens | Not v3. See below — this one matters more than it looks |
+| Components | **shadcn/ui** — radix base, nova preset | Radix over Base UI: the most-trodden path is the point. Nova ships Lucide + Geist |
+| Animation | **Motion 13.1.1** | Package is `motion`, import from `motion/react` — **never `framer-motion`** |
+| Icons | **lucide-react 1.33** | Never emoji as icons |
+| Images | pre-sized variants from `curator` | `images.unoptimized` — static export has no runtime optimizer |
+| Package manager | **pnpm 11.22** | Not for speed — see §15 |
+
+Built and verified in `scaffold/`. `pnpm build` reaches *prerendered as static content*.
 
 ### Why this, on evidence
 
@@ -447,6 +454,13 @@ selection against a fixed architecture.
 | **Foundation** | §14 table | Locked. Change requests refused as a capability boundary |
 | **Blessed** | shadcn, Motion, lucide, sharp | Pre-installed in the template. No gate |
 | **On-demand** | carousel, charts, maps, lottie, … | Must pass the gate, then registered |
+
+**Why pnpm, specifically.** Not speed — **hardlinking**. pnpm resolves into a global
+content-addressable store and hardlinks into each project's `node_modules`, so per-project
+isolation stops being expensive: the hundredth project costs seconds and near-zero disk, while
+the lockfile guarantees byte-identical versions. This is what makes the scaffold source-only.
+`node_modules` is never committed and **never copied per project** — copying it would cost
+~550MB per site. Copy the source (~200KB), then `pnpm install --frozen-lockfile`.
 
 **`dependencies` is a first-class blackboard object**, injected into every builder call, mutated
 only by diff — exactly like `design_system`, and for the same reason. Without it, the builder

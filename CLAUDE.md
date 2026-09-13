@@ -4,8 +4,9 @@
 > architecture and the decisions behind it without re-explaining. Nothing here is an
 > instruction to start building.
 
-**Status:** design phase. No code written yet.
-**Last updated:** 2026-08-21
+**Status:** built and running. Backend, frontend, and a full pipeline that takes a
+sentence to an exported site. Several projects built end to end.
+**Last updated:** 2026-09-13
 
 ---
 
@@ -19,6 +20,43 @@ This one refuses to guess at the two things that actually determine whether the 
 usable: **what the site is for**, and **what real material it has to work with**.
 
 ## 2. Product thesis
+
+**The objective: as close to the source as its structure allows, and as creative as the
+source is.** Not "a correct page for this brief" — a page that could sit beside the
+reference sites without looking like the templated one. Both halves are load-bearing.
+*Close* without *creative* is a tidy page nobody remembers; *creative* without *close* is
+a demo reel that does not read as a product. Everything below serves that sentence.
+
+Two ways it fails, both measured on real builds and both worth naming because they look
+nothing alike and have the same cause — a decision nobody was allowed to make:
+
+- **Flat.** Every section the same width, the same rhythm, no surface treatment. Ten good
+  sections that read as a template. Cause: the schema had no field for the decision, so
+  no agent made it.
+- **Busy.** Technique everywhere, a signature motif repeated until it is wallpaper.
+  Cause: the vocabulary was open but nothing allocated it, so every section took some.
+
+The fix for both is the same shape: **vocabulary open, budget closed.** An agent may
+invent any technique; the pass that can see the whole page decides where it lands and how
+often. See §6.
+
+**First head-to-head, measured (2026-09-13).** The same brief — voice agents for
+enterprises like BPCL, sources elevenlabs.io/agents and sarvam.ai, four real product
+screenshots — given to Emergent and to this harness. Emergent asked five chip questions
+("Light minimal enterprise SaaS") and produced a 3,800px page that a stranger picks
+first: tight, one idea per screen, a 101px hero, finished-looking. It contains **zero
+`<img>`** — the four screenshots were never used; it hand-drew a dashboard in divs. It
+invented the company name (Vocalis), four customers (GAIL, Indian Railways, Utility
+Ops, Telecom Grids), a latency figure, a language count, a voice model and an SAP
+connector. Nothing of either source is in it; it is the template the chip named. This
+harness's page used all four screenshots by role, stated only the facts it was given,
+took sarvam's ground rhythm and elevenlabs' section order, and ran 10,400px against
+sources of 9,500–14,400. It is less polished section by section — bands with air
+inside them, real facts projected into one section instead of every section that
+could carry them. Scored honestly: Emergent 7 as a page and 3 as *this company's*
+page; ours 7 and 8. The gap to close here is polish per section; the gap on the other
+side is identity, and identity is the thesis. Captures in
+`projects/voiceowl/shots/{after-fixes,emergent-vocalis}.jpg`.
 
 Two differentiators. Everything else is infrastructure in service of these.
 
@@ -109,6 +147,16 @@ The user supplies reference sites. They are used in **two different roles**, not
 
 - **One primary reference** — skeleton, rhythm, section order, pacing. Blending six sites yields
   the mean of six sites, which is generic by definition. Design is not additive.
+
+  This was written as intent and then contradicted by the code for months: the sitemap
+  came from `commonality.typical_order`, which is literally the mean — conventional
+  section types sorted by their average position across sources. Measured: a voice-AI
+  agency built from vapi/elevenlabs/kore and a treasury dashboard built from
+  ramp/mercury/brex produced the same nine section types in nearly the same order,
+  because any two B2B SaaS reference sets average to the same page. The order now comes
+  from the primary's own sequence (`rank.primary_order`), including sections unique to
+  it; commonality is the checklist only. **When §5 and the code disagree, the code is
+  the one that ships.**
 - **The rest as a checklist** — what sections exist in this category at all: pricing table, logo
   wall, integration grid, comparison table, FAQ.
 
@@ -157,6 +205,74 @@ colors; you don't get a tenth at section six."
 Without that, "design agent is source of truth" has no enforcement — the builder is a separate
 model call that drifts quietly, and the drift shows up as the page falling apart in its lower
 third. **Model capability decides what; the recorded decision enforces consistency.**
+
+### Vocabulary open, budget closed
+
+§6 rejected a rulebook of taste. The *schema* then became a rulebook of vocabulary, which
+caps output just as hard and more quietly: a designer can only decide what there is a
+field for. `DesignSystem` had colours, type, spacing, radii, shadows, motion — and no way
+to say "grain over the ground" or "this panel overlaps the one below." Measured on a full
+build: zero gradients, zero backdrop blur, zero overlapping elements, on a page built from
+sources that use all three — while the scout had already DETECTED ramp's noise layer and
+filed it under motion because there was nowhere else to put it. **The pipeline perceived
+more than it could express.**
+
+`DesignSystem.treatments` is the open half: `{name, where, how}`, invented per project.
+`how` is mandatory and must be implementable as written — "full-bleed" was handed to ten
+builders as a word and ten of them returned the default container. A name loses to the
+model's prior; classes do not.
+
+Open vocabulary alone produces the opposite failure. Given five treatments and asked to
+apply the relevant ones, the builder put a gradient in six sections of ten and repeated
+the signature motif down the page. So allocation is a separate, closed decision, made by
+the pass that can see the whole page: each section is told which treatments it may use and
+whether it carries the signature — exactly one section does. Sections allocated nothing
+are told that is deliberate, because a page where every section is treated has no quiet
+left in it.
+
+The split to hold onto: **tokens closed and deterministically audited; treatments open and
+spot-checked.** They are not equally verifiable and pretending otherwise costs you one or
+the other.
+
+### Measure, don't instruct — and the stack's prior
+
+Every taste rule that was ever written into a prompt here has been removed, and the
+replacement is the same shape each time: the scout **measures** what the sources do,
+the number is persisted, and the agent that decides sees the number. Video (role,
+prominence, whether the headline sits on it), canvas liveness, typography (family,
+weight, size, tracking, horizontal position of the display heading), vertical position
+of content in a band, enclosure (share of blocks that are bordered or shadowed), the
+radius/shadow vocabulary, and — latest — what each band **sits on** (its own ground,
+luminance, or a picture). `ground` was a two-member enum, `page | muted`, so the
+composer could not say "dark band under the headline" no matter what the scout showed
+it; it is now `{name, how}` like `archetype`.
+
+The finding that decides how this harness is built from here: **measurement alone does
+not move the builder's prior. Only an audit that fails and a fixer that acts does.**
+Measured on voiceowl against sources that box 7–17% of their blocks: with the enclosure
+number in the director's prompt, card-recipe treatments went from 8/15 to 9/15; with the
+number in the builder's prompt, boxed share went from 22% to 27%. The number was read
+as context. With a deterministic enclosure audit (ceiling = the highest source share)
+and a fixer that un-boxes, the page went to 16%. The stack is the cause: shadcn's
+`Card` is the one container it ships and the model has seen it ten thousand times, so
+"vocabulary open" is not enough — the closed budget has to be *enforced*, not
+described. Tokens closed and audited; treatments open and spot-checked; **enclosure
+closed and audited** now sits with the first group.
+
+One more of the same family, cheap and invisible: the director records type steps as
+`font-500`; Tailwind v4 has no such utility unless the theme declares
+`--font-weight-500`. 112 weight utilities across ten sections compiled to nothing and
+every heading rendered at 400 against a recorded 500. The theme now declares each
+recorded weight. A recorded decision that does not compile is not a decision.
+
+### Composition is not the builder's to invent
+
+The builder's prompt said "LAYOUT, COMPOSITION, DENSITY AND RHYTHM ARE YOURS" and, four
+lines up, "You do NOT see any other section." Both cannot hold: rhythm is a property
+BETWEEN sections. Ten agents deciding shape alone all pick the median — `max-w-6xl` and
+`py-24` ten times over. A `compose` stage now decides ground, width and archetype for
+every section at once, and the builder is told its shape and its neighbours' by name.
+Density and the section's interior stay its own.
 
 Judging follows the same logic: the useful job is catching what the design agent didn't
 anticipate — a brand color that kills contrast, content longer than the layout assumed, a mobile
@@ -238,7 +354,50 @@ Deferred to v2, and only once the simpler version has visibly failed somewhere: 
 coordination, multi-source synthesis, memory graph, multi-page propagation, blueprint retrieval
 across past builds.
 
-## 11. Open questions
+## 11. Known gaps, measured
+
+Not speculation — each of these was observed on a real build and none is fixed.
+
+- **Every heading is the same sentence.** Seven headings across a page, all paraphrases of
+  the offering, two of them byte-identical. The content agent drafts per section from the
+  same brief with no knowledge of its siblings, so seven independent calls converge on
+  the same claim. Survived four builds and a model upgrade, because it is not a model
+  problem: the information never reaches the call. The blackboard already holds every
+  drafted headline — it needs projecting into the prompt, not retrieving. Same shape as
+  §4's argument: small and complete beats retrieved-maybe.
+- **Six of ten sections carry no imagery**, against a category norm of ~12 large images
+  per page. The page reads well for one screen and then flattens into type and icon grids.
+- **Verify never converged** — three rounds, then `rounds-exhausted` with NO gate. Fixed
+  in three parts: the loop now falls through to the preview gate whatever happened;
+  only the sections the fixer touched are re-inspected, every other verdict carries
+  forward; the round count is persisted (`verify-rounds.json`) so a restart mid-verify
+  does not begin again at 0/3. Fixer connection errors are counted separately from
+  disputes — an outage is not an argument.
+- **Gates lived in process memory.** `run.pending` was lost on every restart, so a run
+  at the design gate came back as `awaiting: false` with nothing to answer. Persisted
+  to `pending.json` and restored with the stage.
+- **Generated video is generic for a content role.** The pipeline is correct end to
+  end — the source's own frame is read, the role is passed verbatim, the loop is
+  seamless — and veo still returns cubes on a gradient for "transcript turns becoming
+  system actions", because a video model cannot render legible interface and the prompt
+  tells it so. Generation fits ambient loops. A dominant content video wants the user's
+  real recording, which is §2's thesis applied to motion.
+- **The generated imagery is unusable at close range.** `qwen3/pro-text-to-image` renders
+  convincing dashboard layouts with gibberish labels. Fine for a POC, fatal for §2's
+  real-content thesis. It is one env var (`KIE_IMAGE_MODEL`) — a model choice, not an
+  architecture problem. `google/nano-banana` is not an alternative: it refuses bank
+  dashboards under Google's prohibited-use policy.
+- **Entrance animation played before it could be seen.** 75 `motion.` calls across ten
+  sections and zero `whileInView` — everything bound to mount, finished before the reader
+  scrolled to it. Fixed in the builder prompt; not yet observed on a build.
+- **Six of ten sections carried no imagery** is now four real captures placed by role,
+  and a logo wall that tiles industry names because no logo files were supplied. The
+  asset gate asks; the gap is a content gap, not a pipeline one.
+- **The lower half flattened** — every section on one ground — because the schema had
+  two grounds. Fixed (see §6); the first build after it put the nav and footer on the
+  dark band and alternated three muted bands, which is sarvam's map.
+
+## 12. Open questions
 
 - What the content interview actually looks like as an interface. "Asks the user for real content"
   is a UI problem, not an agent problem — a business owner who won't write an About page also
@@ -250,7 +409,7 @@ across past builds.
 - Where the harness repo lives. This file currently sits in a scratch directory; it belongs at the
   root of the real project, where Claude Code loads it automatically.
 
-## 12. Working preferences
+## 13. Working preferences
 
 ~1 year in voice AI at VoiceOwl. Production multi-agent voice systems, prompt architecture as
 state machines, LLM orchestration, tool-invocation discipline. Strong on backend — FastAPI,

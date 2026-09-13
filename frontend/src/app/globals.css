@@ -1,0 +1,242 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:is(.dark *));
+
+/* ============================================================================
+ * Console theme. Locked dark — this is the harness operator's screen, not a
+ * generated site, so it never reads `design_system` and never goes light.
+ * ========================================================================= */
+:root {
+  --background: oklch(0.07 0.006 260);
+  --foreground: oklch(0.96 0 0);
+  --card: oklch(0.15 0.012 260);
+  --card-foreground: oklch(0.96 0 0);
+  --popover: oklch(0.16 0.012 260);
+  --popover-foreground: oklch(0.96 0 0);
+  --primary: oklch(0.96 0 0);
+  --primary-foreground: oklch(0.15 0 0);
+  --secondary: oklch(0.22 0.012 260);
+  --secondary-foreground: oklch(0.96 0 0);
+  --muted: oklch(0.2 0.01 260);
+  --muted-foreground: oklch(0.64 0.01 260);
+  --accent: oklch(0.24 0.014 260);
+  --accent-foreground: oklch(0.96 0 0);
+  --destructive: oklch(0.65 0.2 25);
+  --border: oklch(1 0 0 / 10%);
+  --input: oklch(1 0 0 / 8%);
+  --ring: oklch(0.6 0.01 260);
+  --radius: 0.75rem;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --font-sans: var(--font-sans);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+  html {
+    @apply font-sans;
+  }
+}
+
+/* Backdrop. Base near-black, plus a broad colour wash at the top that the
+ * SVG cloud layer (components/cloud-field.tsx) sits inside — the wash gives
+ * the clouds something to be lit by, the noise gives them shape. */
+.console-sky {
+  position: relative;
+  background-color: var(--background);
+  background-image:
+    radial-gradient(ellipse 70% 45% at 22% 0%, oklch(0.30 0.045 275 / 55%), transparent 62%),
+    radial-gradient(ellipse 60% 40% at 80% 2%, oklch(0.26 0.05 255 / 48%), transparent 62%),
+    radial-gradient(ellipse 100% 55% at 50% -8%, oklch(0.24 0.035 265 / 60%), transparent 70%);
+  background-repeat: no-repeat;
+}
+
+.console-clouds {
+  position: fixed;
+  inset: 0 0 auto 0;
+  height: 78vh;
+  pointer-events: none;
+  z-index: -3;
+  opacity: 0.85;
+  /* Parallax offset, written by components/pointer-glow.tsx. Translate only,
+   * on its own compositor layer, so moving it never re-runs the filter. */
+  transform: translate3d(var(--parallax-x, 0px), var(--parallax-y, 0px), 0);
+  will-change: transform;
+  contain: layout paint;
+}
+
+/* No `mix-blend-mode: screen` here, and no animation on the svg.
+ *
+ * Both were costing a frame budget the page did not have. Screen-blending a
+ * fixed, full-viewport layer makes the compositor read the backdrop back and
+ * re-blend it on every frame — it cannot fast-path a blended layer. And the
+ * svg under it is two `feTurbulence` filters; a filter result is rasterised
+ * once and cached, but only while the filtered element's geometry holds
+ * still, so animating `scale` on it threw that cache away 60 times a second
+ * and re-ran fractal noise over the whole viewport each time. Together they
+ * pinned a core for as long as the tab was open.
+ *
+ * The clouds now rasterise once and ride the compositor on a translate. The
+ * drift they used to get from `scale` comes from the parallax instead. */
+
+/* The sky breathing, moved off the filtered element and onto the wrapper's
+ * own opacity — compositor-only, and it never touches the filter. */
+.console-clouds > svg {
+  animation: cloud-breathe 48s ease-in-out infinite;
+}
+
+@keyframes cloud-breathe {
+  0%,
+  100% {
+    opacity: 0.82;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+/* Light that follows the cursor. Position and strength are custom properties
+ * so the rAF loop never triggers a React render or a layout. */
+.console-glow {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: -2;
+  /* Blend mode removed for the same reason as the clouds — see above. The
+   * gradient is additive light on a near-black ground, so plain compositing
+   * reads almost identically and costs nothing. */
+  opacity: var(--pointer-glow, 0);
+  contain: layout paint;
+  background: radial-gradient(
+    380px circle at var(--pointer-x, 50%) var(--pointer-y, 30%),
+    oklch(0.66 0.09 278 / 9%),
+    oklch(0.54 0.07 265 / 3.5%) 45%,
+    transparent 72%
+  );
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .console-clouds {
+    transform: none;
+  }
+  .console-clouds > svg {
+    animation: none;
+  }
+  .console-glow {
+    display: none;
+  }
+}
+
+/* Sparse starfield — a handful of soft points, not a galaxy. Two tiled
+ * layers at different scales/opacities for a little depth, each drifting in
+ * and out with its own slow, offset twinkle. */
+.console-stars {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: -1;
+}
+
+/* Promoted to their own layers so `star-twinkle` runs as a compositor
+ * opacity animation. Unpromoted, animating opacity on a full-viewport
+ * element repaints the whole viewport every frame, which is what made
+ * scrolling the home screen stutter even after the clouds were fixed. */
+.console-stars::before,
+.console-stars::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-repeat: repeat;
+  transform: translateZ(0);
+  will-change: opacity;
+}
+
+.console-stars::before {
+  background-image:
+    radial-gradient(1.6px 1.6px at 12% 22%, oklch(1 0 0 / 100%), transparent 100%),
+    radial-gradient(1.2px 1.2px at 68% 12%, oklch(1 0 0 / 90%), transparent 100%),
+    radial-gradient(1.8px 1.8px at 40% 48%, oklch(1 0 0 / 100%), transparent 100%),
+    radial-gradient(1.2px 1.2px at 85% 38%, oklch(1 0 0 / 85%), transparent 100%),
+    radial-gradient(1.4px 1.4px at 25% 68%, oklch(1 0 0 / 80%), transparent 100%),
+    radial-gradient(1.7px 1.7px at 92% 78%, oklch(1 0 0 / 95%), transparent 100%),
+    radial-gradient(1.2px 1.2px at 55% 85%, oklch(1 0 0 / 75%), transparent 100%);
+  background-size: 620px 620px;
+  animation: star-twinkle 7s ease-in-out infinite;
+}
+
+.console-stars::after {
+  background-image:
+    radial-gradient(1.1px 1.1px at 30% 10%, oklch(0.95 0.02 265 / 75%), transparent 100%),
+    radial-gradient(1.3px 1.3px at 60% 30%, oklch(1 0 0 / 80%), transparent 100%),
+    radial-gradient(1px 1px at 8% 55%, oklch(0.95 0.02 265 / 65%), transparent 100%),
+    radial-gradient(1.3px 1.3px at 78% 62%, oklch(1 0 0 / 75%), transparent 100%),
+    radial-gradient(1px 1px at 45% 90%, oklch(0.95 0.02 265 / 60%), transparent 100%);
+  background-size: 460px 460px;
+  animation: star-twinkle 9s ease-in-out infinite reverse;
+  animation-delay: -3s;
+}
+
+@keyframes star-twinkle {
+  0%,
+  100% {
+    opacity: 0.55;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .console-stars::before,
+  .console-stars::after {
+    animation: none;
+    opacity: 0.8;
+  }
+}
+
+/* The sweep across the section BUILD is working on right now, and the
+ * indeterminate bar shown before there is a plan to draw. Transform only —
+ * it runs on the compositor and never touches layout or paint. See
+ * components/build-canvas.tsx. */
+@keyframes canvas-sweep {
+  0% {
+    transform: translateX(0);
+  }
+  100% {
+    transform: translateX(400%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [class*="canvas-sweep"] {
+    animation: none;
+  }
+}

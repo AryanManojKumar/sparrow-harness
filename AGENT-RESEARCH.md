@@ -292,6 +292,13 @@ design system specifies composition**. It does not follow if it specifies vocabu
 **Frozen (vocabulary):** palette, type scale, spacing scale, radii, shadow set, imagery
 treatment, motion character. Roughly forty tokens.
 
+**State every scale as a closed enumeration.** `experiments/drift-test-01` measured this
+directly across five independent builds. Rules written as closed sets with the boundary spelled
+out — *"Nine values. There is no tenth."*, *"weights 400/500/600 only, never 700 or above"* —
+held perfectly. Rules written as an open scale leaked: *"Grid gap `gap-8`"* never addressed
+inline flex gaps, so agents invented `gap-2`, `gap-3`, `gap-4`. **A scale with an unstated
+boundary is an invitation.**
+
 **Never frozen (composition):** section layout, visual rhythm, hierarchy, density, what bleeds
 off which edge, responsive behavior, interaction, how a screenshot is framed. This is the
 majority of what makes a page look designed, and it stays with the builder.

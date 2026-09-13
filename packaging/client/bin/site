@@ -1,0 +1,261 @@
+#!/usr/bin/env bash
+# site — the one command that drives the Sparrow site builder.
+#
+# Thin on purpose: it wraps the HTTP API the engine already exposes, so there is
+# one implementation of every step and this script cannot drift from it.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+RUNDIR="$ROOT/.sparrow"
+PIDFILE="$RUNDIR/api.pid"
+LOGFILE="$RUNDIR/api.log"
+PORTFILE="$RUNDIR/port"
+FMT="$ROOT/bin/_fmt.py"
+
+# The port is remembered per folder, so two copies of this builder on one
+# machine cannot end up driving each other's engine — which would silently
+# write one folder's sites into the other's projects/ directory.
+if [ -n "${SPARROW_PORT:-}" ]; then
+  PORT="$SPARROW_PORT"
+elif [ -f "$PORTFILE" ]; then
+  PORT="$(tr -dc '0-9' < "$PORTFILE")"
+else
+  PORT=8000
+fi
+API="http://127.0.0.1:${PORT}"
+
+die()  { printf 'site: %s\n' "$*" >&2; exit 1; }
+need() { command -v "$1" >/dev/null 2>&1 || die "$1 is not installed — see README.md"; }
+fmt()  { python3 "$FMT" "$@"; }
+
+api() { # api METHOD PATH [JSON-BODY]
+  local m="$1" p="$2" body="${3:-}"
+  if [ -n "$body" ]; then
+    curl -sS -X "$m" "$API$p" -H 'content-type: application/json' -d "$body"
+  else
+    curl -sS -X "$m" "$API$p"
+  fi
+}
+
+alive()      { curl -sS --max-time 2 "$API/health" >/dev/null 2>&1; }
+require_up() { alive || die "the engine is not running — start it with:  bin/site up"; }
+
+cmd_help() {
+cat <<'HELP'
+site — build a website
+
+  up                          start the engine (once per session)
+  down                        stop it
+  port <n>                    run this folder's engine on another port, for good
+  console                     open the visual UI in a browser (optional)
+  doctor                      check that everything this needs is installed
+
+  interview "<sentence>"      one sentence about the business -> a structured brief
+  new <id> --brief <f.json> [--url URL]...
+                              create the project from that brief + reference sites
+
+  advance <id>                run until the next gate (streams; takes minutes)
+  gate <id>                   what it is waiting for, and the options
+  answer <id> '<json>'        answer the open gate
+  specimens <id>              the three rendered design directions, as image paths
+  upload <id> <asset> <file>  hand over the user's own image for one slot
+  assets <id>                 every image the run needs, and what was decided
+
+  status <id>                 stage, spend, recent log
+  projects                    every project in this folder
+
+  preview <id> [--rebuild]    build and serve the site; prints the URL
+  export <id>                 static site to projects/<id>/workspace/out/
+  audit <id>                  deterministic design-drift check over the sections
+  rebuild <id> --sections a,b [--stage build]
+                              queue named sections to be re-made by the agent
+  rebind <id>                 repair a preview that renders unstyled
+  logs <id>                   replay the run's log
+
+The site being built lives in projects/<id>/workspace/ — a normal Next.js app.
+HELP
+}
+
+cmd_doctor() {
+  local bad=0
+  for t in uv node pnpm curl python3; do
+    if command -v "$t" >/dev/null 2>&1
+      then printf '  %-8s %s\n' "$t" "$(command -v "$t")"
+      else printf '  %-8s MISSING\n' "$t"; bad=1
+    fi
+  done
+  if [ -f "$ROOT/backend/.env" ]
+    then printf '  %-8s present\n' "keys"
+    else printf '  %-8s MISSING — copy backend/.env.example to backend/.env\n' "keys"; bad=1
+  fi
+  if alive
+    then printf '  %-8s running on %s\n' "engine" "$API"
+    else printf '  %-8s not running (bin/site up)\n' "engine"
+  fi
+  return $bad
+}
+
+cmd_up() {
+  need uv; need curl
+  if alive; then echo "engine already running on $API"; return 0; fi
+  mkdir -p "$RUNDIR"
+  if [ ! -d "$ROOT/backend/.venv" ]; then
+    echo "first run — installing the engine (a minute or two) …"
+    ( cd "$ROOT/backend" && uv sync )
+    echo "installing the browser it uses to read reference sites …"
+    ( cd "$ROOT/backend" && uv run playwright install chromium )
+  fi
+  ( cd "$ROOT/backend" && nohup uv run sparrow serve --port "$PORT" \
+      >"$LOGFILE" 2>&1 & echo $! >"$PIDFILE" )
+  printf 'starting'
+  for _ in $(seq 1 90); do
+    if alive; then echo " — engine up on $API"; return 0; fi
+    printf '.'; sleep 1
+  done
+  echo
+  die "engine did not come up. Last lines of $LOGFILE:
+$(tail -n 25 "$LOGFILE" 2>/dev/null)"
+}
+
+cmd_down() {
+  [ -f "$PIDFILE" ] || { echo "not running"; return 0; }
+  kill "$(cat "$PIDFILE")" 2>/dev/null || true
+  rm -f "$PIDFILE"
+  echo "stopped"
+}
+
+cmd_port() {
+  local n="${1:?usage: site port <number>}"
+  case "$n" in (*[!0-9]*|"") die "port must be a number" ;; esac
+  mkdir -p "$RUNDIR"
+  printf '%s\n' "$n" > "$PORTFILE"
+  echo "this folder will use port $n from now on (was $PORT)"
+  echo "restart the engine to pick it up:  bin/site down && bin/site up"
+}
+
+cmd_console() {
+  require_up
+  need pnpm
+  [ -d "$ROOT/frontend/node_modules" ] || ( cd "$ROOT/frontend" && pnpm install )
+  echo "console on http://localhost:3000 — leave this running, Ctrl-C to stop"
+  ( cd "$ROOT/frontend" && NEXT_PUBLIC_API_URL="$API" pnpm dev )
+}
+
+cmd_interview() {
+  require_up
+  [ $# -ge 1 ] || die 'usage: site interview "<what the business does>"'
+  local out="${SPARROW_BRIEF:-/tmp/sparrow-brief.json}"
+  api POST /interview "$(fmt interview_body "$1")" | tee "$out" | fmt pp
+  echo
+  echo "brief saved to $out — correct it there, then:"
+  echo "  bin/site new <project-id> --brief $out --url https://…"
+}
+
+cmd_new() {
+  require_up
+  local id="${1:-}"; shift || true
+  [ -n "$id" ] || die "usage: site new <project-id> --brief <file.json> [--url URL]..."
+  local brief="" ; local urls=()
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --brief) brief="${2:?}"; shift 2 ;;
+      --url)   urls+=("${2:?}"); shift 2 ;;
+      *) die "unknown argument: $1" ;;
+    esac
+  done
+  [ -n "$brief" ] && [ -f "$brief" ] || die "--brief must point at the file 'site interview' wrote"
+  [ ${#urls[@]} -gt 0 ] || echo "note: no --url given. The design agent has no reference site to work from." >&2
+  api POST /projects "$(fmt create_body "$id" "$brief" ${urls[@]+"${urls[@]}"})" | fmt pp
+  echo
+  echo "created — now run:  bin/site advance $id"
+}
+
+cmd_advance() {
+  require_up
+  local id="${1:?usage: site advance <project-id>}"
+  curl -sS -N -X POST "$API/projects/$id/advance" | fmt advance
+  echo
+  cmd_gate "$id"
+}
+
+cmd_gate()   { require_up; api GET "/projects/${1:?}/gate" | fmt gate; }
+cmd_answer() { require_up; api POST "/projects/${1:?}/gate" "${2:?usage: site answer <id> '<json>'}" | fmt pp; }
+
+cmd_specimens() {
+  local id="${1:?usage: site specimens <project-id>}"
+  local d="$ROOT/projects/$id/specimens"
+  [ -d "$d" ] || die "no specimens yet — they appear when the run reaches the design gate"
+  ls -1 "$d"/direction-*.png 2>/dev/null || die "no rendered directions in $d"
+  echo
+  echo "look at these before asking the user to pick — describe them, do not paste JSON."
+}
+
+cmd_upload() {
+  require_up
+  local id="${1:?}" asset="${2:?}" file="${3:?usage: site upload <id> <asset-id> <file>}"
+  [ -f "$file" ] || die "no such file: $file"
+  curl -sS -X POST "$API/projects/$id/assets/$asset" -F "file=@$file" | fmt pp
+  echo "now answer the asset gate with this asset set to \"upload\"."
+}
+
+cmd_assets()   { require_up; api GET "/projects/${1:?}/assets" | fmt pp; }
+cmd_status()   { require_up; api GET "/projects/${1:?}" | fmt status; }
+cmd_projects() { require_up; api GET /projects | fmt projects; }
+cmd_logs()     { require_up; api GET "/projects/${1:?}/logs?limit=200" | fmt pp; }
+cmd_rebind()   { require_up; api POST "/projects/${1:?}/rebind" | fmt pp; }
+
+cmd_rebuild() {
+  require_up
+  local id="${1:?usage: site rebuild <id> --sections a,b}"; shift
+  local sections="" stage="build"
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --sections) sections="${2:?}"; shift 2 ;;
+      --stage)    stage="${2:?}"; shift 2 ;;
+      *) die "unknown argument: $1" ;;
+    esac
+  done
+  [ -n "$sections" ] || die "--sections is required, e.g. --sections pricing,faq"
+  api POST "/projects/$id/rebuild" "$(fmt rebuild_body "$sections" "$stage")" | fmt pp
+  echo "queued — now run:  bin/site advance $id"
+}
+
+_build_ws() {
+  local ws="$ROOT/projects/${1:?}/workspace"
+  [ -d "$ws" ] || die "no workspace at $ws — has the project been created?"
+  need pnpm
+  [ -d "$ws/node_modules" ] || ( cd "$ws" && pnpm install )
+  ( cd "$ws" && pnpm build )
+}
+
+cmd_preview() {
+  local id="${1:?usage: site preview <project-id> [--rebuild]}"
+  local ws="$ROOT/projects/$id/workspace"
+  if [ ! -d "$ws/out" ] || [ "${2:-}" = "--rebuild" ]; then _build_ws "$id"; fi
+  require_up
+  echo
+  echo "  preview:  $API/projects/$id/preview/"
+  echo "  sections: projects/$id/workspace/src/components/sections/"
+}
+
+cmd_export() {
+  local id="${1:?usage: site export <project-id>}"
+  _build_ws "$id"
+  echo
+  echo "  static site: $ROOT/projects/$id/workspace/out/"
+  echo "  plain HTML/CSS/JS — drop it on any host. No build step, no server."
+}
+
+cmd_audit() {
+  local id="${1:?usage: site audit <project-id>}"
+  ( cd "$ROOT/backend" && uv run sparrow audit "$ROOT/projects/$id/blackboard.json" \
+      --sections "$ROOT/projects/$id/workspace/src/components/sections" )
+}
+
+case "${1:-help}" in
+  help|-h|--help) cmd_help ;;
+  doctor|up|down|port|console|interview|new|advance|gate|answer|specimens|\
+upload|assets|status|projects|preview|export|audit|rebuild|rebind|logs)
+    c="$1"; shift; "cmd_$c" "$@" ;;
+  *) die "unknown command: $1 (try: bin/site help)" ;;
+esac

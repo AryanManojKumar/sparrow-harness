@@ -1,0 +1,980 @@
+"""The curator.
+
+Produces the imagery the blueprints ask for, and guarantees what may be claimed
+about each one.
+
+Two paths, and the difference is not cosmetic:
+
+GENERATED — made from a blueprint's asset brief, for a product that may not exist
+yet or has nothing to screenshot. Its contents are invented by construction. That
+is the point, so there is nothing to gate.
+
+RESTYLED — the user's own screenshot, restyled to the design system. It is still a
+picture of their real product, so any text the model adds is a claim they never
+made. Measured in experiments/image-probe-02: asked to clean a capture whose copy
+was truncated by a chat widget, the model completed the sentences — "frameworks,
+adapt", "visibility across", "grow with you" — plausibly, well, and entirely
+invented. The output looked flawless. That path is gated on text fidelity.
+
+The gate is deliberately asymmetric. Gating generation would gate the mechanism;
+not gating restyle ships fabricated claims about somebody's real product.
+
+Upstream of both sits the SCRUB. An uploaded dashboard is full of real customer
+data — the capture the asset gate was built against carries `Sarah Reed`,
+`sarah.reed@acmemarkets.com`, a merchant id and eleven sterling amounts, and the
+text-fidelity gate faithfully preserved every one of them into the published
+page. `scrub` runs first, before `restyle`, because `restyle` posts the file to a
+third-party image model and a published asset ends up on the open web: after
+either, the data has already left. See `sparrow.redact` for the pixel work.
+"""
+
+from __future__ import annotations
+
+import base64
+import io
+import json
+import re
+from dataclasses import dataclass
+import pathlib
+from pathlib import Path
+
+from sparrow import eleven, redact
+from sparrow.agents.base import Agent
+from sparrow.blackboard.schema import Asset, DesignSystem, Provenance
+from sparrow.providers import Tier
+from sparrow.parse import first_object
+
+IMAGE_MODEL = eleven.IMAGE_MODEL
+
+# Shape names, not pixel sizes: KIE takes an aspect ratio and picks the
+# resolution. The three it offers match gpt-image-2's old 1536x1024 /
+# 1024x1024 / 1024x1536 exactly, so blueprint framing is unchanged.
+# Everything else is derived locally with Pillow.
+_SIZES = eleven.SHAPES
+
+
+# Reading a source's footage instead of guessing at it.
+#
+# §5 draws the line this sits on: structural and layout patterns are fair to
+# extract, a competitor's distinctive look is not. So this deliberately does NOT
+# return the frame, and does not describe the subject as a thing to copy — it
+# reads the CRAFT of the shot: grade, key, depth of field, camera, tempo. Those
+# are the properties that make ambient footage sit under type without fighting
+# it, and they are the ones a text-to-video model can actually be steered with.
+#
+# It is also the half the harness was missing. `_footage_clause` phrased the
+# design system for a camera and got as far as an oklch string, which a video
+# model cannot parse; the source frame says what the light actually does.
+# What must NOT be in frame. This lived inside the positive prompt as prose,
+# where "no captions, no titles" competes with the description for the model's
+# attention instead of constraining it. The endpoint takes a negative_prompt and
+# never got one.
+# Only what the model structurally gets wrong: rendered text is gibberish and
+# a hard cut breaks a loop. Nothing here about pace, flare, saturation or
+# style — those are the source's to set, via `observed`, and a fixed list of
+# them was a taste rule that stopped fast, flared, saturated sources from
+# being matched.
+MOTION_NEGATIVE = "legible text, captions, subtitles, watermarks, hard cuts"
+
+
+READ_MOTION = """You are looking at ONE FRAME of a video from a marketing website.
+
+Describe how the footage is SHOT, in the vocabulary a director of photography
+would use. Colour grade, key and fill, contrast, depth of field, focal length,
+camera height and movement, grain, how much of the frame is out of focus.
+
+IGNORE any text, buttons, logos or interface drawn on top of the frame. That is
+the website's markup sitting over the video, not part of the footage.
+
+Do NOT name the company, the product, or the specific subject as something to
+reproduce. Say "a person at a desk, mid-ground, back to camera" — never "copy
+this shot". What is wanted is the register, not the scene.
+
+Six sentences at most. No preamble, no list, no headings — plain prose a video
+model can be steered with."""
+
+
+def _footage_clause(ds: DesignSystem) -> str:
+    """The design system, phrased for a camera rather than a stylesheet.
+
+    `_style_clause` carries "corners no rounder than rounded-lg", "hairline
+    borders over filled cards", "no gradients". Those are CSS, and a video model
+    given them is being told about border radius. Light, palette and register
+    are the parts of a design system that a lens can actually honour.
+
+    NO TOKEN NAMES AND NO OKLCH. The first version said "the world is lit like
+    Control Room Navy — oklch(0.20 0.025 250)", and the video model, which reads
+    words and not colour spaces, painted CONTROL ROOM NAVY across three monitors
+    in the shot. A colour reaches a camera as light: dark or pale, warm or cool,
+    and which hue the one saturated note is. That is all it can use and all it
+    is given.
+    """
+    pick = {c.token: c for c in ds.colors}
+
+    def _describe(value: str) -> str:
+        """oklch(L C H) -> words a DP would use."""
+        m = re.search(r"oklch\(\s*([\d.]+)\s+([\d.]+)\s+([\d.]+)", value or "")
+        if not m:
+            return ""
+        L, C, H = float(m.group(1)), float(m.group(2)), float(m.group(3))
+        tone = ("near-black" if L < 0.25 else "dark" if L < 0.45 else
+                "mid" if L < 0.7 else "pale" if L < 0.93 else "near-white")
+        if C < 0.03:
+            hue = "neutral"
+        else:
+            hue = ("red" if H < 25 or H >= 345 else "orange" if H < 55 else
+                   "amber" if H < 80 else "green" if H < 165 else
+                   "teal" if H < 200 else "blue" if H < 260 else
+                   "violet" if H < 300 else "magenta")
+        sat = "" if C < 0.03 else (" muted" if C < 0.08 else " saturated")
+        return f"{tone}{sat} {hue}".strip()
+
+    ground = pick.get("background")
+    accent = pick.get("primary")
+    g = _describe(ground.value) if ground else ""
+    a = _describe(accent.value) if accent else ""
+    return (
+        "Match the register of this design system:\n"
+        + (f"- the world is lit {g}: the ground this footage sits on is {g}, "
+           f"so key the scene to that\n" if g else "")
+        + (f"- the one saturated note in frame is {a}; everything else stays "
+           f"desaturated\n" if a else "")
+        + f"- the mood is: {ds.atmosphere}\n"
+        + "- no on-screen graphics, no lower thirds, no logos, no product UI in focus, "
+          "and NO WORDS OF ANY KIND written anywhere in the frame"
+    )
+
+
+def _style_clause(ds: DesignSystem) -> str:
+    """The design system, phrased for an image model rather than a builder."""
+    pick = {c.token: c for c in ds.colors}
+    parts = [
+        f"ground: {pick['background'].value} ({pick['background'].name})",
+        f"text: {pick['foreground'].value}",
+        f"the only saturated colour is {pick['primary'].value} ({pick['primary'].name}), "
+        "on primary actions and nothing else",
+    ]
+    if "accent" in pick:
+        parts.append(f"{pick['accent'].name} {pick['accent'].value} at most once, "
+                     "and only to mark something needing attention")
+    parts += [
+        f"headings in {ds.font_display}, body in {ds.font_body}",
+        *([f"monospace ({ds.font_mono}) for any IDs, timestamps, paths or code"]
+          if ds.font_mono else []),
+        f"corners no rounder than {ds.radius_card}; hairline borders over filled cards",
+        "no gradients, no glow, no coloured shadows",
+    ]
+    return "\n".join(f"- {p}" for p in parts)
+
+
+TRANSCRIBE = """Transcribe every piece of text visible in this image, exactly as written.
+
+One string per line, in reading order. Include labels, buttons, headings, body copy,
+table cells, badges, timestamps and code. Do not correct spelling. Do not complete a
+word or sentence that is cut off — transcribe only what you can actually read, and end
+the line where the text becomes unreadable.
+
+Output the lines and nothing else."""
+
+
+@dataclass
+class Fidelity:
+    ok: bool
+    invented: list[str]
+    lost: list[str]
+
+    def reason(self) -> str:
+        if self.ok:
+            return ""
+        bits = []
+        if self.invented:
+            bits.append(f"{len(self.invented)} invented string(s): "
+                        + "; ".join(repr(s) for s in self.invented[:4]))
+        if self.lost:
+            bits.append(f"{len(self.lost)} lost string(s)")
+        return " · ".join(bits)
+
+
+def _as_png(image: bytes) -> bytes:
+    """Whatever the user uploaded, as the one format every path here expects.
+
+    The upload is stored untouched — it is their file — so it may be a JPEG or a
+    WebP. Normalising once, here, means the API contract, the fidelity
+    comparison and the workspace all see the same bytes.
+    """
+    from PIL import Image
+
+    if image[:8] == b"\x89PNG\r\n\x1a\n":
+        return image
+    buf = io.BytesIO()
+    with Image.open(io.BytesIO(image)) as im:
+        im.convert("RGB").save(buf, "PNG")
+    return buf.getvalue()
+
+
+def _words(lines: list[str]) -> set[str]:
+    out: set[str] = set()
+    for ln in lines:
+        for w in re.findall(r"[A-Za-z][A-Za-z'-]{3,}", ln):
+            out.add(w.lower())
+    return out
+
+
+SCRUB = """You locate personal and customer-identifying data in a screenshot of software.
+
+Report every instance of these, and nothing else:
+
+- person_name     a named individual
+- email           an email address
+- phone           a telephone number
+- postal_address  a street address
+- org_name        the name of a CUSTOMER, CLIENT, MERCHANT, BENEFICIARY, VENDOR or
+                  COUNTERPARTY — a third party whose business appears in this account
+- identifier      an id that picks out a PERSON, an ACCOUNT or a COUNTERPARTY — a
+                  merchant, customer, invoice or transaction id, the last four digits
+                  of a card, a monogram or initials taken from a person's name. NOT an
+                  id that picks out a piece of work: a run, job, build, deployment,
+                  request, trace, commit or ticket id belongs to the software, not to
+                  anybody, and changing it changes what the screenshot says the
+                  product does.
+- money           an amount carrying a currency symbol or code
+- face            a photograph of a person
+
+Report NOTHING else. In particular, leave alone: the wordmark, logo or product name of
+the software itself; navigation labels, menu items, tab names and breadcrumbs; column
+headers, metric labels, field labels, button text, tooltips and status words; dates and
+times; counts and percentages with no currency symbol; source code, file paths, API
+routes, error strings, branch names, repository names and version numbers. Those are what makes the image legible as
+working software, and an image that loses them is worth nothing to anybody.
+
+For every instance report:
+
+  "text"        the string exactly as written, character for character
+  "kind"        one of the labels above
+  "box"         [x0, y0, x1, y1] in a 0-1000 coordinate space over the whole image —
+                x on the width, y on the height, tight around the drawn characters
+  "replacement" a value the same system could have produced instead
+
+Rules for "replacement":
+
+- The same length as "text", the same capitalisation pattern, the same punctuation, the
+  same currency symbol, the same number of digits, the same separators.
+- Never a masking string. Not XXXX, not 0000, not ####, not asterisks or bullets. It must
+  read as a real value, because the point of the image is that it shows real software.
+- It must not contain the identifying part of the original.
+- The same real-world entity often appears several times in one image — as a display
+  name, as an id, inside an email domain, as initials on an avatar. Replace every one of
+  them from the SAME invented entity, so the image still hangs together after the swap.
+- For "face", report an empty string.
+
+Output one JSON object: {"found": [...]}. Nothing else. If there is nothing to report,
+output {"found": []}."""
+
+_JSON = re.compile(r"\{.*\}", re.S)
+
+
+def _norm(text: str) -> str:
+    """Letters and digits only, lowercased.
+
+    So a mark rendered as "Voice Owl", "VOICEOWL" or "voice-owl" all match the
+    name written as "voiceowl.ai". The failure being checked for is a DIFFERENT
+    company's name, not a different capitalisation of the right one.
+    """
+    return "".join(c for c in text.lower() if c.isalnum())
+
+
+@dataclass
+class Branding:
+    """Whether a generated product surface names the right product."""
+
+    ok: bool
+    name: str
+    lines: list[str]
+    distinctive: str
+
+    def reason(self) -> str:
+        if self.ok:
+            return ""
+        # What it said INSTEAD, so the finding is checkable rather than an
+        # assertion. Generated content has no PII by construction, so quoting it
+        # back is safe in a way quoting a scrubbed upload would not be.
+        shown = "; ".join(repr(ln) for ln in self.lines[:6]) or "no legible text"
+        return (f"the image never says {self.name!r} (looked for {self.distinctive!r}); "
+                f"it reads: {shown}")
+
+
+@dataclass
+class Scrub:
+    """A scrubbed image and what changed in it.
+
+    `changed` records the CATEGORY, the REPLACEMENT and the count — never the
+    original value. The blackboard is read by agents and written into prompts and
+    logs, so a record that carried `sarah.reed@acmemarkets.com` would put the leak
+    back on exactly the paths the scrub exists to keep it off. What the user
+    needs in order to check the work is the scrubbed image itself, which is
+    written next to their upload.
+    """
+
+    image: bytes
+    changed: list[str]
+    lines: list[str]          # the scrubbed image transcribed, for `check_fidelity`
+
+    @property
+    def clean(self) -> bool:
+        return not self.changed
+
+
+# Shapes that are PII wherever they appear and cannot be confused with product
+# chrome: a currency amount and an email address. Deliberately not ids or bare
+# numbers — a version string, a row count and a port number all look like those,
+# and a sweep that fires on them masks the parts of the screenshot worth keeping.
+_SHAPES = (
+    re.compile(r"[£$€¥]\s?\d[\d,]*\.\d{2}"),
+    re.compile(r"[\w.+-]+@[\w-]+\.[A-Za-z]{2,}"),
+)
+
+
+def _still_reads(text: str, lines: list[str]) -> bool:
+    """Whether `text` is still in the image, allowing for the two reads of the
+    same row disagreeing.
+
+    Exact substring was not enough. Measured live: a beneficiary the locate pass
+    transcribed as `Foo Food Suppliers Ltd` came back from the read-back as
+    `To Food Suppliers Ltd`, the substring test found nothing, and the row
+    shipped unscrubbed while the report said it had been replaced. Two shared
+    long words on one line is the same rule `_same_value` already uses to pair
+    the passes up.
+    """
+    if len(text) >= 4 and any(text in line for line in lines):
+        return True
+    words = {w.lower() for w in re.findall(r"[A-Za-z0-9]{4,}", text)}
+    if len(words) < 2:
+        return False
+    return any(len(words & {w.lower() for w in re.findall(r"[A-Za-z0-9]{4,}", line)}) >= 2
+               for line in lines)
+
+
+def _unlocated(lines: list[str], plan: list[dict]) -> list[dict]:
+    """PII shapes in the read-back that the locate pass never named.
+
+    The verify step only re-checked the values the model had already found, so a
+    value it never found was never checked. Measured across five live runs of
+    the same capture, the locate pass missed two of the activity table's payout
+    amounts on one run and found them on the others — recall varies run to run
+    just as placement does. Whatever the sweep turns up is masked, never
+    substituted: there is no box for it and no transcription to trust.
+    """
+    # The REPLACEMENTS have to count as known too. They are money-shaped by
+    # construction — that is the whole point of substituting rather than
+    # masking — so a sweep that only knows the originals reports every amount
+    # it just substituted as an unlocated leak, and masks the lot on the retry.
+    known = " ".join(f"{f['text']} {f.get('replacement', '')}" for f in plan)
+    out: list[dict] = []
+    for line in lines:
+        for shape in _SHAPES:
+            for hit in shape.findall(line):
+                if hit not in known and not any(d["text"] == hit for d in out):
+                    out.append({"text": hit, "kind": "money" if hit[0] not in
+                                "abcdefghijklmnopqrstuvwxyz" else "email"})
+    return out
+
+
+def _same_value(text: str, among: list[dict]) -> dict | None:
+    """Whether a second-pass finding is one of the values that survived the
+    first. Compared on shared words rather than exact string, because the two
+    reads of the same row differ: the beneficiary the model first transcribed as
+    `Foo Food Suppliers Ltd` came back as `To Food Suppliers Ltd`."""
+    words = {w.lower() for w in re.findall(r"[A-Za-z0-9]{4,}", text)}
+    for f in among:
+        if f["text"] == text:
+            return f
+        if len(words & {w.lower() for w in re.findall(r"[A-Za-z0-9]{4,}", f["text"])}) >= 2:
+            return f
+    return None
+
+
+def seamless_loop(mp4: bytes, *, crossfade: float = 1.0) -> tuple[bytes, str]:
+    """Make an ambient loop actually loop, and weigh what a hero can afford.
+
+    The video endpoint supports neither `duration` nor `loop` — confirmed by
+    probing its schema — so the prompt asking for "8 seconds, beginning and
+    ending on the same framing" is a wish the model is free to ignore, and it
+    does. Measured: first-vs-last-frame RMS of 37.4 on a clip whose prompt
+    demanded a clean loop, which is a visible jump every eight seconds. The same
+    clip after this pass measured 2.9.
+
+    The trick is to spend the first second twice. Output is `[x .. D-x]`
+    followed by the tail `[D-x .. D]` crossfaded into the head `[0 .. x]`, so
+    the last frame is dissolved back to the frame the output starts on. The clip
+    loses `x` seconds and gains a seam nobody sees.
+
+    Re-encoding is the other half. veo returns 11.3MB for eight seconds at
+    1080p, which is a quarter of the page's weight for a decoration sitting
+    behind type; CRF 28 with faststart brings that to roughly a tenth with no
+    difference visible at the size and blur an ambient loop is shown at.
+
+    Returns the processed bytes and a one-line note, or the ORIGINAL bytes and
+    the reason if anything goes wrong. A loop with a seam is a blemish; a
+    stage that raises because ffmpeg is missing is a dead run.
+    """
+    import shutil
+    import subprocess
+    import tempfile
+
+    if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
+        return mp4, "ffmpeg not available — shipped as generated"
+
+    with tempfile.TemporaryDirectory() as d:
+        src = pathlib.Path(d) / "in.mp4"
+        dst = pathlib.Path(d) / "out.mp4"
+        src.write_bytes(mp4)
+        try:
+            dur = float(subprocess.run(
+                ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                 "-of", "csv=p=0", str(src)],
+                capture_output=True, text=True, timeout=60).stdout.strip())
+        except (ValueError, subprocess.SubprocessError):
+            return mp4, "could not read duration — shipped as generated"
+
+        # Clamp to a third of the clip, not an eighth: `min(crossfade, dur/8)`
+        # pinned an 8s clip to exactly 1.0s whatever was asked for, so the
+        # parameter did nothing and every measurement came back identical.
+        x = max(0.4, min(crossfade, dur / 3))
+        if dur <= 2 * x + 0.5:
+            return mp4, f"only {dur:.1f}s — too short to loop cleanly"
+
+        chain = (
+            f"[0:v]trim={x}:{dur - x},setpts=PTS-STARTPTS[body];"
+            f"[0:v]trim={dur - x}:{dur},setpts=PTS-STARTPTS[tail];"
+            f"[0:v]trim=0:{x},setpts=PTS-STARTPTS[head];"
+            f"[tail][head]xfade=transition=fade:duration={x}:offset=0[blend];"
+            f"[body][blend]concat=n=2:v=1:a=0[out]"
+        )
+        r = subprocess.run(
+            ["ffmpeg", "-v", "error", "-i", str(src), "-filter_complex", chain,
+             "-map", "[out]", "-an", "-c:v", "libx264", "-crf", "28",
+             "-preset", "medium", "-pix_fmt", "yuv420p",
+             "-movflags", "+faststart", "-y", str(dst)],
+            capture_output=True, text=True, timeout=600)
+        if r.returncode != 0 or not dst.exists() or dst.stat().st_size == 0:
+            return mp4, f"loop pass failed — shipped as generated ({r.stderr[:80]})"
+
+        done = dst.read_bytes()
+        return done, (f"looped and re-encoded · {len(mp4) / 1e6:.1f}MB → "
+                      f"{len(done) / 1e6:.1f}MB · {dur:.0f}s → {dur - x:.0f}s")
+
+
+class Curator(Agent):
+    # What `seamless_loop` did to the last clip, for the stage to report. A
+    # class attribute so reading it before any video is generated is "" rather
+    # than an AttributeError.
+    last_motion_note: str = ""
+
+    name = "curator"
+    tier = Tier.MID          # transcription and judgement, not design direction
+    max_tokens = 8000       # a dense dashboard scrubs to ~30 findings
+
+    # --------------------------------------------------------------- generate
+
+    # The prompt is built separately from the call so it can be inspected, and
+    # tested, without spending eight seconds of Veo on finding out what it says.
+    def read_motion(self, frame: bytes) -> str:
+        """How the source's own footage is shot, in words.
+
+        The frame comes from the scout, which screenshots the source's <video>
+        element. That screenshot composites whatever markup sits over the video
+        — vapi's hero copy is painted across its own background loop — so the
+        prompt is explicit that overlaid text is not part of the footage.
+
+        Words rather than the frame itself, deliberately. Passing the frame to
+        the video model as a style reference is one field away and produces a
+        closer match; it also reproduces a specific company's distinctive look
+        for a competitor, which is the line §5 draws. A description generalises
+        to sources that carry no video at all, and it is ours.
+        """
+        res = self.call(
+            system=READ_MOTION,
+            user="Describe how this footage is shot.",
+            images=[base64.b64encode(frame).decode()],
+        )
+        return " ".join((res.text or "").split())[:900]
+
+    def motion_prompt(self, brief: str, ds: DesignSystem,
+                      observed: str = "", role: str = "") -> str:
+        """The prompt a moving asset is generated from.
+
+        Three inputs, all measured or decided upstream, none of them mine:
+        the brief (what the composer asked for), `observed` (how the source's
+        own footage is shot, read off its frame), and `role` (what the source's
+        video IS, decided by the composer from the scout's facts). The prompt
+        hands those to the model and asks it to reason about what follows —
+        whether anything in frame should be legible is a consequence of the
+        role, and the model can draw it.
+
+        An earlier version bucketed `role` by keyword into three categories of
+        my naming and applied a fixed rule-set to each, bolted on a fixed
+        negative list ("no lens flares, no oversaturated colour") and a fixed
+        camera instruction ("slow and deliberate, no whip pans"). Every one of
+        those was a taste rule dressed as guidance, and every one would stop a
+        source that IS fast, flared and saturated from being matched.
+        """
+        parts = [brief]
+        if role:
+            parts.append(f"WHAT THIS VIDEO IS, in the reference site's own terms: {role}. "
+                         "Reason from that about what belongs in frame. A video model "
+                         "cannot render legible interface or text — anything that must "
+                         "be read will come out as gibberish — so where the role calls "
+                         "for a screen or a word, keep it oblique, defocused or cropped "
+                         "and let framing and light carry it.")
+        if observed:
+            parts.append("HOW THE REFERENCE SITE'S OWN FOOTAGE IS SHOT — match this: "
+                         f"grade, key, depth of field, camera, tempo.\n{observed}")
+        parts.append(
+            "It must loop without a visible cut: begin and end on the same framing, "
+            "with no camera move that cannot return to where it started.")
+        parts.append(_footage_clause(ds))
+        return "\n\n".join(parts)
+
+    def motion(self, brief: str, ds: DesignSystem, *, frame: bytes | None = None,
+               shape: str = "wide", seed: int | None = None, role: str = "") -> bytes:
+        """A silent ambient loop, as mp4 bytes.
+
+        Separate from `generate` because the two are not interchangeable and the
+        failure of confusing them is silent: ask the video model for a dashboard
+        and it returns beautiful footage of a dashboard nobody can read, which
+        looks like success until someone tries to read it.
+        """
+        observed = self.read_motion(frame) if frame else ""
+        raw = eleven.motion(
+            self.motion_prompt(brief, ds, observed, role),
+            shape=shape,
+            # A full-bleed background is painted at viewport width; 720p there is
+            # upscaled by the browser. A portrait rail is small enough that 720p
+            # holds, and it is the cheaper render.
+            resolution="1080p" if shape == "wide" else "720p",
+            negative_prompt=MOTION_NEGATIVE,
+            seed=seed,
+            audio=False,
+        )
+        # The endpoint cannot loop and cannot be told a duration, so both are
+        # done here. Never raises: a seam is a blemish, a dead run is not.
+        out, note = seamless_loop(raw)
+        self.last_motion_note = note
+        return out
+
+    def generate(self, brief: str, ds: DesignSystem, *, shape: str = "wide",
+                 product_name: str = "", logo: bytes | None = None) -> bytes:
+        """A product surface, branded as the user's — not as its own.
+
+        The name and the mark are both passed in because a generated screenshot
+        of software SHOWS BRANDING whether or not the brief mentions any. It has
+        a sidebar header, a window title, a browser tab, and with nothing given
+        the model fills them with something plausible. Measured across the eight
+        real projects: a hero generated for a voice-AI platform invented a
+        company called "Off-Hook" which appears nowhere else in the run, while
+        the same page's nav showed a lucide phone icon. The uploaded material and
+        the generated material advertised two different businesses.
+
+        With a logo, this switches from the text-to-image model to the
+        image-to-image one with the mark as a reference — the only way either is
+        told what a specific mark looks like. The prompt has to say the
+        reference is a reference: given one image and an edit model, the obvious
+        reading is "modify this logo", and the output would be a picture of a
+        logo where a dashboard belongs.
+        """
+        naming = (
+            f"THE PRODUCT SHOWN IS CALLED \"{product_name}\". Wherever this "
+            f"interface names itself — a sidebar header, a top bar, a window "
+            f"title, a browser tab, an empty state — it reads exactly "
+            f"\"{product_name}\". Do not invent a different product name, do not "
+            f"abbreviate it, and do not add a tagline under it.\n\n"
+            if product_name else
+            "This interface does not name itself. Leave the sidebar header, "
+            "window title and browser tab free of any product name rather than "
+            "inventing one.\n\n"
+        )
+
+        prompt = (
+            f"{brief}\n\n"
+            "Render this as a realistic screenshot of real working software — not an "
+            "illustration, not a mockup with placeholder boxes, not a diagram.\n\n"
+            f"{naming}"
+            f"Match this design system:\n{_style_clause(ds)}\n\n"
+            "Text must be legible and plausible. Any code, identifiers or timestamps must "
+            "look like real values a working system would produce."
+        )
+
+        if logo is None:
+            return eleven.generate(prompt, shape=shape)
+
+        prompt = (
+            "The attached image is a REFERENCE, not the thing to edit. It is the "
+            "product's logo. Do not output the logo, do not enlarge it, do not "
+            "redraw it and do not place it on a background as a composition. "
+            "Output the screenshot described below, and use the reference mark "
+            "exactly as drawn wherever that interface shows its branding — "
+            "typically small, in the top-left of a sidebar or top bar. Reproduce "
+            "its shapes and proportions; recolour it only if the design system "
+            "demands it.\n\n" + prompt
+        )
+        return eleven.generate(prompt, shape=shape, images=[_as_png(logo)])
+
+    # ---------------------------------------------------------------- scrubbing
+
+    def _locate(self, image: bytes) -> list[dict]:
+        """One vision pass: every reportable value, with a box and a suggestion."""
+        res = self.call(
+            system=SCRUB, user="Locate everything reportable in this image.",
+            images=[base64.b64encode(image).decode()],
+        )
+        m = _JSON.search(res.text)
+        if not m:
+            return []
+        try:
+            found = first_object(m.group(0), what="curator reply").get("found", [])
+        except json.JSONDecodeError:
+            return []
+        return [dict(f, text=str(f.get("text", "")).strip(),
+                     replacement=str(f.get("replacement", "")).strip())
+                for f in found
+                if isinstance(f, dict) and isinstance(f.get("box"), list)
+                and len(f["box"]) == 4 and f.get("kind") in redact.KINDS
+                and (str(f.get("text", "")).strip() or f.get("kind") == "face")]
+
+    def scrub(self, image: bytes) -> Scrub:
+        """Substitute the real people, customers and amounts out of an upload.
+
+        MUST run before `restyle`. `restyle` posts the file to a third-party
+        image model and what comes back is published to the preview URL; after
+        either, the customer data is already out and scrubbing only cleans the
+        copy nobody was worried about.
+
+        The scrub itself reads the real bytes — it has to, it is a vision call —
+        so this does not make the upload never leave the machine. What it buys is
+        that exactly ONE call sees the real values and nothing downstream does:
+        not the image model, not the fidelity transcription, not the derived
+        variants, not the published page.
+
+        A clean image comes back byte-identical, not merely similar: `paint`
+        repaints the rectangles it measured and touches nothing else, so an empty
+        finding is a no-op by construction.
+        """
+        png = _as_png(image)
+        found = self._locate(png)
+        if not found:
+            return Scrub(png, [], self.transcribe(png))
+
+        # Replacements are resolved HERE, not taken as the model gave them. The
+        # first probe against the payments capture came back with "£000,000.00"
+        # and "pay_XXXXXXXXXXXX" — masks, which is the grey smear this whole
+        # approach exists to avoid — and with "alex.smith@acmemarkets.com",
+        # which renamed the person and kept the customer.
+        chosen = redact.resolve([(f["text"], f["kind"], f["replacement"])
+                                 for f in found if f["kind"] != "face"])
+        plan = [dict(f, replacement=chosen.get(f["text"], "")) for f in found]
+        out, done = redact.paint(png, plan)
+
+        # VERIFY, then one retry. The scrub is unattended, and the way it fails
+        # is not noisy: the model puts a box on the row above, the width happens
+        # to match the row it landed on, and a beneficiary's name is still in the
+        # image while the report says it was replaced. Reading the result back is
+        # the only check that catches that, and it costs nothing — the fidelity
+        # gate downstream needs this transcription anyway.
+        lines = self.transcribe(out)
+
+        # LOOK AGAIN AT THE IMAGE, unconditionally — do not ask the
+        # transcription whether a second look is needed. Measured: a
+        # beneficiary sat on the second line of a two-line cell, the model's box
+        # named the first line, the mask landed on `Payout` and left
+        # `To Food Suppliers Ltd` legible underneath — and the read-back did not
+        # report it, so a transcription-gated retry never ran. The read-back is
+        # a vision call too; a value it cannot see is not a value that is gone.
+        # One more locate costs about three cents and does not depend on it.
+        # What the read-back says is still legible, by name and by shape.
+        survived = [f for f in plan if _still_reads(f["text"], lines)]
+        # Plus anything PII-shaped the locate pass never named at all. Checking
+        # only what the model found means a miss is invisible to the check.
+        survived += _unlocated(lines, plan)
+
+        second = [f for f in self._locate(out)
+                  if _same_value(f["text"], plan + survived) is not None]
+        if second or survived:
+            # The retry MASKS rather than substituting again. Substitution
+            # already failed for these values once — measured on the payments
+            # capture, `Sarah Reed` survived a second substitution pass too,
+            # because the second pass places against the same approximate box
+            # and makes the same mistake. A mosaic over the box the model just
+            # named cannot miss, and one masked name beats a published one.
+            retry = [dict(f, replacement="") for f in second]
+            if retry:
+                out, more = redact.paint(out, retry)
+                done += more
+                lines = self.transcribe(out)
+
+        left = {f["text"] for f in plan if _still_reads(f["text"], lines)}
+        left |= {f["text"] for f in _unlocated(lines, plan)}
+        if len(left) > max(1, len(plan) // 5):
+            # DEGRADE, do not ship a half-substituted image. Measured on a dense
+            # trade-finance capture — 36 findings, several near-identical account
+            # numbers stacked in one narrow column: placements crossed rows, one
+            # IBAN was drawn over an organisation's name while the original IBAN
+            # stayed put, and the result was both damaged AND leaky. Masking
+            # every located value is uglier and tells the user the truth: this
+            # capture is too dense to substitute, send a simpler one.
+            out, done = redact.paint(png, [dict(f, replacement="") for f in plan])
+            lines = self.transcribe(out)
+            return Scrub(out, [f"{len(plan)} value(s) masked — too many to place "
+                               "individually on a capture this dense"], lines)
+
+        tally: dict[str, int] = {}
+        for f in done:
+            tally[f["kind"]] = tally.get(f["kind"], 0) + 1
+        changed = [f"{k.replace('_', ' ')} ×{n}" for k, n in sorted(tally.items())]
+        masked = sum(1 for f in done if f.get("blurred"))
+        if masked:
+            changed.append(f"{masked} masked rather than substituted")
+        if left:
+            changed.append(f"{len(left)} value(s) still readable after two passes")
+        return Scrub(out, changed, lines)
+
+    # ---------------------------------------------------------------- restyle
+
+    def restyle(self, image: bytes, ds: DesignSystem, *, shape: str = "wide") -> bytes:
+        prompt = (
+            "Restyle this screenshot to match a design system. This is a restyle, not a "
+            "redesign.\n\n"
+            f"{_style_clause(ds)}\n\n"
+            "PRESERVE EXACTLY: the layout, the number of items, and every word of text. "
+            "Do not invent copy. Do not complete a sentence that is cut off — if text is "
+            "truncated at an edge, leave it truncated. Do not add controls that are not "
+            "there. Changing what the interface says is a failure, however well it reads."
+        )
+        # _as_png is not optional. The uploader keys off the declared mime type,
+        # and an upload that is not really a PNG comes back from the edit model
+        # as "File type not supported" — at task creation, not at upload, so the
+        # error names the wrong step.
+        return eleven.generate(prompt, shape=shape, images=[_as_png(image)])
+
+    # ----------------------------------------------------------------- gating
+
+    def transcribe(self, image: bytes) -> list[str]:
+        res = self.call(
+            system=TRANSCRIBE, user="Transcribe this image.",
+            images=[base64.b64encode(image).decode()],
+        )
+        return [ln.strip() for ln in res.text.splitlines() if ln.strip()]
+
+    def check_branding(self, image: bytes, product_name: str) -> Branding:
+        """Did the generated surface actually come back wearing the right name?
+
+        Cheap, and it is the only check that would have caught the failure that
+        started this. Measured by transcribing all seven generated assets of one
+        real project: four of them render a brand, two say `voiceowl` and two say
+        `Off-Hook` — and the two that invented it are the hero and the product
+        showcase, the two largest images on the page. `brief.product_name` was
+        `""` for that run, so nothing told the curator what the product was
+        called and it guessed, differently, per call.
+
+        Passing the name in the prompt makes that much less likely. It does not
+        make it impossible, and a prompt instruction with no assertion behind it
+        is how the last one failed silently. `transcribe` already exists and is
+        already bought on the restyle path; on the generate path it is one extra
+        vision call against an image that will otherwise be the biggest thing on
+        somebody's home page.
+
+        NOT A RETRY GATE. Unlike the restyle there is no untouched original to
+        fall back to — a generated image is invented by construction — so the
+        finding is recorded on the asset and surfaced, and the user decides
+        whether to upload something real instead. Re-rolling the same prompt is
+        another image call at the same odds, which is the rule every other loop
+        in this harness already follows.
+        """
+        if not product_name.strip():
+            return Branding(True, product_name, [], "")
+        lines = self.transcribe(image)
+        flat = _norm(" ".join(lines))
+        joined = _norm(product_name)
+        tokens = [t for t in re.findall(r"[A-Za-z0-9]+", product_name.lower())
+                  if len(t) >= 3]
+        # The longest token is the distinctive one: "voiceowl.ai" is recognisable
+        # from "voiceowl" and not at all from "ai", which also matches the middle
+        # of a hundred ordinary words.
+        distinctive = max(tokens, key=len) if tokens else ""
+        ok = bool(joined and joined in flat) or bool(distinctive and distinctive in flat)
+        return Branding(ok, product_name, lines, distinctive)
+
+    def check_fidelity(self, before: bytes | list[str], after: bytes) -> Fidelity:
+        """Reject a restyle that says anything the original did not.
+
+        Compared at word level rather than line level: a restyle legitimately
+        reflows text, so line breaks move. A WORD that was not there before is
+        the defect, and it is the one thing a visual diff will not catch.
+
+        `before` is the image the restyle was GIVEN, which since the scrub is
+        the scrubbed image, not the user's upload — see `step_assets`. It may be
+        passed as already-transcribed lines, because the scrub read the scrubbed
+        image back to verify itself and there is no reason to buy that twice.
+        """
+        src = before if isinstance(before, list) else self.transcribe(before)
+        dst = self.transcribe(after)
+        a, b = _words(src), _words(dst)
+        invented = sorted(b - a)
+        lost = sorted(a - b)
+        return Fidelity(ok=not invented, invented=invented, lost=lost)
+
+
+# ----------------------------------------------------------------------- logo
+#
+# A LOGO IS RECOLOURED, NEVER REDRAWN. There is no path from here to `restyle`
+# or to `generate`, and that is the point: an image model asked to restyle a
+# mark redraws the letterforms. On a dashboard capture that is an invented
+# label, which the fidelity gate catches; on a logo it is a registered
+# trademark come back subtly wrong, published on the owner's own site, with
+# nothing downstream able to tell.
+#
+# What is allowed is everything that leaves the drawing alone: recolour through
+# `currentColor` or a CSS filter, mask, knock out, or set the file on a neutral
+# chip. Which of those applies is MEASURED — the mark's own ink against the
+# design system's ground — rather than guessed at by an agent looking at it.
+
+
+def _srgb_luminance(rgb: tuple[int, int, int]) -> float:
+    """WCAG relative luminance."""
+    def chan(v: int) -> float:
+        c = v / 255
+        return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+
+    r, g, b = (chan(v) for v in rgb)
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+
+def _contrast(a: float, b: float) -> float:
+    hi, lo = max(a, b), min(a, b)
+    return (hi + 0.05) / (lo + 0.05)
+
+
+# WCAG 1.4.11, non-text contrast: 3:1 for a graphical object that has to be
+# perceivable. A logo below this against the page ground is not "a bit subtle",
+# it is a mark nobody can see — and the fix for it must not be "redraw it".
+GRAPHIC_CONTRAST = 3.0
+
+
+def logo_placement(path: Path, ds: DesignSystem) -> str:
+    """How this specific mark may be made to sit on this specific ground.
+
+    Deterministic — no model, no cost. The mark's ink luminance is measured off
+    the file and compared with the design system's background; the instruction
+    the builder gets follows from the number, and the number is quoted so a
+    wrong-looking result is traceable to the measurement that caused it.
+
+    Every branch preserves the drawing. When the numbers say the mark cannot be
+    made to work on the ground, the answer is a neutral chip behind it — never
+    an alteration of the mark.
+    """
+    from sparrow.palette import parse
+
+    ground_L = parse({c.token: c for c in ds.colors}["background"].value)[0]
+    # oklab L is roughly the cube root of relative luminance for a neutral, and
+    # page grounds in this system are neutral or near it. Good enough to decide
+    # between "visible" and "invisible", which is all this has to decide.
+    ground_Y = ground_L ** 3
+    dark_ground = ground_Y < 0.18
+
+    if path.suffix.lower() == ".svg":
+        return (
+            "The logo is an SVG. Recolour it LOSSLESSLY: strip its hard-coded "
+            "fill/stroke to `currentColor` ONLY IF the mark is a single flat "
+            "colour, and set the colour with a design-system token. If it is "
+            "multi-colour, leave every colour exactly as drawn and place it "
+            "as-is. Inline it or use next/image; either way do not trace it, do "
+            "not re-letter it, do not rebuild it out of divs and do not "
+            "substitute a lucide icon for it."
+        )
+
+    from PIL import Image
+
+    with Image.open(path) as im:
+        rgba = im.convert("RGBA")
+        w, h = rgba.size
+        raw = rgba.tobytes()
+    # Read out of the buffer rather than through `getdata()`, which Pillow 14
+    # removes. Same pixels, no per-pixel Python object.
+    px = [raw[i:i + 4] for i in range(0, len(raw), 4) if raw[i + 3] > 32]
+    if not px:
+        return ("The logo file is fully transparent. Set the product name as a "
+                "wordmark in the display typeface instead and report it.")
+
+    alpha = len(px) / max(1, w * h)
+    ys = sorted(_srgb_luminance((p[0], p[1], p[2])) for p in px)
+    # The INK, not the average. A wordmark is mostly its own background; the
+    # mean of the whole file is the background's luminance and says nothing
+    # about whether the letters can be seen.
+    ink = ys[len(ys) // 10]
+    ratio = _contrast(ink, ground_Y)
+    numbers = (f"measured: the mark's ink sits at luminance {ink:.3f}, the page "
+               f"ground at {ground_Y:.3f} — contrast {ratio:.2f}:1")
+
+    if alpha < 0.92:
+        # Transparent around the mark: it can sit directly on the ground, and a
+        # single-colour mark can be knocked out to a token colour with a CSS
+        # mask, which moves no pixel of the drawing.
+        if ratio >= GRAPHIC_CONTRAST:
+            return (f"The logo has a transparent background and reads on the page "
+                    f"ground as it is ({numbers}). Place it directly, at its own "
+                    f"colours, with no chip, no border and no filter.")
+        return (
+            f"The logo has a transparent background but does NOT read on the page "
+            f"ground ({numbers}, below the {GRAPHIC_CONTRAST}:1 floor for a "
+            f"graphic). KNOCK IT OUT rather than altering it: render it as a CSS "
+            f"mask-image over a design-system colour "
+            f"(`mask-image:url(...);mask-size:contain;background-color:<token>`), "
+            f"which recolours the mark without touching a pixel of its shape. If "
+            f"the mark is multi-colour and a knockout would destroy that, set it "
+            f"on a small neutral chip"
+            + (" in a light surface colour" if dark_ground else
+               " in a white or near-white surface colour")
+            + " with the design system's card radius, and leave the mark itself "
+              "exactly as it is.")
+
+    if ratio >= GRAPHIC_CONTRAST:
+        return (f"The logo is opaque, and its own ground is far enough from the "
+                f"page ground to read as a mark rather than a floating rectangle "
+                f"({numbers}). Place it as it is. Do not try to key out its "
+                f"background — that erodes the edges of the drawing.")
+    return (
+        f"The logo is opaque and its own ground is close to the page ground "
+        f"({numbers}), so placed bare it will read as a rectangle with a seam. "
+        f"Set it on an explicit chip: the design system's card surface, card "
+        f"radius, hairline border, small padding. Do NOT key out its background, "
+        f"do not apply a blend mode, and do not redraw it.")
+
+
+# ------------------------------------------------------------------- variants
+
+VARIANTS: dict[str, tuple[int, int]] = {
+    "hero": (1600, 900),
+    "card": (800, 800),
+    "mobile": (720, 900),
+}
+
+
+def derive_variants(path: Path) -> dict[str, str]:
+    """Deterministic. No model, no cost — crop to centre and resize."""
+    from PIL import Image
+
+    out: dict[str, str] = {}
+    with Image.open(path) as im:
+        im = im.convert("RGB")
+        for name, (w, h) in VARIANTS.items():
+            target = w / h
+            sw, sh = im.size
+            if sw / sh > target:                     # too wide — crop sides
+                nw = int(sh * target)
+                box = ((sw - nw) // 2, 0, (sw + nw) // 2, sh)
+            else:                                     # too tall — crop top/bottom
+                nh = int(sw / target)
+                box = (0, (sh - nh) // 2, sw, (sh + nh) // 2)
+            v = path.with_name(f"{path.stem}--{name}.png")
+            im.crop(box).resize((w, h), Image.LANCZOS).save(v)
+            out[name] = v.name
+    return out

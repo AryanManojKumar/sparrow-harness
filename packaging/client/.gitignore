@@ -1,0 +1,21 @@
+# The engine's virtualenv and the browser it downloads
+backend/.venv/
+__pycache__/
+*.py[cod]
+
+# node
+node_modules/
+.next/
+*.tsbuildinfo
+next-env.d.ts
+
+# the running engine
+.sparrow/
+
+# your sites are yours — commit them deliberately, not by accident
+projects/*/workspace/node_modules/
+projects/*/workspace/.next/
+
+# keys
+.env
+.env.local
