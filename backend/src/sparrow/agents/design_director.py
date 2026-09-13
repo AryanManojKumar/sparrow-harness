@@ -331,6 +331,21 @@ For every section in the sitemap, decide:
              TYPE line in the register carry each display heading's horizontal position
              (0.5 is centred, 0.27 is left-set) — so read it there rather than assume.
 
+  interior   an OBJECT: {"how": ...} — how the INSIDE of the section is built, read off
+             <source_markup> for its winning band, as classes the builder can paste.
+             The archetype is the skeleton; this is what fills it, and it is the half
+             that went missing: every archetype was honoured exactly and then every
+             interior came out as the same recipe — a panel, a heading, a row of small
+             bordered cards — because nothing said otherwise. So say: how many columns
+             or rows the items sit in; what ONE item is made of, in order, with sizes
+             (`24px mark, text-lg title, 2-line text-sm body, no border`); what
+             separates items (`divide-y`, `gap-12` and nothing, a hairline `border-t`);
+             whether anything is boxed and what is not. Where the source's band is a
+             single object — one screenshot, one statement — say that and say what
+             sits around it. Read it off the markup and the screenshot; where the
+             two disagree, the markup is the fact. Do not invent an interior the
+             source does not show.
+
   contrast   one sentence: what makes this section look different from the section
              directly above it. If you cannot name a difference, the layout is wrong —
              change the width, the ground, or the archetype until you can.
@@ -374,7 +389,7 @@ the failure this pass exists to prevent.
 
 JSON only, no prose, no code fence:
 
-{ "sections": { "<section id>": { "ground": "page" | "muted" | {"name": "...", "how": "..."}, "width": "...",
+{ "sections": { "<section id>": { "ground": "page" | "muted" | {"name": "...", "how": "..."}, "width": "...", "interior": {"how": "..."},
                                   "archetype": {"name": "...", "how": "..."},
                                   "contrast": "...",
                                   "treatments": ["name", ...],

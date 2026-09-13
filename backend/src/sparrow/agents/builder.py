@@ -199,6 +199,8 @@ class Builder(Agent):
         assets: list | None = None,
         asset_base: str = "",
         copy: dict | None = None,
+        carried_elsewhere: list[str] | None = None,
+        anchors: list[str] | None = None,
         identity: str = "",
         source_shot: str | None = None,
         source_html: str = "",
@@ -220,6 +222,7 @@ class Builder(Agent):
         # src rendered as /assets/… and 404'd. Measured on a real run: seven
         # images uploaded and generated, seven blank spaces on the page.
         base = asset_base.rstrip("/")
+        anchors = anchors or [x.id for x in sorted(bb.sections, key=lambda x: x.order)]
 
         system = stable_system(
             SYSTEM.format(fidelity=FIDELITY_LINE),
@@ -234,7 +237,16 @@ class Builder(Agent):
             "verbatim. Do not rewrite it, shorten it, expand it, or correct its "
             "spelling — some of it is the user's own words and some of it they "
             "confirmed, and either way it is not yours to edit. Your job here is "
-            "the markup around it.\n</copy>",
+            "the markup around it.\n"
+            "AND NOTHING BEYOND IT. Every word a reader can see comes from these "
+            "slots. Do not add labels, eyebrows, captions, metric names, list items "
+            "or stat cells of your own: a label reading 'Calls handled' beside a "
+            "value is a claim about this business, and claims are the content "
+            "agent's to make and the user's to confirm — measured on a real build, "
+            "a stats row whose one slot held no number gained three invented metric "
+            "labels from the builder. If the slots do not fill the layout, the "
+            "layout shrinks to the slots. Interface words that carry no claim — "
+            "'Menu', 'Play', 'Close', a visually-hidden label — are fine.\n</copy>",
         )
 
         copy_block = ""
@@ -247,6 +259,15 @@ class Builder(Agent):
                 else:
                     lines.append(f"{slot}: {value}")
             copy_block = "<section_copy>\n" + "\n".join(lines) + "\n</section_copy>"
+            if carried_elsewhere:
+                # A real fact is spent in one section. Ten builders each holding
+                # the customer list each use the customer list, and the page says
+                # the same name in every band.
+                copy_block += ("\n<carried_elsewhere>\nReal facts the user supplied "
+                               "that OTHER sections carry. They are not yours to "
+                               "restate — leave them where they were placed.\n"
+                               + "\n".join(f"- {f}" for f in carried_elsewhere[:20])
+                               + "\n</carried_elsewhere>")
 
         # The winning source's OWN version of this section. Nothing in this
         # pipeline had ever shown a source to the builder: it built from a
@@ -300,6 +321,15 @@ class Builder(Agent):
             f"<section>\n"
             f"file: {section.target_path}\n"
             f"component: {section.component_name} (default export)\n"
+            f"REQUIRED: the root <section> element carries id=\"{section.id}\".\n"
+            "LINKS: this is a ONE-PAGE export. There are no other routes — a link "
+            "to `/platform` or `/privacy` is a 404, and Next prefetches every one "
+            "of them on load (measured: seventeen failed requests on a page with "
+            "seventeen nav and footer links). Every internal link is an anchor to "
+            "a section on this page, from this list: "
+            + ", ".join(f"#{x}" for x in anchors)
+            + ". A link with no section to point at is `#top`. External URLs only "
+            "where the copy gives one.\n"
             f"REQUIRED: the root <section> element MUST carry the class(es) "
             f"`{ground_class}`"
             + (f" — this section's ground is `{section.ground}`, and those classes "

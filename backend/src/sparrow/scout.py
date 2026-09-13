@@ -239,6 +239,43 @@ _SEGMENT = r"""
       if (cs.boxShadow && cs.boxShadow !== 'none') shadows.add(cs.boxShadow.replace(/rgba?\([^)]*\)/g, 'c').slice(0, 60));
     }
 
+    // PROOF the band carries — counted, never judged. Numbers with a magnitude
+    // or unit, named third parties (logo alt text and labelled marks), quotes
+    // with a body, credentials by name. The content agent asked the user only
+    // about claims IT invented, so to avoid inventing it wrote "Enterprise AI
+    // agents" into a stats slot — no number, no ask — while every source's
+    // stats band carries one. What the source proves is the measure of what
+    // to ask for.
+    const numRe = /(?:^|[\s(<>~])([$€£₹]?\d[\d,.]*(?:\s?(?:%|\+|x|×|ms|k|m|b|bn|mn|M|K|B|hrs?|min|days?|languages?|countries|customers|users|calls?|conversations?|agents?))+)(?=[\s.,;:)]|$)/g;
+    const numbers = [...new Set([...text.matchAll(numRe)].map(m => m[1].trim()))].slice(0, 12);
+    const names = [...new Set([...el.querySelectorAll('img[alt], svg[aria-label], [role=img][aria-label]')]
+      .map(x => (x.getAttribute('alt') || x.getAttribute('aria-label') || '').trim())
+      .filter(a => a.length >= 2 && a.length <= 40 && !/logo$|icon|image|photo|screenshot|illustration/i.test(a) && !/^\W*$/.test(a)))].slice(0, 24);
+    // A logo row whose marks are inline SVG carries its names in sr-only text,
+    // one short item each — elevenlabs' wall is twelve <li> of 1–4 words. Four
+    // or more such items in a band is a list of names, whatever draws them.
+    const shortItems = [...el.querySelectorAll('li')]
+      .map(li => (li.textContent || '').replace(/\s+/g, ' ').trim())
+      .filter(t => t && t.split(' ').length <= 4 && t.length <= 40);
+    if (shortItems.length >= 4) for (const t of shortItems) if (!names.includes(t) && names.length < 24) names.push(t);
+    const quoteBodies = [...el.querySelectorAll('blockquote, q')].length
+      + ((text.match(/[“"]([^”"]{40,})[”"]/g) || []).length);
+    const credRe = /\b(SOC ?2|ISO ?\d{4,5}|GDPR|HIPAA|PCI[- ]?DSS|DPDP|CCPA|FedRAMP|RBI|CERT-In)\b/gi;
+    const credentials = [...new Set([...text.matchAll(credRe)].map(m => m[1]))].slice(0, 8);
+    // DENSITY: how much the band carries per 1000px of its height — words and
+    // visible elements. A band that says less than the source's over more
+    // height is the "air inside the band" that reads as unfinished; a number
+    // the composer and the audit can hold a section to.
+    let elements = 0;
+    for (const c of el.querySelectorAll('*')) {
+      const r = c.getBoundingClientRect();
+      if (r.width < 24 || r.height < 12) continue;
+      const own = [...c.childNodes].some(n => n.nodeType === 3 && n.textContent.trim());
+      if (own || /^(IMG|SVG|VIDEO|CANVAS|BUTTON|INPUT)$/.test(c.tagName)) elements++;
+    }
+    const wordsN = text.split(' ').filter(Boolean).length;
+    const perK = (v) => h ? +((v * 1000) / h).toFixed(1) : 0;
+
     out.push({
       index: out.length,
       strategy,
@@ -250,6 +287,8 @@ _SEGMENT = r"""
       padTop, padBot,
       ground: {hex: groundHex, lum: toLum(groundCss), page: pageHex,
                differs: groundHex !== pageHex, layered},
+      proof: {numbers, names, quotes: quoteBodies, credentials},
+      density: {elements, words_per_k: perK(wordsN), elements_per_k: perK(elements)},
       enclosure: {blocks, bordered, shadowed, filled, rounded, rules, enclosed,
                   radii: [...radii].sort((a,b)=>(a==='full')-(b==='full')||a-b), shadows: [...shadows]},
       top, height: h,
@@ -311,6 +350,11 @@ class Band:
     # this band against the page ground; `layered` is a picture, canvas, video
     # or gradient covering most of the band — a ground no colour token names.
     ground: dict = field(default_factory=dict)
+    # What the band PROVES: {numbers, names, quotes, credentials}, counted off
+    # its text and marks. See the note in `_SEGMENT`.
+    proof: dict = field(default_factory=dict)
+    # {elements, words_per_k, elements_per_k}: what the band carries per 1000px.
+    density: dict = field(default_factory=dict)
 
 
 # Aggregate visual register — COUNTED, never copied.

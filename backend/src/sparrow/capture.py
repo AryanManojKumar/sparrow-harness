@@ -13,7 +13,7 @@ import contextlib
 import http.server
 import socketserver
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from playwright.sync_api import sync_playwright
@@ -85,6 +85,10 @@ class PageReport:
     jammed_headings: list[str]
     contrast_failures: list[str]
     sections: list[SectionShot]
+    # Per top-level section, in page order: {index, height, words, elements,
+    # words_per_k, elements_per_k} — the same measurement the scout takes of a
+    # source band, taken of the built page, so the two can be compared.
+    density: list[dict] = field(default_factory=list)
 
 
 def base_path(directory: Path) -> str:
@@ -322,6 +326,34 @@ _FOLD_FADE = r"""
 # from N element children and its rendered text contains fewer than N-1 spaces,
 # separators have been swallowed. That is true regardless of language and needs
 # no dictionary.
+# What each built section carries per 1000px of its height — words and visible
+# elements — measured exactly as the scout measures a source band, so a section
+# that says half as much over the same height is a number, not an impression.
+_DENSITY = r"""
+() => {
+  const out = [];
+  const secs = [...document.querySelectorAll('main > section, main > div > section')];
+  secs.forEach((el, i) => {
+    const r = el.getBoundingClientRect();
+    const h = Math.round(r.height);
+    if (h < 40) return;
+    const text = (el.innerText || '').replace(/\s+/g, ' ').trim();
+    const words = text.split(' ').filter(Boolean).length;
+    let elements = 0;
+    for (const c of el.querySelectorAll('*')) {
+      const b = c.getBoundingClientRect();
+      if (b.width < 24 || b.height < 12) continue;
+      const own = [...c.childNodes].some(n => n.nodeType === 3 && n.textContent.trim());
+      if (own || /^(IMG|SVG|VIDEO|CANVAS|BUTTON|INPUT)$/.test(c.tagName)) elements++;
+    }
+    const perK = (v) => +((v * 1000) / h).toFixed(1);
+    out.push({index: i, height: h, words, elements,
+              words_per_k: perK(words), elements_per_k: perK(elements)});
+  });
+  return out;
+}
+"""
+
 _JAMMED = r"""
 () => {
   const out = [];
@@ -508,6 +540,7 @@ def inspect_page(
                 jammed_headings=page.evaluate(_JAMMED),
                 contrast_failures=page.evaluate(_CONTRAST),
                 sections=shots,
+                density=page.evaluate(_DENSITY) if name == "desktop" else [],
             )
             page.close()
         browser.close()

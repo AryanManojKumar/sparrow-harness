@@ -124,6 +124,12 @@ def gap_size(utility: str) -> str:
     return m.group(1) if m else utility
 
 
+# An internal link to a path. The export is one page, so any href that starts
+# with `/` and is not the page itself is a route that does not exist; Next
+# prefetches it and the preview logs a 404 per link.
+DEAD_ROUTE = re.compile(r"""href(?:=|:\s*)\{?["'](/(?!$|#|projects/)[^"'\s]*)["']""")
+
+
 def audit_file(path: Path, ds: DesignSystem) -> list[Finding]:
     allow = permitted(ds)
     allowed_gap_sizes = {gap_size(g) for g in allow["off-scale-gap"]}
@@ -154,6 +160,10 @@ def audit_file(path: Path, ds: DesignSystem) -> list[Finding]:
             out.append(Finding(name, n, "banned-import", "framer-motion — use motion/react"))
         if INLINE_STYLE_COLOR.search(line):
             out.append(Finding(name, n, "inline-style-color", line.strip()[:60]))
+        for m in DEAD_ROUTE.finditer(line):
+            out.append(Finding(name, n, "dead-route",
+                               f"{m.group(1)} — no such route on a one-page export; "
+                               "link to a section anchor (#<section id>) or #top"))
     return out
 
 

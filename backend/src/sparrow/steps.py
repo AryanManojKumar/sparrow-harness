@@ -337,7 +337,9 @@ def step_sources(run: Run, urls: list[str]) -> Iterator[Event]:
                              pad_top=getattr(b, "padTop", 0) or 0,
                              pad_bot=getattr(b, "padBot", 0) or 0,
                              enclosure=dict(getattr(b, "enclosure", None) or {}),
-                             ground=dict(getattr(b, "ground", None) or {}))
+                             ground=dict(getattr(b, "ground", None) or {}),
+                             proof=dict(getattr(b, "proof", None) or {}),
+                             density=dict(getattr(b, "density", None) or {}))
             by_type_all.setdefault(t, []).append(cand)
             if t in RANKABLE:
                 by_type.setdefault(t, []).append(cand)
@@ -414,6 +416,21 @@ def step_sources(run: Run, urls: list[str]) -> Iterator[Event]:
             grounds[site] = rows
     if grounds:
         (run.dir / GROUNDS).write_text(json.dumps(grounds, indent=2))
+
+    # DENSITY by section type across every source, so the audit can hold a
+    # built section to the range the sources actually span for that type
+    # rather than to one band or to a number of mine. `labelled` is the
+    # classifier's (type, position) per site; the bands are indexed 0-based.
+    dens: dict[str, list[dict]] = {}
+    for site, r in extracts.items():
+        by_pos = {b.index + 1: b for b in r.bands}
+        for t, pos in labelled.get(site, []):
+            b = by_pos.get(pos)
+            d = getattr(b, "density", None) if b is not None else None
+            if d:
+                dens.setdefault(t, []).append({"site": site, "band": pos, **d})
+    if dens:
+        (run.dir / DENSITY).write_text(json.dumps(dens, indent=2))
 
     comm = commonality(labelled)
     primary, why, usage = pick_primary(provider, bb.brief, labelled)
@@ -501,7 +518,8 @@ def step_sources(run: Run, urls: list[str]) -> Iterator[Event]:
                       "words": won.words, "images": won.images,
                       "buttons": won.buttons, "height": won.height,
                       "pad_top": won.pad_top, "pad_bot": won.pad_bot,
-                      "enclosure": won.enclosure, "ground": won.ground}
+                      "enclosure": won.enclosure, "ground": won.ground,
+                      "proof": won.proof, "density": won.density}
     for name in CHROME_ORDER:
         cands = by_type_all.get(name, [])
         if cands:
@@ -515,7 +533,8 @@ def step_sources(run: Run, urls: list[str]) -> Iterator[Event]:
                              "words": cands[0].words, "images": cands[0].images,
                              "buttons": cands[0].buttons, "height": cands[0].height,
                              "pad_top": cands[0].pad_top, "pad_bot": cands[0].pad_bot,
-                             "enclosure": cands[0].enclosure, "ground": cands[0].ground}
+                             "enclosure": cands[0].enclosure, "ground": cands[0].ground,
+                             "proof": cands[0].proof, "density": cands[0].density}
     (run.dir / WINNERS).write_text(json.dumps(winners, indent=2))
 
     (out_dir / "design-brief.md").write_text(_brief_md)
@@ -838,6 +857,10 @@ def composition_block(bb, section, source_band: dict | None = None) -> str:
         *([f"  BUILD IT LIKE THIS — {section.archetype_how}",
            "  That is the skeleton, not a suggestion. If it puts the media left, the "
            "media goes left."] if section.archetype_how else []),
+        *([f"  BUILD THE INSIDE LIKE THIS — {section.interior_how}",
+           "  That is read off the source band's own markup: how many columns, what one "
+           "item is made of, what separates items. Where it says no border, there is no "
+           "border; where it says a rule, draw a rule."] if section.interior_how else []),
         f"  above you — {line(order[i - 1])}" if i > 0 else "  you open the page",
         f"  below you — {line(order[i + 1])}" if i + 1 < len(order) else "  you close the page",
         "",
@@ -894,6 +917,13 @@ def composition_block(bb, section, source_band: dict | None = None) -> str:
     # whether that source drew edges around things. The number is the source's
     # own: a source that boxes 40% of its blocks reads that way here and the
     # builder boxes. A source that boxes none reads that way too.
+    d = (source_band or {}).get("density") or {}
+    if d.get("words_per_k"):
+        parts.append(
+            f"  DENSITY, measured off the source band: {d['words_per_k']} words and "
+            f"{d.get('elements_per_k', '?')} elements per 1000px of height. Height is a "
+            "consequence of content, not a target: a band carrying half the words over "
+            "the same height reads as unfinished.")
     e = (source_band or {}).get("enclosure") or {}
     n = int(e.get("blocks") or 0)
     if n:
@@ -967,6 +997,12 @@ def step_compose(run: Run) -> Iterator[Event]:
             return f"; NO boxes — {n} blocks separated by {sep}"
         return f"; {boxed} of {n} blocks boxed ({e.get('bordered',0)} bordered, {e.get('shadowed',0)} shadowed)"
 
+    def _density(w: dict) -> str:
+        d = w.get("density") or {}
+        if not d.get("words_per_k"):
+            return ""
+        return f"; {d['words_per_k']} words and {d.get('elements_per_k', '?')} elements per 1000px"
+
     def _ground(w: dict) -> str:
         g = w.get("ground") or {}
         if not g:
@@ -983,7 +1019,7 @@ def step_compose(run: Run) -> Iterator[Event]:
     weights = "\n".join(
         f"  {sid}: {w.get('words', '?')} words, {w.get('images', '?')} image(s), "
         f"{w.get('buttons', '?')} button(s), {w.get('height', '?')}px tall"
-        f"{_vertical(w)}{_boxes(w)}{_ground(w)} ({w.get('site')})"
+        f"{_vertical(w)}{_boxes(w)}{_density(w)}{_ground(w)} ({w.get('site')})"
         for sid, w in wf.items() if "words" in w)
     band_facts = (f"<source_bands>\nWhat each section's winning source band actually "
                   f"holds — its weight, not its width:\n{weights}\n</source_bands>"
@@ -991,11 +1027,21 @@ def step_compose(run: Run) -> Iterator[Event]:
     motion_shots = [b for b in (_b64(v.get("frame")) for v in load_motion(run)
                                 if v.get("frame") and v.get("w", 0) >= 240) if b][:3]
     ground_facts = ground_map(load_grounds(run))
+    # The inside of each winning band, as structure. The composer decides the
+    # skeleton from the screenshot; it decides the INTERIOR from this.
+    skel = "\n".join(f"  {sid}: {_skeleton(w.get('html'))}"
+                     for sid, w in wf.items() if w.get("html"))
+    markup_facts = (f"<source_markup>\nEach winning source band's markup reduced to "
+                    f"structure — tags, layout classes, `·12w` for twelve words of text, "
+                    f"`<svg/>` for a mark. Read the interior off this: columns, what "
+                    f"one item is made of, what separates items.\n{skel}\n</source_markup>"
+                    if skel else "")
     plan, rhythm, usage = dd.compose(
         bb, shots=[x for x in (_page_sheet(run), *_winner_shots(run), *motion_shots) if x],
         observed=to_block(load_reading(run))
         + ("\n\n" + band_facts if band_facts else "")
-        + ("\n\n" + ground_facts if ground_facts else ""),
+        + ("\n\n" + ground_facts if ground_facts else "")
+        + ("\n\n" + markup_facts if markup_facts else ""),
         motion=motion_facts(load_motion(run)))
     run.spent += usage.cost(dd.provider.name, dd.tier)
 
@@ -1034,6 +1080,9 @@ def step_compose(run: Run) -> Iterator[Event]:
             section.archetype = " ".join(str(arch or "").split())[:60]
             section.archetype_how = ""
         section.contrast = " ".join(str(spec.get("contrast", "")).split())[:200]
+        inter = spec.get("interior")
+        section.interior_how = " ".join(str(
+            inter.get("how", "") if isinstance(inter, dict) else inter or "").split())[:500]
         known = {t.name for t in (bb.design_system.treatments or [])}
         section.treatments = [str(t) for t in (spec.get("treatments") or [])
                               if str(t) in known]
@@ -1137,6 +1186,7 @@ def step_content(run: Run) -> Iterator[Event]:
     bb = _bb(run)
     existing = load_content(run)
     blueprints = load_dir(run.dir / "blueprints")
+    winners = load_winners(run)
     editor = ContentEditor()
 
     content: dict = {}
@@ -1151,7 +1201,16 @@ def step_content(run: Run) -> Iterator[Event]:
             content[section.id] = prior
             continue
 
-        copy = editor.write(bb.brief, bb.constraints, bp, section_id=section.id)
+        # What the source's band for this section proves, and which real facts
+        # the page already holds in sections drafted before this one — so the
+        # ask is for something new, and a fact is spent in one place.
+        proof = (winners.get(section.id) or {}).get("proof") or {}
+        carried = [str(v) for e in content.values()
+                   for k, v in (e.get("slots") or {}).items()
+                   if (e.get("provenance") or {}).get(k) == "user_supplied"
+                   and isinstance(v, str) and v.strip()]
+        copy = editor.write(bb.brief, bb.constraints, bp, section_id=section.id,
+                            proof=proof, facts=carried)
         content[section.id] = {
             "slots": copy.slots,
             "provenance": {k: v.value for k, v in copy.provenance.items()},
@@ -1196,12 +1255,33 @@ def record_content_answers(run: Run, answers: dict[str, str]) -> int:
 
     replaced = 0
     for entry in content.values():
+        unanswered, answered_ = [], []
         for ask in list(entry.get("asks") or []):
             answer = (answers.get(ask["id"]) or "").strip()
+            slot = ask["slot"]
+            # The drafter keys a repeating slot without its `[]` marker and
+            # returns a list; the answer must land on the same key in the same
+            # shape, or the builder is handed the drafted list AND a string
+            # under a second key. Measured: "BPCL, HDFC" stored beside the
+            # drafted industries, and the wall tiled both.
             if answer:
-                entry["slots"][ask["slot"]] = answer
-                entry["provenance"][ask["slot"]] = "user_supplied"
+                # Slots are keyed exactly as the blueprint names them, `[]`
+                # included; a repeating slot takes a list.
+                if slot.endswith("[]"):
+                    items = [x.strip() for x in re.split(r"[\n;,]+|\s+(?:and|&)\s+", answer) if x.strip()]
+                    entry["slots"][slot] = items or [answer]
+                else:
+                    entry["slots"][slot] = answer
+                entry["provenance"][slot] = "user_supplied"
                 replaced += 1
+                answered_.append(dict(ask, answer=answer))
+            else:
+                unanswered.append(ask)
+        # Kept on the record, not acted on here: this runs inside a request
+        # handler, and the retraction is a model call per section. The asset
+        # stage does it first thing, before anything is built on the claim.
+        entry["unanswered"] = unanswered
+        entry["answered_asks"] = answered_
         entry["asks"] = []
         entry["answered"] = True
     save_content(run, content)
@@ -1346,6 +1426,7 @@ READING = "reading.json"
 MOTION = "motion.json"
 SURFACES = "surfaces.json"
 GROUNDS = "grounds.json"
+DENSITY = "density.json"
 
 
 def load_plan(run: Run) -> list[dict]:
@@ -1423,6 +1504,33 @@ def motion_facts(vids: list[dict]) -> str:
         "which section carries it, and how much of that section it owns. Put it where "
         "the sources put theirs, in the role theirs plays.")
     return "\n".join(lines)
+
+
+def load_density(run: Run) -> dict[str, list[dict]]:
+    f = run.dir / DENSITY
+    if not f.exists():
+        return {}
+    try:
+        return json.loads(f.read_text())
+    except ValueError:
+        return {}
+
+
+def density_range(dens: dict[str, list[dict]], section_type: str) -> tuple[float, float] | None:
+    """The sources' span of words per 1000px for this section type.
+
+    Every source band of the type, not just the winner: a floor and ceiling
+    the sources themselves set. Falls back to the span across ALL bands of all
+    sources when only one band of the type was seen, so the range is still a
+    measurement rather than a single point or a factor of mine.
+    """
+    rows = [r for r in dens.get(section_type, []) if r.get("words_per_k")]
+    if len(rows) < 2:
+        rows = [r for rs in dens.values() for r in rs if r.get("words_per_k")]
+    if not rows:
+        return None
+    vals = [float(r["words_per_k"]) for r in rows]
+    return (min(vals), max(vals))
 
 
 def load_grounds(run: Run) -> dict[str, list[dict]]:
@@ -1543,6 +1651,57 @@ def _source_markup(html: str | None) -> str:
     if len(html) <= _MARKUP_CAP:
         return html
     return html[:_MARKUP_CAP] + "\n… markup truncated …"
+
+
+_SVG_BODY = re.compile(r"<svg\b[^>]*>.*?</svg>", re.S | re.I)
+_DROP_TAGS = re.compile(r"<(script|style|noscript|template)\b[^>]*>.*?</\1>", re.S | re.I)
+_ATTRS = re.compile(r"""<([a-zA-Z][\w-]*)((?:\s+[^\s=>]+(?:=(?:"[^"]*"|'[^']*'|[^\s>]+))?)*)\s*(/?)>""")
+_CLASS = re.compile(r"""\bclass=(?:"([^"]*)"|'([^']*)')""")
+_TEXT = re.compile(r">([^<]{1,})<")
+
+
+def _skeleton(html: str | None, cap: int = 2200) -> str:
+    """A source band's markup reduced to its STRUCTURE: tags, classes, counts.
+
+    What the composer needs from a band is how its parts are arranged — how
+    many columns, what each item is made of, what separates them — and that
+    lives in the tag tree and the layout classes, not in the copy or the SVG
+    paths. Text collapses to a word count, attributes to `class`, and svg to a
+    single mark, so nine bands fit in the prompt where one raw band would not.
+    """
+    if not html:
+        return ""
+    h = _DROP_TAGS.sub("", html)
+    h = _SVG_BODY.sub("<svg/>", h)
+
+    def keep(m: re.Match) -> str:
+        tag, attrs, close = m.group(1), m.group(2) or "", m.group(3)
+        cm = _CLASS.search(attrs)
+        cls = (cm.group(1) or cm.group(2) or "") if cm else ""
+        # Layout classes only: framework prefixes stripped, CSS-variable
+        # plumbing and build hashes dropped. `[--page-section-px:var(...)]`
+        # says nothing about arrangement and costs forty characters.
+        words = []
+        for c in cls.split():
+            c = re.sub(r"^(tw-|sm:tw-|md:tw-|lg:tw-)", lambda m: m.group(1).replace("tw-", ""), c)
+            if "[--" in c or "var(" in c or re.search(r"[_-][0-9a-f]{5,}$", c):
+                continue
+            words.append(c)
+        cls = " ".join(words[:8])
+        return f"<{tag}{' class=' + repr(cls) if cls else ''}{'/' if close else ''}>"
+    h = _ATTRS.sub(keep, h)
+    h = _TEXT.sub(lambda m: f">{'·' + str(len(m.group(1).split())) + 'w' if m.group(1).strip() else ''}<", h)
+    h = re.sub(r"\s+", " ", h).strip()
+    # Empty decoration — the hairlines, corner dots and spacer divs a framework
+    # wraps every band in — carries no structure. Removed until none is left.
+    empty = re.compile(r"<(div|span|i|b)(?: class='[^']*')?></\1>")
+    while True:
+        h2 = empty.sub("", h)
+        if h2 == h:
+            break
+        h = h2
+    h = re.sub(r"<(div|span)></\1>", "", h)
+    return h if len(h) <= cap else h[:cap] + " …"
 
 
 def _page_sheet(run: Run, columns: int = 3) -> str | None:
@@ -2028,6 +2187,56 @@ def _checkpoint_assets(run: Run, made: list) -> None:
         pass          # a checkpoint that cannot be written must not kill the run
 
 
+def _retract_unanswered_claims(run: Run) -> Iterator[Event]:
+    """Redraft every slot whose proof ask went unanswered, before the build.
+
+    A stats slot drafted as "10M+ conversations" with the question unanswered
+    is a claim the business never made. The old contract kept the draft; this
+    rewrites it to say nothing unconfirmed, one call per section that needs it.
+    """
+    from sparrow.agents.content_editor import ContentEditor, retract_unanswered
+
+    content = load_content(run)
+    todo = {sid: e for sid, e in content.items()
+            if e.get("unanswered") or e.get("answered_asks")}
+    if not todo:
+        return
+    editor = ContentEditor()
+    for sid, entry in todo.items():
+        try:
+            new = retract_unanswered(editor, sid, entry.get("slots") or {},
+                                     entry.get("unanswered") or [],
+                                     entry.get("answered_asks") or [])
+        except Exception as e:  # noqa: BLE001 — a failed retraction must not ship the claim
+            new = {}
+            yield Event(Stage.ASSETS, "progress",
+                        f"{sid}: retraction failed ({type(e).__name__}) — claims cleared")
+        # `new` is keyed as the model keys things — without `[]`; the record
+        # is keyed as the blueprint names them. Every slot the rewrite returned
+        # is applied, not only the one the ask pointed at: a quote nobody
+        # confirmed has a company, a name and a role in sibling slots.
+        by_key = {(k[:-2] if k.endswith("[]") else k): k for k in entry["slots"]}
+        for k, v in new.items():
+            raw = by_key.get(k)
+            if raw is not None and (entry["provenance"] or {}).get(raw) != "user_supplied":
+                entry["slots"][raw] = v
+                entry["provenance"][raw] = "drafted"
+        for a in entry.get("unanswered") or []:
+            slot = a["slot"]
+            if (slot[:-2] if slot.endswith("[]") else slot) not in new and slot in entry["slots"]:
+                # No rewrite came back: the claim still cannot ship. An empty
+                # slot is a visible hole the inspector will name; a fabricated
+                # number is an invisible one nobody will.
+                entry["slots"][slot] = [] if isinstance(entry["slots"][slot], list) else ""
+                entry["provenance"][slot] = "drafted"
+        yield Event(Stage.ASSETS, "progress",
+                    f"{sid}: {len(entry.get('unanswered') or [])} unconfirmed claim(s) "
+                    f"retracted, {len(entry.get('answered_asks') or [])} answer(s) reconciled")
+        entry["unanswered"] = []
+        entry["answered_asks"] = []
+    save_content(run, content)
+
+
 def step_assets(run: Run) -> Iterator[Event]:
     """Execute the plan the asset gate decided. One image, one provenance.
 
@@ -2042,6 +2251,8 @@ def step_assets(run: Run) -> Iterator[Event]:
     about their product that is not true. The rejection is recorded on the asset
     rather than swallowed.
     """
+    yield from _retract_unanswered_claims(run)
+
     from sparrow.agents.curator import Curator, derive_variants
     from sparrow.blackboard.schema import Asset, AssetKind, Prominence, Provenance
     from PIL import Image
@@ -2571,6 +2782,11 @@ def step_build(run: Run) -> Iterator[Event]:
                                     if a.kind is not AssetKind.LOGO],
                             asset_base=f"/projects/{run.project_id}/preview",
                             copy=(content.get(section.id) or {}).get("slots"),
+                            carried_elsewhere=[
+                                str(v) for sid_, e in content.items() if sid_ != section.id
+                                for k, v in (e.get("slots") or {}).items()
+                                if (e.get("provenance") or {}).get(k) == "user_supplied"
+                                and isinstance(v, str) and v.strip()],
                             identity=identity_block(run, bb, section),
                             source_shot=_b64(
                                 (winners.get(section.id) or {}).get("shot")),
@@ -2677,7 +2893,7 @@ def _inspect_once(run: Run, bb, blueprints, port: int = 4600,
     Raises `AssetsNotServed` BEFORE the first model call if the page could not
     load its own assets. Everything below this line costs money per section.
     """
-    from sparrow.agents.inspector import Inspector, deterministic_defects
+    from sparrow.agents.inspector import Defect, Inspector, deterministic_defects
     from sparrow.capture import inspect_page, serve
 
     out = run.workspace / "out"
@@ -2709,10 +2925,39 @@ def _inspect_once(run: Run, bb, blueprints, port: int = 4600,
     ordered = sorted(bb.sections, key=lambda s: s.order)
     per_section: dict[str, list] = {}
     cost = 0.0
+    # DENSITY, computed and free, over every section. The built section is
+    # measured the way the source band was; the range it is held to is the
+    # sources' own span for that section type. Below the floor is a band with
+    # air inside it — the thing that reads as unfinished and that no model
+    # judge has ever reported, because a sparse band is not "wrong", only less.
+    dens_src = load_density(run)
+    winners_ = load_winners(run)
+    built = {d["index"]: d for r in reports.values() for d in (r.density or [])}
     for pos, idx in enumerate(sorted(by_index)):
         if pos >= len(ordered):
             break
         sec = ordered[pos]
+        if only is not None and sec.id not in only:
+            continue
+        d = built.get(idx)
+        rng = density_range(dens_src, sec.blueprint_id) if dens_src else None
+        if d and rng and d.get("words_per_k") is not None and d["words"] >= 8:
+            lo, hi = rng
+            own = ((winners_.get(sec.id) or {}).get("density") or {}).get("words_per_k")
+            if d["words_per_k"] < lo or d["words_per_k"] > hi:
+                side = "sparser" if d["words_per_k"] < lo else "denser"
+                per_section.setdefault(sec.id, []).append(Defect(
+                    severity="medium", code="density-outside-source-range",
+                    what=(f"this section carries {d['words_per_k']} words per 1000px "
+                          f"over {d['height']}px; the sources span {lo}–{hi} for a "
+                          f"{sec.blueprint_id}"
+                          + (f" and the band this one was built from carries {own}" if own else "")
+                          + f" — it is {side} than any of them. "
+                          + ("Height is a consequence of content: cut the vertical "
+                             "padding and min-height that hold air, and let the band be "
+                             "as tall as what it carries." if side == "sparser" else
+                             "Give it the room the source gives the same content.")),
+                    where=f"{sec.target_path}", source="computed"))
         # ONLY WHAT CHANGED. A section the fixer did not write is byte-identical
         # to the last time it was judged, and judging it again buys one thing:
         # a different answer. Measured: findings went 1 → 12 → 1 → 4 → 9 across
@@ -2721,14 +2966,12 @@ def _inspect_once(run: Run, bb, blueprints, port: int = 4600,
         # judge and coming back with fresh opinions. The page-level checks above
         # are deterministic and free and still run over everything; the model
         # is asked only about files that moved.
-        if only is not None and sec.id not in only:
-            continue
         defects, usage = inspector.inspect_section(
             bb, sec, by_index[idx], page_level, blueprints.get(sec.blueprint_id),
             (disputed or {}).get(sec.id))
         cost += usage.cost(inspector.provider.name, inspector.tier)
         if defects:
-            per_section[sec.id] = defects
+            per_section.setdefault(sec.id, []).extend(defects)
     return page_level, per_section, cost
 
 

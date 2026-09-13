@@ -286,6 +286,14 @@ class Section(BaseModel):
     # terms that survive being read by an agent with a strong prior about what
     # a hero looks like.
     archetype_how: str = ""
+    # HOW THE INSIDE IS BUILT, as classes, read off the winning source band's
+    # own markup by the pass that can see it. `archetype_how` is the outer
+    # skeleton — grid, sides, where the copy sits — and the builder honoured it
+    # exactly; then it invented the interior alone and every interior was the
+    # same recipe: a panel, a heading, a row of small bordered cards. Same
+    # lesson one level down: the source's structure carried as classes beats
+    # the prior; a name for it does not.
+    interior_how: str = ""
     contrast: str = ""           # one line: how this differs from its neighbours
     # Which treatments this section may use, and whether it is the one that
     # carries the signature. Both are allocation, not vocabulary: the designer

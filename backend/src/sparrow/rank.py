@@ -90,6 +90,10 @@ class Candidate:
     enclosure: dict = field(default_factory=dict)
     # What the band sits on — {hex, lum, page, differs, layered}. See scout `Band`.
     ground: dict = field(default_factory=dict)
+    # {numbers, names, quotes, credentials} the band carries, and what it
+    # carries per 1000px — see scout `Band`.
+    proof: dict = field(default_factory=dict)
+    density: dict = field(default_factory=dict)
     inset: int = 0
 
     def line(self) -> str:
