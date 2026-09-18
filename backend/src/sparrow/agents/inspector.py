@@ -23,6 +23,7 @@ import re
 from dataclasses import dataclass
 
 from sparrow.agents.base import Agent, stable_system
+from sparrow.agents.builder import counts_line
 from sparrow.blackboard.schema import Blackboard, Section
 from sparrow.capture import PageReport
 from sparrow.providers import Tier
@@ -127,6 +128,7 @@ class Inspector(Agent):
         page_findings: list[Defect],
         blueprint=None,
         already_disputed: list[str] | None = None,
+        copy: dict | None = None,
     ) -> tuple[list[Defect], object]:
         det = (
             "\n".join(f"- {d.what} ({d.where})" for d in page_findings)
@@ -140,7 +142,7 @@ class Inspector(Agent):
             ("<blueprint>\nWhat this section is SUPPOSED to contain. Anything the "
              "blueprint excludes is not a defect — it is the design.\n"
              f"purpose: {blueprint.purpose}\nslots: {', '.join(blueprint.slots)}\n"
-             f"structure: {blueprint.structure}\n</blueprint>")
+             f"structure: {blueprint.structure}\n" + counts_line(copy) + "</blueprint>")
             if blueprint is not None else
             "<blueprint>not available — do not report anything as missing</blueprint>",
             f"<deterministic_findings>\n{det}\n</deterministic_findings>",

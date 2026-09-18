@@ -215,8 +215,16 @@ class Run:
                                         "artifacts": h.request.artifacts}))
                 return
             except Exception as e:               # a stage failing stops the run
+                # The frame that raised, not only the type: "TimeoutError:
+                # Timeout 30000ms exceeded" from a stage with forty Playwright
+                # calls in it named nothing anyone could act on.
+                import traceback
+                tb = traceback.extract_tb(e.__traceback__)
+                where = next((f"{Path(f.filename).name}:{f.lineno} in {f.name}"
+                              for f in reversed(tb) if "sparrow" in f.filename), "")
                 yield self._emit(Event(self.stage, "failed",
-                                       f"{type(e).__name__}: {e}"))
+                                       f"{type(e).__name__}: {e}" + (f"  ({where})" if where else ""),
+                                       {"traceback": "".join(traceback.format_tb(e.__traceback__))[-3000:]}))
                 return
 
             self.stage = next_stage(self.stage)

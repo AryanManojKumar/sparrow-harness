@@ -199,6 +199,8 @@ class Builder(Agent):
         assets: list | None = None,
         asset_base: str = "",
         copy: dict | None = None,
+        carried_elsewhere: list[str] | None = None,
+        anchors: list[str] | None = None,
         identity: str = "",
         source_shot: str | None = None,
         source_html: str = "",
@@ -220,6 +222,7 @@ class Builder(Agent):
         # src rendered as /assets/… and 404'd. Measured on a real run: seven
         # images uploaded and generated, seven blank spaces on the page.
         base = asset_base.rstrip("/")
+        anchors = anchors or [x.id for x in sorted(bb.sections, key=lambda x: x.order)]
 
         system = stable_system(
             SYSTEM.format(fidelity=FIDELITY_LINE),
@@ -234,7 +237,16 @@ class Builder(Agent):
             "verbatim. Do not rewrite it, shorten it, expand it, or correct its "
             "spelling — some of it is the user's own words and some of it they "
             "confirmed, and either way it is not yours to edit. Your job here is "
-            "the markup around it.\n</copy>",
+            "the markup around it.\n"
+            "AND NOTHING BEYOND IT. Every word a reader can see comes from these "
+            "slots. Do not add labels, eyebrows, captions, metric names, list items "
+            "or stat cells of your own: a label reading 'Calls handled' beside a "
+            "value is a claim about this business, and claims are the content "
+            "agent's to make and the user's to confirm — measured on a real build, "
+            "a stats row whose one slot held no number gained three invented metric "
+            "labels from the builder. If the slots do not fill the layout, the "
+            "layout shrinks to the slots. Interface words that carry no claim — "
+            "'Menu', 'Play', 'Close', a visually-hidden label — are fine.\n</copy>",
         )
 
         copy_block = ""
@@ -247,6 +259,15 @@ class Builder(Agent):
                 else:
                     lines.append(f"{slot}: {value}")
             copy_block = "<section_copy>\n" + "\n".join(lines) + "\n</section_copy>"
+            if carried_elsewhere:
+                # A real fact is spent in one section. Ten builders each holding
+                # the customer list each use the customer list, and the page says
+                # the same name in every band.
+                copy_block += ("\n<carried_elsewhere>\nReal facts the user supplied "
+                               "that OTHER sections carry. They are not yours to "
+                               "restate — leave them where they were placed.\n"
+                               + "\n".join(f"- {f}" for f in carried_elsewhere[:20])
+                               + "\n</carried_elsewhere>")
 
         # The winning source's OWN version of this section. Nothing in this
         # pipeline had ever shown a source to the builder: it built from a
@@ -296,10 +317,20 @@ class Builder(Agent):
             f"purpose: {blueprint.purpose}\n"
             f"slots: {', '.join(blueprint.slots)}\n"
             f"structure: {blueprint.structure}\n"
-            f"</blueprint>",
+            + counts_line(copy)
+            + f"</blueprint>",
             f"<section>\n"
             f"file: {section.target_path}\n"
             f"component: {section.component_name} (default export)\n"
+            f"REQUIRED: the root <section> element carries id=\"{section.id}\".\n"
+            "LINKS: this is a ONE-PAGE export. There are no other routes — a link "
+            "to `/platform` or `/privacy` is a 404, and Next prefetches every one "
+            "of them on load (measured: seventeen failed requests on a page with "
+            "seventeen nav and footer links). Every internal link is an anchor to "
+            "a section on this page, from this list: "
+            + ", ".join(f"#{x}" for x in anchors)
+            + ". A link with no section to point at is `#top`. External URLs only "
+            "where the copy gives one.\n"
             f"REQUIRED: the root <section> element MUST carry the class(es) "
             f"`{ground_class}`"
             + (f" — this section's ground is `{section.ground}`, and those classes "
@@ -426,6 +457,30 @@ def prefix_assets(code: str, asset_base: str) -> str:
 _EASE_TUPLE = re.compile(r"(ease:\s*\[[^\]\n]*\])(?!\s*as\s+const)(?!\s*as\s*\[)")
 
 
+def counts_line(copy: dict | None) -> str:
+    """How many of each repeated thing this section actually has — from the copy.
+
+    The blueprint's `structure` is written from the SOURCE band before any
+    content exists, so it says "seven project entries, numbered 01 through
+    07" and "two verified role entries". When the user then supplies four
+    projects and one role, those numbers are stale and the builder filled the
+    gap: three invented projects and an internship that never happened, on a
+    page whose whole point is a real person. The inspector then enforced the
+    same stale count. The copy's list lengths supersede the structure's
+    numbers, and both agents are told so in the same words.
+    """
+    if not copy:
+        return ""
+    lists = {k: len(v) for k, v in copy.items() if isinstance(v, list)}
+    if not lists:
+        return ""
+    return ("COUNTS COME FROM THE COPY, NOT FROM THE STRUCTURE ABOVE: the structure "
+            "describes the source's band and its numbers are the source's. This "
+            "section has exactly " + ", ".join(f"{n} × {k}" for k, n in lists.items())
+            + ". Render that many and no more — an entry with no copy behind it is an "
+            "invented fact.\n")
+
+
 def pin_ease_tuples(code: str) -> str:
     """`ease: [a, b, c, d]` -> `ease: [a, b, c, d] as const`, everywhere.
 
@@ -471,6 +526,15 @@ If a defect is wrong — the inspector misread the screenshot, or what it descri
 deliberate — say so instead of changing the code. A defect you disagree with is better
 argued than silently obeyed.
 
+That applies to defects marked [vision] — a model's reading of a screenshot. A defect
+marked [computed] is a measurement of the rendered page or the file: an h1 the DOM says
+is hidden with no canvas over it, a canvas whose painted coverage was counted against
+the sources', a word density arithmetic produced. Those are not opinions and cannot be
+disputed; measured on a real run, a fixer disputed "the h1 is hidden and nothing draws
+it" three rounds running as "intentional" while the page opened with no headline. Fix a
+[computed] defect. Dispute only a [vision] one, and fix everything else in the same
+file regardless — a dispute of one defect is not a reason to leave the others.
+
 Output format — exactly this:
 
 ```tsx
@@ -498,7 +562,7 @@ class Fixer(Agent):
 
     def fix(self, bb: Blackboard, section: Section, code: str,
             defects: list) -> tuple[BuildOutput, str | None]:
-        listed = "\n".join(f"- [{d.severity}] {d.what} — {d.where}" for d in defects)
+        listed = "\n".join(f"- [{d.severity}] [{d.source}] {d.what} — {d.where}" for d in defects)
         user = "\n\n".join([
             f"<section>\nid: {section.id}\nfile: {section.target_path}\n</section>",
             f"<defects>\n{listed}\n</defects>",

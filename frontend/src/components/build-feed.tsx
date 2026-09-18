@@ -5,7 +5,7 @@ import Link from "next/link";
 import { AlertTriangle, Check, CircleDashed, Loader2, Play } from "lucide-react";
 
 import { cn } from "@/lib/utils";
-import type { AssetPlanEntry, BlackboardAsset, Direction, GateInfo, RunEvent } from "@/lib/api";
+import type { AssetPlanEntry, BlackboardAsset, Direction, GateAnswer, GateInfo, RunEvent } from "@/lib/api";
 import { AssetTray } from "@/components/asset-tray";
 import { SparrowMark } from "@/components/sparrow-mark";
 import { SourceCard } from "@/components/source-card";
@@ -140,12 +140,7 @@ export function BuildFeed({
   madeAssets?: BlackboardAsset[];
   previewReady?: boolean;
   onResume: () => void;
-  onAnswerGate: (payload: {
-    choice?: string | number;
-    note?: string;
-    assets?: Record<string, string>;
-    content?: Record<string, string>;
-  }) => void;
+  onAnswerGate: (payload: GateAnswer) => void;
 }) {
   const logRef = useRef<HTMLDivElement>(null);
   const statuses = useMemo(

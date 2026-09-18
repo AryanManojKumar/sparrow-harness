@@ -180,10 +180,12 @@ export type GateChoice = {
  *  used untouched if uploaded. Render the choices the server sends rather
  *  than assuming three radios; that assumption is what dropped the logo and
  *  video rows on the floor and left the gate impossible to answer. */
-export type AssetKind = "image" | "logo" | "video";
+export type AssetKind = "image" | "logo" | "video" | "portrait";
 
 export type GateOption = {
-  kind?: AssetKind | "fact";
+  kind?: AssetKind | "fact" | "product_name";
+  /** product_name only: the one-line reason the gate exists. */
+  why?: string;
   choice?: string | number;
   label?: string;
   index?: number;
@@ -274,14 +276,20 @@ export function getDirections(projectId: string): Promise<Direction[]> {
   return fetch(`${API_URL}/projects/${projectId}/directions`).then((r) => asJson(r, "directions"));
 }
 
+/** One answer to whichever gate is open. Which fields matter depends on the
+ *  gate: `product_name` at the brief gate, `choice` (+ `note`) at design and
+ *  preview, `assets` + `content` at the material gate. */
+export type GateAnswer = {
+  choice?: string | number;
+  note?: string;
+  assets?: Record<string, string>;
+  content?: Record<string, string>;
+  product_name?: string;
+};
+
 export function answerGate(
   projectId: string,
-  payload: {
-    choice?: string | number;
-    note?: string;
-    assets?: Record<string, string>;
-    content?: Record<string, string>;
-  }
+  payload: GateAnswer
 ): Promise<{ stage: string; decisions?: Record<string, string>; content_answered?: number }> {
   return fetch(`${API_URL}/projects/${projectId}/gate`, {
     method: "POST",

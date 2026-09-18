@@ -124,6 +124,20 @@ def gap_size(utility: str) -> str:
     return m.group(1) if m else utility
 
 
+# An internal link to a path. The export is one page, so any href that starts
+# with `/` and is not the page itself is a route that does not exist; Next
+# prefetches it and the preview logs a 404 per link.
+DEAD_ROUTE = re.compile(r"""href(?:=|:\s*)\{?["'](/(?!$|#|projects/)[^"'\s]*)["']""")
+
+
+# A `url()` inside a class value. Turbopack resolves it as a module at build
+# time; a basePath-prefixed path exists only at serve time, so the build fails —
+# and because the previous export in out/ carried the same class, restoring the
+# file did not recover it. Assets are placed with <img>/next/image at the base
+# the builder is given, never through CSS.
+CSS_URL = re.compile(r"""\[[^\]]*url\(""")
+
+
 def audit_file(path: Path, ds: DesignSystem) -> list[Finding]:
     allow = permitted(ds)
     allowed_gap_sizes = {gap_size(g) for g in allow["off-scale-gap"]}
@@ -154,6 +168,15 @@ def audit_file(path: Path, ds: DesignSystem) -> list[Finding]:
             out.append(Finding(name, n, "banned-import", "framer-motion — use motion/react"))
         if INLINE_STYLE_COLOR.search(line):
             out.append(Finding(name, n, "inline-style-color", line.strip()[:60]))
+        if CSS_URL.search(line):
+            out.append(Finding(name, n, "css-url-asset",
+                               "url() inside a class value — Turbopack resolves it as a "
+                               "module and the build fails; place the asset with <img> or "
+                               "next/image at the given asset base instead"))
+        for m in DEAD_ROUTE.finditer(line):
+            out.append(Finding(name, n, "dead-route",
+                               f"{m.group(1)} — no such route on a one-page export; "
+                               "link to a section anchor (#<section id>) or #top"))
     return out
 
 
@@ -232,6 +255,56 @@ def audit_enclosure(sections: Path, source_bands: dict[str, dict],
     return out
 
 
+_H1 = re.compile(r"<h1\b[^>]*?className=(?:\"([^\"]*)\"|\{`([^`]*)`\}|\{\s*cn\(([^)]*)\)\s*\})", re.S)
+_HIDDEN = re.compile(r"\b(sr-only|hidden|invisible|opacity-0|text-transparent)\b")
+
+
+def audit_display(sections: Path, ds: DesignSystem, hero_file: str | None) -> list[Finding]:
+    """The hero's h1 carries the display step the design system recorded for it.
+
+    §6: the director's recorded decisions are what the builder is held to.
+    The record here says which type step is the display step and what it is
+    for; the check is only that the hero's h1 wears it and can be seen. No
+    size of this file's — a design system that records a 40px display step
+    passes at 40px.
+
+    A hidden h1 is a finding, not a verdict: the sources hide theirs only
+    where a canvas draws the text (`heading_drawn`, measured). A builder that
+    does the same can dispute; one that hid the name and drew nothing cannot.
+    Measured on a real build: `interior_how` copied a source's visually-hidden
+    h1 without the canvas that justified it, and the page opened on a 16px
+    invisible name and a 36px role.
+    """
+    if not hero_file or not ds.type_steps:
+        return []
+    path = sections / hero_file
+    if not path.is_file():
+        return []
+    display = next((st for st in ds.type_steps if st.name.lower() in ("display", "h1", "hero")),
+                   ds.type_steps[0])
+    want = {m.group(0) for m in TEXT_STEP.finditer(display.classes)}
+    src = path.read_text()
+    m = _H1.search(src)
+    if not m:
+        return [Finding(hero_file, 1, "display-step-missing",
+                        f"no <h1> in the hero; the design system's `{display.name}` step "
+                        f"({display.classes}) is recorded for: {display.use}")]
+    line = src[:m.start()].count("\n") + 1
+    cls = m.group(1) or m.group(2) or m.group(3) or ""
+    have = {bare(c) for c in cls.split()}
+    out = []
+    if _HIDDEN.search(cls):
+        out.append(Finding(hero_file, line, "h1-hidden",
+                           "the hero's h1 is visually hidden. The sources hide theirs only "
+                           "where a canvas draws the same text; if yours does, dispute "
+                           "this — otherwise the name is shown, in the display step"))
+    elif not (want & {c for c in have}):
+        out.append(Finding(hero_file, line, "display-step-missing",
+                           f"the hero's h1 does not carry the design system's `{display.name}` "
+                           f"step ({display.classes}), which is recorded for: {display.use}"))
+    return out
+
+
 def audit_dir(sections: Path, ds: DesignSystem,
               source_bands: dict[str, dict] | None = None,
               section_files: dict[str, str] | None = None) -> list[Finding]:
@@ -240,6 +313,8 @@ def audit_dir(sections: Path, ds: DesignSystem,
         out.extend(audit_file(p, ds))
     if source_bands and section_files:
         out.extend(audit_enclosure(sections, source_bands, section_files))
+    if section_files:
+        out.extend(audit_display(sections, ds, section_files.get("hero")))
     return out
 
 

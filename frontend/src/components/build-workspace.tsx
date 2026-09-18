@@ -22,6 +22,7 @@ import {
   type GateInfo,
   type RunEvent,
   type Section,
+  type GateAnswer,
 } from "@/lib/api";
 import { BuildCanvas } from "@/components/build-canvas";
 import { BuildFeed } from "@/components/build-feed";
@@ -165,12 +166,7 @@ export function BuildWorkspace() {
     setPhase("done");
   }
 
-  async function answerAndContinue(payload: {
-    choice?: string | number;
-    note?: string;
-    assets?: Record<string, string>;
-    content?: Record<string, string>;
-  }) {
+  async function answerAndContinue(payload: GateAnswer) {
     if (!id) return;
     setGateError(null);
     try {

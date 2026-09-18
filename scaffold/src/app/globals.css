@@ -7,6 +7,7 @@
    current sections no longer use, arbitrary values that no longer parse. On a
    rebuild those come back as CSS and, at minify, as errors. Never scan it. */
 @source not "../../.next";
+@source not "../../out";
 
 @custom-variant dark (&:is(.dark *));
 

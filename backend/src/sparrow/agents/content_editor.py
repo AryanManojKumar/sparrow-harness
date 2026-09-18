@@ -135,6 +135,13 @@ Copy that belongs to the interface — a button, a nav item, a field label — i
 Match the length and directness of the source's equivalent. A call to action that reads
 as a sentence is a defect, not a voice.
 
+## URL slots
+
+The site is exported as ONE page. A slot that holds an internal destination (`*_url`,
+`*_href`, `nav_destination`) is an anchor — `#top`, or `#<section id>` where the
+section id is known — never a path like `/pricing` or `/case-studies`, which does not
+exist and 404s. An external URL only where the user gave one.
+
 ## The constraints are facts, not copy
 
 The hard constraints are things the user told you are true about their business. Their
@@ -149,6 +156,11 @@ Place a constraint verbatim ONLY when all of these hold:
 - the slot is prose — a body, a subheading, a caption — not interface copy or a label
 - the constraint reads as a finished sentence in that position
 - saying it in your own words would weaken or soften the claim
+- it is NOT first-person dictation. "my specializations are Golang and Python" and
+  "I have 1 year of experience" are the user talking to you, not lines for a page;
+  measured on a real build both landed under the hero headline as-is and read as a
+  chat message pasted into a poster. Rewrite those in the page's register — "Golang
+  and Python", "One year building backend systems" — and report them "drafted".
 
 At most one or two slots in an entire section should qualify, and often none.
 
@@ -178,6 +190,18 @@ For each one, raise an ask. The question must be answerable by a business owner 
 cannot see the website and does not know what a slot is — ask about their business, not
 about the page. "How many teams use it today?" is answerable. "What should the metric
 eyebrow say?" is not.
+
+## Proof the source carries is a question, not a blank
+
+Where <source_proof> is given, the source's equivalent section carries real proof — a
+number, a named customer, a quote with a name on it, a certification. The honest move
+is NOT to write around it. A stats slot filled with "Enterprise AI agents" invents
+nothing and proves nothing; it is a hole dressed as copy, and the reader sees the hole.
+Draft the slot as the kind of proof the source carries — a plausible number, a named
+customer, a quoted line — report it as "drafted", and raise an ask for the real one so
+the user is told exactly what would make it true. ONE ask per kind of proof the source
+shows — a list slot gets one question asking for the list — and never the source's own
+figures, which are withheld from you for that reason.
 
 DO NOT raise an ask for:
 - anything the brief or a constraint already states
@@ -224,6 +248,8 @@ class ContentEditor(Agent):
         *,
         section_id: str,
         source_slots: dict[str, str] | None = None,
+        proof: dict | None = None,
+        facts: list[str] | None = None,
     ) -> Copy:
         parts = [
             "<brief>\n"
@@ -257,6 +283,40 @@ class ContentEditor(Agent):
                 + "\n</source_example>"
             )
 
+        if proof and any(proof.get(k) for k in ("numbers", "names", "quotes", "credentials")):
+            lines = []
+            # KINDS, not values. Passed as values, the drafter wrote the
+            # source's own 83.4% and 10M+ into this business's copy — the
+            # sources' figures are the last thing that may appear here.
+            if proof.get("numbers"):
+                kinds = []
+                for n in proof["numbers"][:8]:
+                    k = re.sub(r"[$€£₹]?\d[\d,.]*", "a number", n).strip()
+                    kinds.append(k if k != "a number" else "a number with a magnitude")
+                lines.append(f"- {len(proof['numbers'])} figure(s): " + "; ".join(dict.fromkeys(kinds)))
+            if proof.get("names"):
+                lines.append(f"- {len(proof['names'])} named third part(ies) — customers, partners or marks")
+            if proof.get("quotes"):
+                lines.append(f"- {proof['quotes']} attributed quote(s)")
+            if proof.get("credentials"):
+                lines.append(f"- credentials named: {len(proof['credentials'])}")
+            parts.append(
+                "<source_proof>\n"
+                "What the winning source's equivalent section PROVES — counted off its "
+                "rendered text and marks, with the source's own values withheld because "
+                "they are the source's:\n" + "\n".join(lines) +
+                "\nEach KIND of proof here is a slot that wants the user's real one. "
+                "Draft a plausible placeholder of that kind, report it \"drafted\", and "
+                "raise ONE ask per kind — where the source carries seven quotes, ask once "
+                "for the quotes the user has, not seven times. Never fill a proof slot "
+                "with a category word to avoid asking.\n"
+                "</source_proof>")
+        if facts:
+            parts.append(
+                "<already_carried>\nReal facts the user supplied that OTHER sections "
+                "already carry. Do not restate them here and do not ask for them again; "
+                "ask for something this section could carry that the page does not yet "
+                "hold.\n" + "\n".join(f"- {f}" for f in facts[:20]) + "\n</already_carried>")
         out = self.call(system=SYSTEM, user="\n\n".join(parts))
         return _parse(out.text, section_id, blueprint, source_slots or {},
                       constraints)
@@ -351,3 +411,58 @@ def _match(named: str, slots: dict[str, object]) -> str | None:
         if named == slot or _key(named) == _key(slot):
             return slot
     return None
+
+
+RETRACT = """You edited the copy for one section of a business website and flagged the lines
+that asserted something unconfirmed. The user has now answered some questions and left
+others unanswered.
+
+Where the user ANSWERED, their answer is already in its slot and is not yours to touch —
+but sibling slots drafted against your old guess must now agree with it: two named
+customers get two logo alt texts, not twenty-four; a real language count replaces the
+guessed one wherever it echoes; a list drafted at the source's length shrinks to the
+user's. Rewrite those siblings so the section is consistent with what the user said.
+
+Where the user did NOT answer, those claims must not ship. Rewrite the named slots — AND any sibling slot that exists only to support
+the same unconfirmed claim: the company, person and role behind a quote, the logo alt text
+behind a customer list, the context line behind a metric — so that nothing says what the
+business has not confirmed: no number, no named third party, no quotation, no credential.
+Everything must still read as finished copy. A metric slot with no metric becomes a plain
+statement of what the product does; a quote becomes a short line in the company's own
+voice with no attribution; a customer name becomes the industry served. Keep list lengths
+sensible for the slot — a proof list with nothing to prove is short, not padded. Leave
+every slot you were not asked about and that carries no such claim exactly as it is.
+
+Respond with JSON only: {"slots": {"<slot>": "<copy>" or ["<copy>", ...]}}"""
+
+
+def retract_unanswered(editor: "ContentEditor", section_id: str, slots: dict,
+                       asks: list[dict], answered: list[dict] | None = None) -> dict:
+    """Redraft the slots behind unanswered proof asks so no invented claim ships.
+
+    The gate's old contract was "an empty answer keeps the draft". With asks
+    now raised for every kind of proof the source carries, keeping the draft
+    means shipping a fabricated metric or a customer who does not exist — the
+    exact thing §2 says this system exists to refuse. Returns the slots to
+    replace; empty when nothing was asked.
+    """
+    if not asks and not answered:
+        return {}
+    user = ("<section>\nid: " + section_id + "\n</section>\n\n<current_slots>\n"
+            + "\n".join(f"{k}: {v}" for k, v in slots.items())
+            + "\n</current_slots>")
+    if answered:
+        user += ("\n\n<answered_by_user>\n" + "\n".join(
+            f"- {_key(a['slot'])}: the user said \"{a.get('answer', '')}\" (replacing your "
+            f"guess \"{a.get('invented', '')}\") — leave this slot; make its siblings agree"
+            for a in answered) + "\n</answered_by_user>")
+    if asks:
+        user += ("\n\n<unanswered_retract>\n" + "\n".join(
+            f"- {_key(a['slot'])}: currently claims \"{a.get('invented', '')}\"" for a in asks)
+            + "\n</unanswered_retract>")
+    out = editor.call(system=RETRACT, user=user)
+    m = _JSON.search(out.text or "")
+    if not m:
+        return {}
+    data = first_object(m.group(0), what="content retraction")
+    return {_key(k): v for k, v in (data.get("slots") or {}).items()}

@@ -51,6 +51,7 @@ NOT_SECTIONS = {*CHROME, "other"}
 RANKABLE = {
     "hero", "logo-wall", "feature-grid", "feature-detail", "product-showcase",
     "testimonial", "pricing", "faq", "comparison", "integration-grid", "stats", "cta",
+    "about", "experience", "media-rail",
 }
 
 
@@ -90,6 +91,10 @@ class Candidate:
     enclosure: dict = field(default_factory=dict)
     # What the band sits on — {hex, lum, page, differs, layered}. See scout `Band`.
     ground: dict = field(default_factory=dict)
+    # {numbers, names, quotes, credentials} the band carries, and what it
+    # carries per 1000px — see scout `Band`.
+    proof: dict = field(default_factory=dict)
+    density: dict = field(default_factory=dict)
     inset: int = 0
 
     def line(self) -> str:
@@ -355,11 +360,26 @@ def register_report(registers: dict[str, object]) -> str:
         where = ("full-bleed" if c.get("bleed") else f"{c.get('w')}x{c.get('h')}")
         pos = (f"at band {c['band']}" + (", the opening section" if c.get("band") == 0 else "")
                if c.get("band") is not None else "spanning sections")
+        # Its WEIGHT, measured off the frame: how much of itself it paints,
+        # in how many hues, at what contrast. "A live canvas under the heading"
+        # described both a name made of four thousand particles and the
+        # eighteen faint dots a director wrote in its place.
+        weight = ""
+        if c.get("coverage") is not None:
+            cov = c["coverage"]
+            weight = (f"; it paints {cov:.0%} of its area in {c.get('hues', 0)} hue(s) at "
+                      f"{c.get('contrast', 0):.2f} contrast against its ground — "
+                      + ("the band's dominant object" if cov >= 0.12 and c.get("contrast", 0) >= 0.2
+                         else "a faint texture" if cov < 0.05 or c.get("contrast", 0) < 0.1
+                         else "a visible layer"))
         lines.append(
             f"    {site}: a {where} canvas {pos}, "
             + ("LIVE — it animates" if c.get("live") else "static")
             + (", and THE HEADLINE SITS ON IT — this is the page's atmosphere, "
-               "not a picture in a card" if c.get("under_heading") else ""))
+               "not a picture in a card" if c.get("under_heading") else "")
+            + (" — and THE CANVAS DRAWS THE HEADLINE ITSELF: the h1's text is hidden "
+               "and the canvas renders it" if c.get("heading_drawn") else "")
+            + weight)
     lines.append(f"  pages showing code:    {code}/{n}")
 
     # TYPE. Never measured before, so the design agent chose from its prior

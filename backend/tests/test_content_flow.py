@@ -49,7 +49,8 @@ class StubEditor:
     def __init__(self) -> None:
         self.calls: list[str] = []
 
-    def write(self, _brief, _constraints, blueprint, *, section_id, source_slots=None):
+    def write(self, _brief, _constraints, blueprint, *, section_id, source_slots=None,
+              proof=None, facts=None):
         self.calls.append(section_id)
         if section_id == "nav":
             return Copy(section_id="nav",
@@ -155,7 +156,7 @@ def test_no_invented_fact_leaves_the_gate_with_no_fact_question(run, editor,
     """
     monkeypatch.setattr(
         StubEditor, "write",
-        lambda self, _b, _c, bp, *, section_id, source_slots=None: Copy(
+        lambda self, _b, _c, bp, *, section_id, source_slots=None, **_kw: Copy(
             section_id=section_id, slots={s: "x" for s in bp.slots},
             provenance={s: Source.DRAFTED for s in bp.slots}),
     )
@@ -178,7 +179,7 @@ def test_a_project_with_no_nav_and_nothing_invented_does_not_stop(
                         lambda _d: {"hero": BLUEPRINTS["hero"]})
     monkeypatch.setattr(
         StubEditor, "write",
-        lambda self, _b, _c, bp, *, section_id, source_slots=None: Copy(
+        lambda self, _b, _c, bp, *, section_id, source_slots=None, **_kw: Copy(
             section_id=section_id, slots={s: "x" for s in bp.slots},
             provenance={s: Source.DRAFTED for s in bp.slots}),
     )
