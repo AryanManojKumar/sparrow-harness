@@ -1291,11 +1291,39 @@ def _extract_once(
                     top = int(box["y"] + page.evaluate("window.scrollY"))
                     band_ix = next((b.index for b in bands
                                     if b.top <= top < b.top + b.height), None)
+                    # HOW MUCH IT PAINTS. "A live canvas under the heading"
+                    # was true of shishir's name made of four thousand warm
+                    # particles and of the eighteen faint dots the director
+                    # wrote in its place; the measurement that separates them
+                    # is coverage, colour count and contrast against the
+                    # ground — and whether the heading's own text is hidden
+                    # because the canvas IS the heading.
+                    again_path = dest.with_name(dest.stem + "-b.png")
+                    again_path.write_bytes(again)
+                    page.wait_for_timeout(900)
+                    third_path = dest.with_name(dest.stem + "-c.png")
+                    el.screenshot(path=str(third_path), timeout=8000)
+                    weight = _canvas_weight_avg([dest, again_path, third_path])
+                    for extra in (again_path, third_path):
+                        extra.unlink(missing_ok=True)
+                    heading_drawn = bool(page.evaluate(
+                        r"""(el) => { const r = el.getBoundingClientRect();
+                           return [...document.querySelectorAll('h1,h2')].some(h => {
+                             const q = h.getBoundingClientRect(); const cs = getComputedStyle(h);
+                             const overlap = Math.max(0, Math.min(q.right, r.right) - Math.max(q.left, r.left))
+                                           * Math.max(0, Math.min(q.bottom, r.bottom) - Math.max(q.top, r.top));
+                             if (!q.width || overlap / (q.width * q.height) < 0.8) return false;
+                             const fill = cs.webkitTextFillColor || cs.color;
+                             return parseFloat(cs.opacity) < 0.05 || /rgba\(\d+, \d+, \d+, 0\)|transparent/.test(fill)
+                                 || cs.visibility === 'hidden' || cs.color === 'rgba(0, 0, 0, 0)'; }); }""",
+                        el))
                     register.canvases.append({
                         "w": int(box["width"]), "h": int(box["height"]),
                         "bleed": box["width"] >= width * 0.92,
                         "top": top, "frame": str(dest), "live": live,
                         "band": band_ix,
+                        **weight,
+                        "heading_drawn": heading_drawn,
                         # Behind copy, or beside it? A field the headline sits
                         # on is the page's atmosphere; one in a card is a picture.
                         "under_heading": bool(page.evaluate(
@@ -1314,6 +1342,59 @@ def _extract_once(
         return SiteExtract(url, title, True, page_height=page_h,
                            semantic_sections=semantic, register=register, bands=bands)
 
+
+
+def _canvas_weight_avg(paths: list[Path]) -> dict:
+    """The mean of several frames' weight — a live canvas has phases.
+
+    Measured on a particle-route hero: 14% coverage during a burst, 4%
+    between them, alternating every couple of seconds. One frame decides by
+    timing; three frames a second apart decide by the canvas.
+    """
+    ws = [w for w in (_canvas_weight(p) for p in paths) if w]
+    if not ws:
+        return {}
+    return {k: round(sum(w[k] for w in ws) / len(ws), 3) if k != "hues"
+            else max(w[k] for w in ws) for k in ("coverage", "hues", "contrast")}
+
+
+def _canvas_weight(path: Path) -> dict:
+    """What a canvas frame PAINTS: {coverage, hues, contrast}.
+
+    coverage — share of pixels that differ from the frame's modal colour (its
+    ground) by more than a small tolerance; a texture at 4% and a name made of
+    particles at 40% are both "a live canvas" and nothing alike.
+    hues     — distinct hue buckets (of 12) among the painted pixels, ignoring
+    near-greys; five warm hues against one is a fact the director can match.
+    contrast — mean absolute luminance difference of painted pixels from the
+    ground, 0–1. Faint dots at 0.08 and a full-contrast object at 0.6.
+    """
+    try:
+        from PIL import Image
+        with Image.open(path) as im:
+            im = im.convert("RGB").resize((160, max(1, int(160 * im.height / im.width))))
+            px = list(im.getdata())
+        from collections import Counter
+        q = Counter((r >> 4, g >> 4, b >> 4) for r, g, b in px)
+        (mr, mg, mb), _ = q.most_common(1)[0]
+        ground = (mr * 16 + 8, mg * 16 + 8, mb * 16 + 8)
+        gl = (0.2126 * ground[0] + 0.7152 * ground[1] + 0.0722 * ground[2]) / 255
+        painted = [(r, g, b) for r, g, b in px
+                   if abs(r - ground[0]) + abs(g - ground[1]) + abs(b - ground[2]) > 48]
+        if not painted:
+            return {"coverage": 0.0, "hues": 0, "contrast": 0.0}
+        import colorsys
+        hues = set()
+        contrast = 0.0
+        for r, g, b in painted:
+            h, s_, v = colorsys.rgb_to_hsv(r / 255, g / 255, b / 255)
+            if s_ > 0.18 and v > 0.15:
+                hues.add(int(h * 12) % 12)
+            contrast += abs((0.2126 * r + 0.7152 * g + 0.0722 * b) / 255 - gl)
+        return {"coverage": round(len(painted) / len(px), 3), "hues": len(hues),
+                "contrast": round(contrast / len(painted), 3)}
+    except Exception:
+        return {}
 
 
 def _frame_has_content(path: Path) -> bool:
@@ -1442,12 +1523,18 @@ def extract(url: str, out_dir: Path, **kw) -> SiteExtract:
 
 # --- classification ---------------------------------------------------------
 
+# The vocabulary was B2B SaaS only (the v1 slice). Read against a portfolio,
+# the classifier filed the person's portrait band as "other" and it never
+# reached the sitemap — so a page about a person shipped with no person on it
+# and nobody asked for a photo. The types below are the ones personal and
+# portfolio pages actually carry; they rank and build like the rest.
 SECTION_TYPES = (
     "nav, hero, logo-wall, feature-grid, feature-detail, product-showcase, "
-    "testimonial, pricing, faq, comparison, integration-grid, stats, cta, footer, other"
+    "testimonial, pricing, faq, comparison, integration-grid, stats, cta, "
+    "about, experience, media-rail, footer, other"
 )
 
-CLASSIFY_SYSTEM = f"""You label sections of a marketing website from their structure alone.
+CLASSIFY_SYSTEM = f"""You label sections of a marketing or personal website from their structure alone.
 
 Each line gives one section: tag, pixel height, word count, and counts of images, buttons
 and list items, plus its headings and the first words of its text.
@@ -1459,6 +1546,11 @@ Judge from SHAPE, not vibes:
 - a feature grid has repeated equal-weight items
 - a hero is the FIRST tall band, few words, one or two buttons — position matters as much
   as shape, and a hero may carry a lot of product imagery
+- an about band is about the PERSON or the company behind the work: a portrait or a
+  photo with a short bio or a "who I am / the person behind it" heading
+- an experience band is a dated list of roles, jobs, education or milestones — a
+  timeline, "currently at", "previously"
+- a media-rail is a horizontal row of video or embed thumbnails — YouTube, talks, reels
 - a section with no words and no headings is "other". Say so rather than guessing.
 
 JSON only: {{"labels": [{{"index": 0, "type": "...", "confidence": "high|low"}}]}}"""

@@ -31,6 +31,7 @@ const KIND_ICON: Record<AssetKind, React.ReactNode> = {
   logo: <Stamp className="size-3" />,
   image: <ImageIcon className="size-3" />,
   video: <Film className="size-3" />,
+  portrait: <ImageIcon className="size-3" />,
 };
 
 /** Which slots the assets stage has finished, read off its events.

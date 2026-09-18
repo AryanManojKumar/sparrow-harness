@@ -156,6 +156,11 @@ Place a constraint verbatim ONLY when all of these hold:
 - the slot is prose — a body, a subheading, a caption — not interface copy or a label
 - the constraint reads as a finished sentence in that position
 - saying it in your own words would weaken or soften the claim
+- it is NOT first-person dictation. "my specializations are Golang and Python" and
+  "I have 1 year of experience" are the user talking to you, not lines for a page;
+  measured on a real build both landed under the hero headline as-is and read as a
+  chat message pasted into a poster. Rewrite those in the page's register — "Golang
+  and Python", "One year building backend systems" — and report them "drafted".
 
 At most one or two slots in an entire section should qualify, and often none.
 

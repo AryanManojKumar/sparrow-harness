@@ -391,6 +391,11 @@ class AssetKind(StrEnum):
     IMAGE = "image"
     VIDEO = "video"
     LOGO = "logo"
+    # A photo of the person the site is about. Same rule as the logo, for the
+    # same reason: it is an identity. Copied through untouched — no scrub (the
+    # face IS the content), no restyle (a restyled face is a different face),
+    # never generated.
+    PORTRAIT = "portrait"
 
 
 class Asset(BaseModel):

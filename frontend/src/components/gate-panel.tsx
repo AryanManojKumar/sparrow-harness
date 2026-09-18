@@ -11,6 +11,7 @@ import {
   type Direction,
   type GateInfo,
   type GateOption,
+  type GateAnswer,
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -23,18 +24,21 @@ const ACCEPT: Record<AssetKind, string> = {
   image: "image/png,image/jpeg,image/webp",
   logo: "image/png,image/jpeg,image/webp,image/svg+xml",
   video: "video/mp4,video/webm,video/quicktime",
+  portrait: "image/png,image/jpeg,image/webp",
 };
 
 const KIND_LABEL: Record<AssetKind, string> = {
   logo: "Your logo",
   image: "Images for this page",
   video: "Video",
+  portrait: "Your photo",
 };
 
 const KIND_ICON: Record<AssetKind, React.ReactNode> = {
   logo: <Stamp className="size-3.5" />,
   image: <ImageIcon className="size-3.5" />,
   video: <Film className="size-3.5" />,
+  portrait: <ImageIcon className="size-3.5" />,
 };
 
 /** The one-line meaning of a choice, so a user can tell at a glance what
@@ -80,14 +84,10 @@ export function GatePanel({
   /** The API's reason for refusing the last answer, shown here so the gate
    *  stays open and answerable instead of collapsing into an error state. */
   serverError?: string | null;
-  onAnswerGate: (payload: {
-    choice?: string | number;
-    note?: string;
-    assets?: Record<string, string>;
-    content?: Record<string, string>;
-  }) => void;
+  onAnswerGate: (payload: GateAnswer) => void;
 }) {
   const [note, setNote] = useState("");
+  const [productName, setProductName] = useState("");
   const [contentAnswers, setContentAnswers] = useState<Record<string, string>>({});
   const [assetDecisions, setAssetDecisions] = useState<Record<string, string>>({});
   const [uploadedFiles, setUploadedFiles] = useState<Record<string, File>>({});
@@ -139,8 +139,12 @@ export function GatePanel({
 
   const sourcesSpecimen =
     gate.artifacts?.find((a) => a.includes("sources.png")) ?? null;
+  const isBriefGate = gate.gate === "gate:brief";
   const isDesignGate = gate.gate === "gate:design";
   const isMaterialGate = gate.gate === "gate:assets";
+  // The brief gate's one option, if the server sent it — carries the `why`.
+  const nameOption = isBriefGate ? options.find((o) => o.kind === "product_name") : undefined;
+  const nameOk = productName.trim().length > 0;
 
   // Split material gate options into assets and facts. ASSETS, not images:
   // the gate also carries the logo and any video slot, each with its own
@@ -150,10 +154,10 @@ export function GatePanel({
   const assetOptions = options.filter((o) => o.kind !== "fact");
   const factOptions = options.filter((o) => o.kind === "fact");
   const assetKind = (o: GateOption): AssetKind =>
-    o.kind === "logo" || o.kind === "video" ? o.kind : "image";
+    o.kind === "logo" || o.kind === "video" || o.kind === "portrait" ? o.kind : "image";
   // Logo first — every generated surface is branded from it — then images,
   // then video, which is the same order the assets stage produces them in.
-  const KIND_ORDER: AssetKind[] = ["logo", "image", "video"];
+  const KIND_ORDER: AssetKind[] = ["logo", "portrait", "image", "video"];
   const grouped = KIND_ORDER.map((k) => ({
     kind: k,
     items: assetOptions.filter((o) => assetKind(o) === k),
@@ -252,7 +256,45 @@ export function GatePanel({
         </div>
       )}
 
-      {isDesignGate ? (
+      {isBriefGate ? (
+        // The brief gate asks for exactly one thing — the name — and the
+        // server says so in `options[0].choices[0].field = "product_name"`.
+        // This used to fall through to the generic branch below, which
+        // renders each option as a button: the question about the name was
+        // answered with a button labelled "Approve" that sent no name, and
+        // the API refused it. A question with a typed answer needs a field.
+        <form
+          className="flex flex-col gap-3"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (nameOk) onAnswerGate({ product_name: productName.trim() });
+          }}
+        >
+          {nameOption?.why && (
+            <p className="text-xs leading-relaxed text-muted-foreground">{nameOption.why}</p>
+          )}
+          <div className={cn("flex gap-2", wide ? "max-w-md" : "flex-col")}>
+            <Input
+              autoFocus
+              value={productName}
+              onChange={(e) => setProductName(e.target.value)}
+              placeholder="e.g. Ashfall"
+              aria-label="Product or business name"
+              className="h-9 text-sm"
+            />
+            <Button type="submit" size="sm" disabled={!nameOk}>
+              {nameOption?.choices?.[0]?.label ? "Use this name" : "Continue"}
+            </Button>
+          </div>
+          <p className="text-[11px] text-muted-foreground/80">
+            Exactly as you write it — it goes into the nav, the footer, the browser tab and
+            every screenshot, and nothing downstream may invent one.
+          </p>
+          {serverError && (
+            <p className="text-xs text-destructive">{serverError}</p>
+          )}
+        </form>
+      ) : isDesignGate ? (
         <div
           className={cn(
             "grid gap-3",
@@ -429,6 +471,7 @@ export function GatePanel({
                                   {kind === "image" && " · restyled to match your design"}
                                   {kind === "video" && " · used as it is, up to 25MB"}
                                   {kind === "logo" && " · used as it is, never redrawn"}
+                                  {kind === "portrait" && " · used as it is, never redrawn or generated"}
                                 </p>
                               </div>
                             )}

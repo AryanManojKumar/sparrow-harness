@@ -1238,6 +1238,29 @@ def content_asks(run: Run) -> list[dict]:
     return out
 
 
+def split_list_answer(answer: str) -> list[str]:
+    """A typed answer to a repeating slot, as items.
+
+    Newlines or semicolons are the user separating things. Commas only when
+    neither is present AND nothing on the line has parentheses or dashes —
+    "Order Event Pipeline (Go, Kafka, Postgres) — event-driven" split on its
+    commas into eighteen "project titles" on a real run. When in doubt, one
+    item: the reconcile pass can read a paragraph; nothing can un-split a name.
+    """
+    text = answer.strip()
+    if not text:
+        return []
+    if "\n" in text or ";" in text:
+        parts = re.split(r"[\n;]+", text)
+    elif "(" not in text and "—" not in text and " - " not in text:
+        parts = re.split(r",\s*|\s+(?:and|&)\s+", text)
+    else:
+        # Sentences that each name a thing: "A (…) — …. B (…) — …."
+        parts = re.split(r"(?<=[.!?])\s+(?=[A-Z])", text)
+    items = [x.strip().rstrip(".") for x in parts if x.strip()]
+    return items or [text]
+
+
 def record_content_answers(run: Run, answers: dict[str, str]) -> int:
     """Apply the gate's content answers. An empty answer keeps the draft.
 
@@ -1268,8 +1291,7 @@ def record_content_answers(run: Run, answers: dict[str, str]) -> int:
                 # Slots are keyed exactly as the blueprint names them, `[]`
                 # included; a repeating slot takes a list.
                 if slot.endswith("[]"):
-                    items = [x.strip() for x in re.split(r"[\n;,]+|\s+(?:and|&)\s+", answer) if x.strip()]
-                    entry["slots"][slot] = items or [answer]
+                    entry["slots"][slot] = split_list_answer(answer)
                 else:
                     entry["slots"][slot] = answer
                 entry["provenance"][slot] = "user_supplied"
@@ -1375,7 +1397,9 @@ def asset_plan(run: Run) -> list[dict]:
                 # the gate offered a moving asset as a still and `_prominence`
                 # could mark an ambient loop "dominant" — firing the builder's
                 # "dominant asset owns the section" rule on decoration.
-                "kind": "video" if brief.lstrip().lower().startswith("[video]") else "image",
+                "kind": ("video" if brief.lstrip().lower().startswith("[video]")
+                         else "portrait" if _is_portrait(brief, section.blueprint_id)
+                         else "image"),
                 "brief": brief,
                 "prominence": _prominence(len(bp.assets), i).value,
                 "decision": None, "upload": None,
@@ -1416,8 +1440,25 @@ def _kind(entry: dict) -> str:
     return entry.get("kind") or "image"
 
 
+# A photo of the person the site is about. Like the logo, it is an identity:
+# an image model asked for "a portrait of the developer" returns a face that is
+# nobody's, on a page whose whole point is a real somebody. Upload or leave it
+# out; never generated.
+PORTRAIT_DECISIONS = ("upload", "skip")
+_PORTRAIT = re.compile(
+    r"\b(portrait|headshot|photo(?:graph)? of (?:the |a )?(?:person|developer|designer|founder|"
+    r"engineer|author|owner|you|yourself|him|her|them)|the person behind|profile photo)\b", re.I)
+
+
+def _is_portrait(brief: str, section_type: str = "") -> bool:
+    return section_type == "about" and bool(re.search(r"\b(photo|portrait|image of)\b", brief, re.I)) \
+        or bool(_PORTRAIT.search(brief))
+
+
 def decisions_for(entry: dict) -> tuple[str, ...]:
-    return LOGO_DECISIONS if _kind(entry) == "logo" else IMAGE_DECISIONS
+    k = _kind(entry)
+    return (LOGO_DECISIONS if k == "logo" else
+            PORTRAIT_DECISIONS if k == "portrait" else IMAGE_DECISIONS)
 
 
 VIDEO_SUFFIXES = {".mp4", ".webm", ".mov"}
@@ -1609,17 +1650,32 @@ def surface_facts(surf: list[dict]) -> str:
         where = "full-bleed" if c.get("bleed") else f"{c.get('w')}x{c.get('h')}"
         pos = ("the opening section" if c.get("band") == 0 else
                f"band {c['band']}" if c.get("band") is not None else "across sections")
+        weight = ""
+        if c.get("coverage") is not None:
+            cov, con, hues = c["coverage"], c.get("contrast", 0), c.get("hues", 0)
+            verdict = ("the band's DOMINANT OBJECT" if cov >= 0.12 and con >= 0.2
+                       else "a faint texture" if cov < 0.05 or con < 0.1 else "a visible layer")
+            weight = (f"; paints {cov:.0%} of its area in {hues} hue(s) at {con:.2f} contrast "
+                      f"against its ground — {verdict}")
         lines.append(
             f"  - {c.get('site')}: {where}, {pos}, "
             + ("LIVE (it animates)" if c.get("live") else "static")
             + (" — the headline sits ON it; it is the page's atmosphere"
-               if c.get("under_heading") else " — beside the copy, as an object"))
+               if c.get("under_heading") else " — beside the copy, as an object")
+            + (" — and the canvas DRAWS THE HEADLINE: the h1 text is hidden and the "
+               "canvas renders the name itself" if c.get("heading_drawn") else "")
+            + weight)
     lines.append(
         "If one of these is what makes its page feel the way it does, invent a "
         "treatment for it with `how` the builder can implement as written — an SVG "
         "filter, a CSS gradient stack, or a small canvas/requestAnimationFrame loop "
         "described precisely enough to write. `where` should say where the SOURCE "
-        "puts it. Name the technique; do not describe the effect and stop.")
+        "puts it. Name the technique; do not describe the effect and stop. MATCH THE "
+        "WEIGHT: the coverage, hue count and contrast above are measured, and a "
+        "treatment for a source that paints 25% of its band at 0.6 contrast is not "
+        "eighteen dots at opacity 0.3 — state particle counts, sizes, colours and "
+        "opacity in `how` so the builder lands at the same weight. If the source's "
+        "canvas draws the headline, yours can too: say how.")
     return "\n".join(lines)
 
 
@@ -1878,7 +1934,24 @@ def _choices_for(a: dict, upload_url: str) -> list[dict]:
         return _logo_choices(a, upload_url)
     if kind == "video":
         return _video_choices(a, upload_url)
+    if kind == "portrait":
+        return _portrait_choices(a, upload_url)
     return _image_choices(a, upload_url)
+
+
+def _portrait_choices(a: dict, upload_url: str) -> list[dict]:
+    """Upload or nothing. A generated face is a fake identity — see the logo."""
+    return [
+        {"choice": "upload",
+         "label": "Use my photo",
+         "detail": "Used as it is — cropped and framed to the design direction, "
+                   "never redrawn. Two of three reference portfolios put the "
+                   "person on the page; this is where yours goes.",
+         "accepts": "PNG, JPEG or WebP",
+         "post_file_to": f"{upload_url}/{a['id']}"},
+        {"choice": "skip",
+         "label": "No photo — build the section from type and layout"},
+    ]
 
 
 def _video_choices(a: dict, upload_url: str) -> list[dict]:
@@ -2380,6 +2453,8 @@ def step_assets(run: Run) -> Iterator[Event]:
                      else "wide")
             return cur.motion(brief[7:].strip(), bb.design_system,
                               frame=frame, shape=shape, role=a.get("role", ""))
+        if _kind(a) == "portrait":
+            raise RuntimeError(f"{a['id']}: a portrait is never generated — upload or skip")
         return cur.generate(a["brief"], bb.design_system,
                             product_name=bb.brief.product_name, logo=logo_bytes)
 
@@ -2495,7 +2570,14 @@ def step_assets(run: Run) -> Iterator[Event]:
         rejected: list[str] = []
         scrubbed: list[str] = []
 
-        if decision == "upload":
+        if decision == "upload" and kind == "portrait":
+            # Through untouched, like the logo. Scrub reads faces as PII and
+            # restyle redraws them; the photo of the person is the one image on
+            # the page that must be exactly what they gave.
+            original = (run.dir / "uploads" / a["upload"]).read_bytes()
+            path.write_bytes(original)
+            yield Event(Stage.ASSETS, "progress", f"{aid}: your photo, used as it is")
+        elif decision == "upload":
             original = (run.dir / "uploads" / a["upload"]).read_bytes()
             # FIRST, before any other network call. `restyle` posts the file to
             # a third-party image model and the result is published at the
@@ -2594,7 +2676,8 @@ def step_assets(run: Run) -> Iterator[Event]:
         with Image.open(path) as im:
             w, h = im.size
         made.append(Asset(
-            id=aid, section_id=a["section_id"], kind=AssetKind.IMAGE,
+            id=aid, section_id=a["section_id"],
+            kind=AssetKind.PORTRAIT if kind == "portrait" else AssetKind.IMAGE,
             brief=a["brief"],
             prominence=Prominence(a["prominence"]), provenance=provenance,
             path=f"assets/{path.name}", width=w, height=h,
@@ -2933,12 +3016,54 @@ def _inspect_once(run: Run, bb, blueprints, port: int = 4600,
     dens_src = load_density(run)
     winners_ = load_winners(run)
     built = {d["index"]: d for r in reports.values() for d in (r.density or [])}
+    # CANVAS WEIGHT, ours against the sources'. The scout measured the
+    # sources' canvases (coverage, hues, contrast); the director wrote a
+    # treatment to match; the builder drew three thin curves at 4% where the
+    # source paints 25%. Measured on the built page the same way and held to
+    # the span the sources' canvases occupy — the fourth time this pattern has
+    # been needed, and the same reason each time: a number in the prompt is
+    # context; a number in an audit is a decision.
+    src_canvases = [c for c in load_surfaces(run) if c.get("coverage") is not None]
+    cov_span = ((min(c["coverage"] for c in src_canvases), max(c["coverage"] for c in src_canvases))
+                if src_canvases else None)
+    built_canvases: dict[int, list[dict]] = {}
+    hidden_h1: set[int] = set()
+    for r in reports.values():
+        for c in (getattr(r, "canvases", None) or []):
+            built_canvases.setdefault(c["index"], []).append(c)
+        hidden_h1.update(getattr(r, "hidden_undrawn_h1", None) or [])
     for pos, idx in enumerate(sorted(by_index)):
         if pos >= len(ordered):
             break
         sec = ordered[pos]
         if only is not None and sec.id not in only:
             continue
+        if idx in hidden_h1 and sec.blueprint_id == "hero":
+            per_section.setdefault(sec.id, []).append(Defect(
+                severity="high", code="h1-hidden-undrawn",
+                what=("measured on the rendered page: the hero's h1 is hidden and no canvas "
+                      "covers its box — nothing draws the name, so the page opens with no "
+                      "headline. The sources hide an h1 only where a canvas renders the same "
+                      "text; this one does not. Show the name in the design system's display "
+                      "step. This is a measurement, not an opinion."),
+                where=f"{sec.target_path}", source="computed"))
+        for c in built_canvases.get(idx, []):
+            if cov_span and c.get("coverage") is not None:
+                lo, hi = cov_span
+                if c["coverage"] < lo or c["coverage"] > hi:
+                    nearest = min(src_canvases, key=lambda x: abs(x["w"] * x["h"] - c["w"] * c["h"]))
+                    per_section.setdefault(sec.id, []).append(Defect(
+                        severity="medium", code="canvas-weight-outside-source-range",
+                        what=(f"this section's {c['w']}x{c['h']} canvas paints {c['coverage']:.0%} of "
+                              f"its area in {c.get('hues', 0)} hue(s) at {c.get('contrast', 0):.2f} "
+                              f"contrast; the sources' canvases paint {lo:.0%}–{hi:.0%}, and the one "
+                              f"closest in size ({nearest.get('site')}, {nearest['w']}x{nearest['h']}) "
+                              f"paints {nearest['coverage']:.0%} at {nearest.get('contrast', 0):.2f}. "
+                              + ("Draw more: more particles, larger, denser, at higher opacity — the "
+                                 "design system's treatment states the counts; the drawing must land "
+                                 "at the source's weight." if c["coverage"] < lo else
+                                 "Draw less — it is heavier than any source's.")),
+                        where=f"{sec.target_path}", source="computed"))
         d = built.get(idx)
         rng = density_range(dens_src, sec.blueprint_id) if dens_src else None
         if d and rng and d.get("words_per_k") is not None and d["words"] >= 8:
@@ -2968,7 +3093,8 @@ def _inspect_once(run: Run, bb, blueprints, port: int = 4600,
         # is asked only about files that moved.
         defects, usage = inspector.inspect_section(
             bb, sec, by_index[idx], page_level, blueprints.get(sec.blueprint_id),
-            (disputed or {}).get(sec.id))
+            (disputed or {}).get(sec.id),
+            copy=(load_content(run).get(sec.id) or {}).get("slots"))
         cost += usage.cost(inspector.provider.name, inspector.tier)
         if defects:
             per_section.setdefault(sec.id, []).extend(defects)
@@ -3225,7 +3351,12 @@ def step_verify(run: Run) -> Iterator[Event]:
                 errored += 1
                 yield Event(Stage.VERIFY, "blocked", f"{sid}: fixer failed — {e}")
                 continue
-            if dispute:
+            if dispute and out.code.strip() == before.strip():
+                # Disputed and nothing else changed: the section stands as it
+                # is. A dispute WITH changed code falls through below — the
+                # fixer argued one defect and fixed the rest, and discarding
+                # the fix along with the argument is what left a hero's canvas
+                # at 6% for three rounds while the h1 was being disputed.
                 disputed.setdefault(sid, []).append(dispute)
                 # A disputed section is not rewritten, so it is not re-inspected;
                 # its carried verdict has to go with the dispute or the same
@@ -3246,6 +3377,11 @@ def step_verify(run: Run) -> Iterator[Event]:
                                 f"{rejected.message}")
                 yield Event(Stage.VERIFY, "progress", f"{sid}: disputed — {dispute[:70]}")
                 continue
+            if dispute:
+                disputed.setdefault(sid, []).append(dispute)
+                _note(run, agent="fixer", summary=f"{sid}: DISPUTED (and fixed the rest) — {dispute}")
+                yield Event(Stage.VERIFY, "progress",
+                            f"{sid}: disputed one defect, fixed the rest — {dispute[:60]}")
             # A fix may not throw away imagery. Measured on the voice-ai run:
             # the fixer repaired three defects in integration-grid and one in
             # feature-grid, and in doing so removed the <Image> for

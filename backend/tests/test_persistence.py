@@ -232,7 +232,7 @@ def install_verify(monkeypatch, fixer, *, inspect=None, build=None):
 CLIPPED = Defect("high", "text-clipped", "the headline is clipped at 390px",
                  "hero @ 390px", "vision")
 CLEAN = """export default function Hero() {
-  return <section className="flex gap-8" />;
+  return <section className="flex gap-8"><h1 className="text-5xl md:text-6xl">Hi</h1></section>;
 }
 """
 

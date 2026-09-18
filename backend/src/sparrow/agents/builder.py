@@ -317,7 +317,8 @@ class Builder(Agent):
             f"purpose: {blueprint.purpose}\n"
             f"slots: {', '.join(blueprint.slots)}\n"
             f"structure: {blueprint.structure}\n"
-            f"</blueprint>",
+            + counts_line(copy)
+            + f"</blueprint>",
             f"<section>\n"
             f"file: {section.target_path}\n"
             f"component: {section.component_name} (default export)\n"
@@ -456,6 +457,30 @@ def prefix_assets(code: str, asset_base: str) -> str:
 _EASE_TUPLE = re.compile(r"(ease:\s*\[[^\]\n]*\])(?!\s*as\s+const)(?!\s*as\s*\[)")
 
 
+def counts_line(copy: dict | None) -> str:
+    """How many of each repeated thing this section actually has — from the copy.
+
+    The blueprint's `structure` is written from the SOURCE band before any
+    content exists, so it says "seven project entries, numbered 01 through
+    07" and "two verified role entries". When the user then supplies four
+    projects and one role, those numbers are stale and the builder filled the
+    gap: three invented projects and an internship that never happened, on a
+    page whose whole point is a real person. The inspector then enforced the
+    same stale count. The copy's list lengths supersede the structure's
+    numbers, and both agents are told so in the same words.
+    """
+    if not copy:
+        return ""
+    lists = {k: len(v) for k, v in copy.items() if isinstance(v, list)}
+    if not lists:
+        return ""
+    return ("COUNTS COME FROM THE COPY, NOT FROM THE STRUCTURE ABOVE: the structure "
+            "describes the source's band and its numbers are the source's. This "
+            "section has exactly " + ", ".join(f"{n} × {k}" for k, n in lists.items())
+            + ". Render that many and no more — an entry with no copy behind it is an "
+            "invented fact.\n")
+
+
 def pin_ease_tuples(code: str) -> str:
     """`ease: [a, b, c, d]` -> `ease: [a, b, c, d] as const`, everywhere.
 
@@ -501,6 +526,15 @@ If a defect is wrong — the inspector misread the screenshot, or what it descri
 deliberate — say so instead of changing the code. A defect you disagree with is better
 argued than silently obeyed.
 
+That applies to defects marked [vision] — a model's reading of a screenshot. A defect
+marked [computed] is a measurement of the rendered page or the file: an h1 the DOM says
+is hidden with no canvas over it, a canvas whose painted coverage was counted against
+the sources', a word density arithmetic produced. Those are not opinions and cannot be
+disputed; measured on a real run, a fixer disputed "the h1 is hidden and nothing draws
+it" three rounds running as "intentional" while the page opened with no headline. Fix a
+[computed] defect. Dispute only a [vision] one, and fix everything else in the same
+file regardless — a dispute of one defect is not a reason to leave the others.
+
 Output format — exactly this:
 
 ```tsx
@@ -528,7 +562,7 @@ class Fixer(Agent):
 
     def fix(self, bb: Blackboard, section: Section, code: str,
             defects: list) -> tuple[BuildOutput, str | None]:
-        listed = "\n".join(f"- [{d.severity}] {d.what} — {d.where}" for d in defects)
+        listed = "\n".join(f"- [{d.severity}] [{d.source}] {d.what} — {d.where}" for d in defects)
         user = "\n\n".join([
             f"<section>\nid: {section.id}\nfile: {section.target_path}\n</section>",
             f"<defects>\n{listed}\n</defects>",

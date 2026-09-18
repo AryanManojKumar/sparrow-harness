@@ -89,6 +89,15 @@ class PageReport:
     # words_per_k, elements_per_k} — the same measurement the scout takes of a
     # source band, taken of the built page, so the two can be compared.
     density: list[dict] = field(default_factory=list)
+    # Per large <canvas> on the built page: {index (section), w, h, coverage,
+    # hues, contrast} — the same measurement the scout takes of a source's
+    # canvas, so the built one can be held to the sources' span.
+    canvases: list[dict] = field(default_factory=list)
+    # Section indexes whose h1 is hidden (sr-only, opacity 0, transparent
+    # fill) while NO canvas covers its box — measured the way the scout
+    # measures `heading_drawn` on a source, inverted. A hidden h1 that a canvas
+    # draws is a technique; a hidden h1 nothing draws is a missing headline.
+    hidden_undrawn_h1: list[int] = field(default_factory=list)
 
 
 def base_path(directory: Path) -> str:
@@ -354,6 +363,32 @@ _DENSITY = r"""
 }
 """
 
+_HIDDEN_H1 = r"""
+() => {
+  const out = [];
+  const secs = [...document.querySelectorAll('main > section, main > div > section')];
+  secs.forEach((sec, i) => {
+    const h = sec.querySelector('h1');
+    if (!h) return;
+    const cs = getComputedStyle(h); const q = h.getBoundingClientRect();
+    const fill = cs.webkitTextFillColor || cs.color;
+    const hidden = parseFloat(cs.opacity) < 0.05 || cs.visibility === 'hidden'
+      || /rgba\(\d+, \d+, \d+, 0\)|transparent/.test(fill) || q.width < 2 || q.height < 2
+      || (cs.position === 'absolute' && q.width <= 1);
+    if (!hidden) return;
+    const drawn = [...document.querySelectorAll('canvas')].some(c => {
+      const r = c.getBoundingClientRect();
+      if (r.width < 240 || r.height < 160) return false;
+      const ov = Math.max(0, Math.min(q.right, r.right) - Math.max(q.left, r.left))
+               * Math.max(0, Math.min(q.bottom, r.bottom) - Math.max(q.top, r.top));
+      return q.width > 1 && ov / (q.width * q.height) >= 0.8;
+    });
+    if (!drawn) out.push(i);
+  });
+  return out;
+}
+"""
+
 _JAMMED = r"""
 () => {
   const out = [];
@@ -520,6 +555,29 @@ def inspect_page(
               }
             }""")
 
+            canvases: list[dict] = []
+            if name == "desktop":
+                from sparrow.scout import _canvas_weight_avg
+                secs = page.query_selector_all("main > section, main > div > section")
+                for i, sec in enumerate(secs):
+                    for c in sec.query_selector_all("canvas")[:2]:
+                        try:
+                            box = c.bounding_box()
+                            if not box or box["width"] < 240 or box["height"] < 160:
+                                continue
+                            c.scroll_into_view_if_needed(timeout=3000)
+                            page.wait_for_timeout(700)
+                            frames = []
+                            for k in range(3):
+                                cp = out_dir / f"{name}-s{i:02d}-canvas{k}.png"
+                                c.screenshot(path=str(cp), timeout=8000)
+                                frames.append(cp)
+                                page.wait_for_timeout(900)
+                            canvases.append({"index": i, "w": int(box["width"]),
+                                             "h": int(box["height"]), **_canvas_weight_avg(frames)})
+                        except Exception:
+                            pass
+
             shots: list[SectionShot] = []
             for i, el in enumerate(page.query_selector_all("main > section, main > div > section")):
                 box = el.bounding_box()
@@ -541,6 +599,8 @@ def inspect_page(
                 contrast_failures=page.evaluate(_CONTRAST),
                 sections=shots,
                 density=page.evaluate(_DENSITY) if name == "desktop" else [],
+                canvases=canvases,
+                hidden_undrawn_h1=page.evaluate(_HIDDEN_H1) if name == "desktop" else [],
             )
             page.close()
         browser.close()

@@ -36,7 +36,7 @@ from conftest import SECTIONS_DIR, RecordingFixer, drain, make_run
 DRIFTY = """export default function Hero() {
   return (
     <section className="flex gap-7">
-      <h1 className="font-bold">Continuous evidence</h1>
+      <h1 className="font-bold text-5xl md:text-6xl">Continuous evidence</h1>
     </section>
   );
 }
@@ -45,7 +45,7 @@ DRIFTY = """export default function Hero() {
 CLEAN = """export default function Hero() {
   return (
     <section className="flex gap-8">
-      <h1 className="font-semibold">Continuous evidence</h1>
+      <h1 className="font-semibold text-5xl md:text-6xl">Continuous evidence</h1>
     </section>
   );
 }
