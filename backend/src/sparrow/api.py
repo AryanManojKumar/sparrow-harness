@@ -14,6 +14,7 @@ that works in a browser without a socket.
     POST   /projects/{id}/advance         run until the next gate (SSE stream)
     GET    /projects/{id}/gate            what is being asked, and the options
     POST   /projects/{id}/gate            answer it
+    POST   /projects/{id}/edit            pointed edit of a clicked preview element
     GET    /projects/{id}/directions      the design proposals at gate 2
     GET    /projects/{id}/assets          the per-image plan at the asset gate
     POST   /projects/{id}/assets/{aid}    upload the user's own image (multipart)
@@ -31,7 +32,7 @@ import threading
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -42,6 +43,7 @@ from sparrow import telemetry
 from sparrow.blackboard.schema import Blackboard, BuildStatus, Brief, Constraint
 from sparrow.orchestrator import Run, Stage
 from sparrow import steps
+from sparrow.picker import inject_picker
 
 ROOT = Path(__file__).resolve().parents[3]
 SCAFFOLD = ROOT / "scaffold"
@@ -789,6 +791,41 @@ def rebuild(pid: str, body: Rebuild) -> dict[str, Any]:
             "next": f"POST /projects/{pid}/advance"}
 
 
+class PointedEdit(BaseModel):
+    """A click in the preview plus what the human wants changed."""
+
+    instruction: str
+    element: dict[str, Any] = {}
+
+    model_config = {"json_schema_extra": {"examples": [
+        {"instruction": "change this name to Aryan Shooter",
+         "element": {"tag": "span", "text": "MANANSHOOTER",
+                     "section_id": "nav",
+                     "selector": "section#nav span.font-display",
+                     "file_hint": "src/components/sections/Nav.tsx"}}]}}
+
+
+@app.post("/projects/{pid}/edit", tags=["run"],
+          summary="Apply a pointed instruction to the element the user clicked")
+def edit(pid: str, body: PointedEdit) -> dict[str, Any]:
+    """The console's select tool lands here.
+
+    The picker only identifies the element. This rewrites that section's file
+    and rebuilds the export so the preview the user is looking at changes.
+    """
+    if pid in _ADVANCING:
+        raise HTTPException(409, "this project is advancing — wait for a gate")
+    run = _run_for(pid)
+    try:
+        result = steps.apply_pointed_edit(run, body.instruction, body.element)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except RuntimeError as e:
+        raise HTTPException(500, str(e))
+    run.spent += float(result.get("cost") or 0)
+    return result
+
+
 @app.get("/projects/{pid}/directions", tags=["run"], summary="The three design directions proposed at gate 2")
 def directions(pid: str) -> list[dict[str, Any]]:
     p = PROJECTS / pid / "directions.json"
@@ -851,10 +888,13 @@ async def upload_asset(pid: str, asset_id: str,
 # rendering an iframe sends HEAD, and Starlette answers a GET-only route with
 # 405 — which reads as "broken" rather than "not built yet". FastAPI derives the
 # HEAD response from the GET handler, so the body is never sent.
-@app.api_route("/projects/{pid}/preview/{path:path}", methods=["GET", "HEAD"],
+@app.api_route("/projects/{pid}/preview/", methods=["GET", "HEAD"],
                tags=["artifacts"],
-               summary="The built site, static — drop in an iframe")
-def preview(pid: str, path: str = "") -> Any:
+               summary="The built site, static — drop in an iframe",
+               response_model=None)
+@app.api_route("/projects/{pid}/preview/{path:path}", methods=["GET", "HEAD"],
+               tags=["artifacts"], include_in_schema=False, response_model=None)
+def preview(pid: str, request: Request, path: str = "") -> Any:
     """Serve the static export under a per-project prefix.
 
     The export is built for a site root, so its HTML asks for `/_next/static/…`
@@ -866,6 +906,10 @@ def preview(pid: str, path: str = "") -> Any:
     out. Protocol-relative and absolute URLs are left alone. Rewriting on serve
     rather than setting Next's assetPrefix at build time keeps the export
     portable: the same `out/` can be dropped on any host without a rebuild.
+
+    HTML is the exception: a picker runtime is injected on the way out so the
+    console can select an element inside a cross-origin iframe. The export on
+    disk is untouched.
     """
     base = (PROJECTS / pid / "workspace" / "out").resolve()
     target = (base / (path or "index.html")).resolve()
@@ -879,10 +923,14 @@ def preview(pid: str, path: str = "") -> Any:
     if target.suffix.lower() not in {".html", ".htm"}:
         return FileResponse(target)
 
-    # No rewriting: the export is built with basePath set to this path, so Next
-    # already emits the prefix everywhere — including inside the RSC payload,
-    # which an HTML rewrite cannot reach.
-    return FileResponse(target)
+    # HEAD must not pay for a read-and-inject — the console probes with HEAD
+    # to decide whether a preview exists, and a missing Content-Length on a
+    # rewritten body made that look like "not built yet".
+    if request.method == "HEAD":
+        return FileResponse(target)
+
+    html = target.read_text(encoding="utf-8", errors="ignore")
+    return HTMLResponse(inject_picker(html), headers={"Cache-Control": "no-store"})
 
 
 @app.get("/projects/{pid}/files/{path:path}", tags=["artifacts"],

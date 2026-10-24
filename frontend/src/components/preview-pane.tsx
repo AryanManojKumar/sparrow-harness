@@ -1,10 +1,26 @@
 "use client";
 
-import { useState } from "react";
-import { ExternalLink, Monitor, RefreshCw, Smartphone, Tablet } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  ExternalLink,
+  Loader2,
+  Monitor,
+  MousePointer2,
+  RefreshCw,
+  Smartphone,
+  Tablet,
+} from "lucide-react";
 
 import { cn } from "@/lib/utils";
+import { editProject } from "@/lib/api";
+import {
+  PICKER_CHANNEL,
+  parsePickerMessage,
+  toEditElement,
+  type PickedElement,
+} from "@/lib/picker";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 
 type Device = "desktop" | "tablet" | "mobile";
 
@@ -17,15 +33,77 @@ const FRAME_WIDTH: Record<Device, string> = {
 export function PreviewPane({
   ready,
   src,
+  projectId,
   waitingLabel = "Building preview…",
 }: {
   ready: boolean;
   /** The run's `GET /projects/{id}/preview/` URL — drops straight into an iframe. */
   src?: string;
+  projectId?: string;
   waitingLabel?: string;
 }) {
   const [device, setDevice] = useState<Device>("desktop");
   const [reloadKey, setReloadKey] = useState(0);
+  const [selecting, setSelecting] = useState(false);
+  const [picked, setPicked] = useState<PickedElement | null>(null);
+  const [instruction, setInstruction] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const iframeRef = useRef<HTMLIFrameElement>(null);
+
+  const origin = src ? new URL(src).origin : "";
+
+  const postToFrame = useCallback(
+    (type: string) => {
+      const win = iframeRef.current?.contentWindow;
+      if (!win || !origin) return;
+      win.postMessage({ channel: PICKER_CHANNEL, type }, origin);
+    },
+    [origin]
+  );
+
+  useEffect(() => {
+    function onMessage(event: MessageEvent) {
+      if (origin && event.origin !== origin) return;
+      const msg = parsePickerMessage(event.data);
+      if (!msg) return;
+      if (msg.type === "ready" && selecting) postToFrame("select-enable");
+      if (msg.type === "element-select") {
+        setPicked(msg.payload);
+        setError(null);
+      }
+      if (msg.type === "element-clear") setPicked(null);
+    }
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, [origin, selecting, postToFrame]);
+
+  useEffect(() => {
+    postToFrame(selecting ? "select-enable" : "select-disable");
+    if (!selecting) {
+      setPicked(null);
+      setInstruction("");
+      setError(null);
+    }
+  }, [selecting, postToFrame, reloadKey]);
+
+  async function applyEdit() {
+    if (!projectId || !picked || !instruction.trim() || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await editProject(projectId, instruction.trim(), toEditElement(picked));
+      setInstruction("");
+      setPicked(null);
+      setReloadKey((k) => k + 1);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const canApply = Boolean(projectId && picked && instruction.trim() && !busy);
 
   return (
     <div className="flex h-full flex-col">
@@ -56,6 +134,19 @@ export function PreviewPane({
         </div>
 
         <div className="flex items-center gap-1">
+          <Button
+            type="button"
+            variant={selecting ? "secondary" : "ghost"}
+            size="sm"
+            aria-pressed={selecting}
+            aria-label="Select element"
+            disabled={!ready || !src}
+            onClick={() => setSelecting((on) => !on)}
+            className={cn(selecting && "text-foreground")}
+          >
+            <MousePointer2 className="size-3.5" />
+            Select
+          </Button>
           <Button
             type="button"
             variant="ghost"
@@ -89,15 +180,54 @@ export function PreviewPane({
       <div className="flex flex-1 items-center justify-center overflow-auto bg-black/20 p-6">
         {ready && src ? (
           <div
-            className="h-full overflow-hidden rounded-xl border border-border bg-white shadow-2xl shadow-black/50 transition-[width] duration-300"
+            className="relative h-full overflow-hidden rounded-xl border border-border bg-white shadow-2xl shadow-black/50 transition-[width] duration-300"
             style={{ width: FRAME_WIDTH[device] }}
           >
             <iframe
+              ref={iframeRef}
               key={reloadKey}
               src={src}
               title="Site preview"
               className="size-full border-0"
             />
+            {selecting && (
+              <div className="absolute inset-x-0 bottom-0 z-10 border-t border-border bg-card/95 p-3 backdrop-blur-sm">
+                <div className="flex items-center gap-2">
+                  <p className="min-w-0 flex-1 truncate font-mono text-[11px] text-muted-foreground">
+                    {picked
+                      ? `${picked.tag}${picked.sectionId ? " · " + picked.sectionId : ""} · ${picked.text || "no text"}`
+                      : "Click an element in the preview"}
+                  </p>
+                </div>
+                <form
+                  className="mt-2 flex items-center gap-2"
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    void applyEdit();
+                  }}
+                >
+                  <Input
+                    value={instruction}
+                    onChange={(e) => setInstruction(e.target.value)}
+                    disabled={!picked || busy}
+                    placeholder={
+                      picked
+                        ? "What should change?"
+                        : "Select something first"
+                    }
+                    aria-label="Edit instruction"
+                    className="h-8"
+                  />
+                  <Button type="submit" size="sm" disabled={!canApply}>
+                    {busy ? <Loader2 className="size-3.5 animate-spin" /> : null}
+                    Apply
+                  </Button>
+                </form>
+                {error ? (
+                  <p className="mt-2 text-xs text-destructive">{error}</p>
+                ) : null}
+              </div>
+            )}
           </div>
         ) : (
           <div
