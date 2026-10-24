@@ -389,6 +389,7 @@ export function BuildWorkspace() {
       ) : (
         <PreviewPane
           ready={previewReady}
+          projectId={id || undefined}
           src={id && previewReady ? previewUrl(id) : undefined}
           waitingLabel={
             phase === "interview"

@@ -206,6 +206,78 @@ def reset_sections(run: Run, section_ids: list[str]) -> list[str]:
     return done
 
 
+def _normalise_element(element: dict) -> dict:
+    """Picker JS speaks camelCase; the API accepts both."""
+    return {
+        "tag": (element.get("tag") or "").strip(),
+        "text": (element.get("text") or "").strip(),
+        "selector": (element.get("selector") or "").strip(),
+        "aria_label": (element.get("aria_label") or element.get("ariaLabel") or "").strip(),
+        "section_id": (element.get("section_id") or element.get("sectionId") or "").strip(),
+        "file_hint": (element.get("file_hint") or element.get("fileHint") or "").strip(),
+    }
+
+
+def resolve_edit_target(bb: Blackboard, element: dict) -> Section:
+    """Map a picker payload to the section file that rendered it."""
+    el = _normalise_element(element)
+    sid, hint = el["section_id"], el["file_hint"]
+    if sid:
+        for s in bb.sections:
+            if s.id == sid:
+                return s
+        raise ValueError(f"no such section(s): {sid}")
+    if hint:
+        for s in bb.sections:
+            if s.target_path == hint or s.target_path.endswith("/" + hint.lstrip("/")):
+                return s
+        raise ValueError(f"no such section(s): {hint}")
+    raise ValueError("could not map the selected element to a section")
+
+
+def apply_pointed_edit(run: Run, instruction: str, element: dict) -> dict:
+    """Rewrite one section from a clicked element and a human instruction.
+
+    Rebuilds the static export so the preview the user is looking at actually
+    changes. A compile failure is handed to the repairer once; a second failure
+    is raised rather than leaving a half-written export on disk.
+    """
+    instruction = (instruction or "").strip()
+    if not instruction:
+        raise ValueError("instruction is blank")
+    bb = _bb(run)
+    section = resolve_edit_target(bb, element or {})
+    path = run.workspace / section.target_path
+    if not path.is_file():
+        raise ValueError(f"section file missing: {section.target_path}")
+
+    from sparrow.agents.builder import Repairer, write_section
+    from sparrow.agents.editor import Editor
+    from sparrow.cli import _run_build
+
+    editor = Editor()
+    el = _normalise_element(element or {})
+    out = editor.edit(bb, section, path.read_text(), instruction, el)
+    write_section(run.workspace, section, out.code, asset_base=preview_base(run))
+    cost = out.usage.cost(editor.provider.name, editor.tier)
+
+    ok, log = _run_build(run.workspace)
+    if not ok:
+        repaired = Repairer().repair(bb, section, path.read_text(), log[-4000:])
+        write_section(run.workspace, section, repaired.code,
+                      asset_base=preview_base(run))
+        cost += repaired.usage.cost(editor.provider.name, editor.tier)
+        ok, log = _run_build(run.workspace)
+        if not ok:
+            raise RuntimeError(
+                "the edit was written but the workspace does not compile — "
+                + log[-800:])
+
+    _record_section(run, section.id, agent="editor", status=BuildStatus.BUILT,
+                    defects=[], note=f"pointed edit: {instruction}")
+    return {"section": section.id, "rebuilt": True, "cost": cost}
+
+
 # ------------------------------------------------------------------ gate 1
 
 def step_brief(run: Run) -> Iterator[Event]:

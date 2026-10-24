@@ -16,6 +16,7 @@ not request/response: start it, stream progress, answer gates.
     GET    /projects/{id}/gate         what is being asked, with options
     POST   /projects/{id}/gate         answer it
     POST   /projects/{id}/rebuild      re-make named sections or assets, then advance
+    POST   /projects/{id}/edit         pointed edit of a clicked preview element
     GET    /projects/{id}/directions   the design proposals at gate 2
     GET    /projects/{id}/assets       the per-image plan at the material gate
     POST   /projects/{id}/assets/{aid} upload the user's own image or logo (multipart)
@@ -540,6 +541,29 @@ this gate existed has no plan on disk and generates everything, exactly as it di
   wall-clock budget per site; stripe.com intermittently hangs under bot protection rather
   than erroring, and a hung source used to block the whole run silently. The run continues
   with whatever sources did load, and needs at least two.
+
+## Pointed edits
+
+The preview iframe is a different origin from the console, so HTML served at
+`GET /projects/{id}/preview/` has a picker runtime injected on the way out
+(`/static/picker.js`). The export on disk is not modified.
+
+The console enables it with `postMessage({ channel: "sparrow", type: "select-enable" })`.
+A click comes back as `element-select` with tag, text, selector, `section_id` and
+`file_hint`. That payload plus a human instruction is:
+
+```json
+POST /projects/{id}/edit
+{ "instruction": "change this name to Aryan Shooter",
+  "element": { "tag": "span", "text": "MANANSHOOTER", "section_id": "nav",
+               "selector": "section#nav span.font-display",
+               "file_hint": "src/components/sections/Nav.tsx" } }
+-> { "section": "nav", "rebuilt": true, "cost": 0.04 }
+```
+
+The named section file is rewritten in place and the static export is rebuilt.
+A 409 means a run is already advancing. A 400 means the element could not be
+mapped to a section, or the instruction was blank.
 
 ## Logging and tracing
 

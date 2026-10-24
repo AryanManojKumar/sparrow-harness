@@ -315,6 +315,19 @@ export function previewUrl(projectId: string): string {
   return `${API_URL}/projects/${projectId}/preview/`;
 }
 
+/** Apply a pointed instruction to the element clicked in the preview. */
+export function editProject(
+  projectId: string,
+  instruction: string,
+  element: Record<string, unknown>
+): Promise<{ section: string; rebuilt: boolean; cost?: number }> {
+  return fetch(`${API_URL}/projects/${projectId}/edit`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ instruction, element }),
+  }).then((r) => asJson(r, "edit"));
+}
+
 /**
  * A still of the built page, for cards and for the workspace's pre-build
  * poster. Cheap and cached server-side — unlike `previewUrl`, which is a
