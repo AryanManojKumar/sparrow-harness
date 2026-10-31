@@ -14,10 +14,16 @@ dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.32",
     "python-multipart>=0.0.32",
+    "httpx>=0.28.1",
 ]
 
 [project.scripts]
 sparrow = "sparrow.cli:main"
+
+[project.optional-dependencies]
+workshop = [
+    "deepseek-harness-sdk==0.2.1rc2",
+]
 
 [build-system]
 requires = ["hatchling"]

@@ -30,6 +30,37 @@ from typing import Protocol
 CALL_TIMEOUT = float(os.environ.get("SPARROW_CALL_TIMEOUT", "300"))
 CALL_RETRIES = int(os.environ.get("SPARROW_CALL_RETRIES", "2"))
 
+# Vision models downscale every image to ~1568px on the long edge before they
+# read it, so anything larger is bytes the model never sees. Measured on
+# mananshooter: two dayz.com video frames were 12-13 MB PNGs each, compose sent
+# ~52 MB of base64 and the gateway refused it with 413 before any model ran.
+IMAGE_EDGE = 1568
+
+
+def fit_image(b64: str) -> tuple[str, str]:
+    """Shrink one base64 image to what the model will actually read.
+
+    Returns (media type, base64). Re-encoded as JPEG once it has to be touched:
+    a photographic band re-saved as PNG at 1568px is still several MB, and every
+    caller already treats these as pictures to look at, not pixels to diff.
+    Small images pass through untouched as PNG, so nothing that already worked
+    changes.
+    """
+    import base64
+    import io
+
+    raw = base64.b64decode(b64)
+    if len(raw) <= 1_500_000:
+        return "image/png", b64
+    from PIL import Image
+
+    with Image.open(io.BytesIO(raw)) as im:
+        im = im.convert("RGB")
+        im.thumbnail((IMAGE_EDGE, IMAGE_EDGE), Image.LANCZOS)
+        buf = io.BytesIO()
+        im.save(buf, "JPEG", quality=85, optimize=True)
+    return "image/jpeg", base64.b64encode(buf.getvalue()).decode()
+
 
 class Tier(StrEnum):
     """What an agent needs, not what it runs on.
@@ -205,9 +236,10 @@ class AnthropicProvider:
 
         content: list[dict] = []
         for b64 in images or []:
+            mime, data = fit_image(b64)
             content.append({
                 "type": "image",
-                "source": {"type": "base64", "media_type": "image/png", "data": b64},
+                "source": {"type": "base64", "media_type": mime, "data": data},
             })
         content.append({"type": "text", "text": user})
 
@@ -245,9 +277,10 @@ class OpenAIProvider:
         # there is nothing to opt into, but prompt ORDER decides whether it hits.
         content: list[dict] = [{"type": "text", "text": user}]
         for b64 in images or []:
+            mime, data = fit_image(b64)
             content.append({
                 "type": "image_url",
-                "image_url": {"url": f"data:image/png;base64,{b64}"},
+                "image_url": {"url": f"data:{mime};base64,{data}"},
             })
 
         # The gpt-5.x line takes max_completion_tokens and rejects temperature.
@@ -270,6 +303,9 @@ class OpenAIProvider:
             u.completion_tokens if u else 0,
             cached_tokens=cached,
         )
+
+
+AZURE_APIM_DEFAULT_BASE = "https://voiceowl-ai-apim-gateway.azure-api.net/openai/v1"
 
 
 class AzureAPIMProvider(OpenAIProvider):
@@ -295,10 +331,7 @@ class AzureAPIMProvider(OpenAIProvider):
         key = os.environ.get("AZURE_APIM_KEY")
         if not key:
             raise RuntimeError("AZURE_APIM_KEY is not set")
-        base = os.environ.get(
-            "AZURE_APIM_BASE_URL",
-            "https://voiceowl-ai-apim-gateway.azure-api.net/openai/v1",
-        )
+        base = os.environ.get("AZURE_APIM_BASE_URL", AZURE_APIM_DEFAULT_BASE)
         # api_key is required by the SDK constructor and ignored by the gateway,
         # which reads the header below. Sending the real key in both is harmless
         # and means a misconfigured base_url fails loudly rather than leaking it

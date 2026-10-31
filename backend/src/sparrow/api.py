@@ -19,33 +19,53 @@ that works in a browser without a socket.
     POST   /projects/{id}/assets/{aid}    upload the user's own image (multipart)
     GET    /projects/{id}/preview/*       the built site, served statically
     GET    /projects/{id}/shots/{name}    captures
+    POST   /projects/{id}/studio/turns    edit the finished site (SSE stream)
+    GET    /projects/{id}/studio/checkpoints   its edit history
+    GET    /projects/{id}/studio/suggestions   what the owner might do next (chips)
+    POST   /projects/{id}/studio/undo     undo the latest edit
+    POST   /projects/{id}/studio/restore/{cid}  go back to any earlier version
+    GET    /projects/{id}/studio/pages    the site's pages, for the preview
 """
 
 from __future__ import annotations
 
 import json
+import os
 import queue
 import subprocess
 import re
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
+import httpx
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.openapi.docs import get_redoc_html, get_swagger_ui_html
 from pydantic import BaseModel
+from dotenv import load_dotenv
 
-from sparrow import telemetry
+from sparrow import gateway, telemetry
 from sparrow.blackboard.schema import Blackboard, BuildStatus, Brief, Constraint
 from sparrow.orchestrator import Run, Stage
 from sparrow import steps
+from sparrow import dossier
+from sparrow.workshop import store
+from sparrow.workshop.client import Workshop, WorkshopError
 
 ROOT = Path(__file__).resolve().parents[3]
 SCAFFOLD = ROOT / "scaffold"
 PROJECTS = ROOT / "projects"
+
+# The CLI loads this in main(); the API is a second entry point and used to load
+# nothing, so SPARROW_PROVIDER was unset here and get_provider() fell through to
+# its "openai" default on an Azure-only install. Every route that builds an agent
+# then died on a key that is deliberately absent, while the same code under the
+# CLI worked. Module level, so it lands before any route imports a provider.
+load_dotenv(ROOT / "backend" / ".env")
 
 # Swagger's assets are vendored rather than pulled from jsdelivr. A CDN turns
 # "the API docs" into something that depends on the network, an adblocker, and a
@@ -125,6 +145,11 @@ class _Live:
         self.subs: list[queue.Queue] = []
         self.done = False
         self.lock = threading.Lock()
+        self.run = run
+        # When the run last reported anything. A stage that hangs reports
+        # nothing; measured once as thirty hours of silence with `advancing:
+        # true`, and nothing anywhere said it had stopped moving.
+        self.last_event_at = time.monotonic()
         self.thread = threading.Thread(target=self._drive, args=(run,),
                                        name=f"advance:{pid}", daemon=True)
 
@@ -132,7 +157,49 @@ class _Live:
         _ADVANCING.add(self.pid)
         _LIVE[self.pid] = self
         self.thread.start()
+        threading.Thread(target=self._watch, name=f"watch:{self.pid}",
+                         daemon=True).start()
         return self
+
+    def _watch(self) -> None:
+        """Release a run that has stopped reporting.
+
+        A thread cannot be killed, and a stage blocked inside a call that never
+        returns holds the project forever: measured once as thirty hours at
+        `advancing: true`, every later /advance attaching to the dead run. Past
+        the limit the run is asked to stop at its next event, its listeners are
+        told, and the project is released so the next /advance starts afresh
+        from the persisted stage. The limit is longer than any single model,
+        image or video call is allowed to take.
+        """
+        limit = float(os.environ.get("SPARROW_STALL_SECONDS", "1500"))
+        while not self.done:
+            time.sleep(min(30.0, limit / 4))
+            if self.done:
+                return
+            silent = time.monotonic() - self.last_event_at
+            if silent < limit:
+                continue
+            self.run.stop_requested = True
+            self._publish({"stage": self.run.stage.value, "kind": "failed",
+                           "message": f"no progress for {silent / 60:.0f} min — the run "
+                                      "was released; advance again to retry this stage",
+                           "cost": 0, "data": {}, "spent": round(self.run.spent, 4)})
+            self._finish()
+            return
+
+    def _finish(self) -> None:
+        with self.lock:
+            if self.done:
+                return
+            self.done = True
+            for q in self.subs:
+                q.put(None)
+        # Only if this is still the project's live run: a released, stalled
+        # run that wakes later must not evict the fresh one that replaced it.
+        if _LIVE.get(self.pid) is self:
+            _LIVE.pop(self.pid, None)
+            _ADVANCING.discard(self.pid)
 
     def _drive(self, run: Run) -> None:
         try:
@@ -145,15 +212,11 @@ class _Live:
                            "message": f"{type(e).__name__}: {e}", "cost": 0,
                            "data": {}, "spent": round(run.spent, 4)})
         finally:
-            with self.lock:
-                self.done = True
-                for q in self.subs:
-                    q.put(None)
-            _ADVANCING.discard(self.pid)
-            _LIVE.pop(self.pid, None)
+            self._finish()
 
     def _publish(self, payload: dict[str, Any]) -> None:
         with self.lock:
+            self.last_event_at = time.monotonic()
             self.history.append(payload)
             for q in self.subs:
                 q.put(payload)
@@ -318,6 +381,7 @@ def _run_for(pid: str) -> Run:
     except (ValueError, KeyError):
         pass          # an unknown stage string: start from the top, as before
     run.restore_pending()
+    run.restore_spent()
     _RUNS[pid] = run
     return run
 
@@ -479,6 +543,7 @@ def rebind(pid: str) -> dict[str, Any]:
     build rather than a mismatched one.
     """
     run = _run_for(pid)
+    _not_in_studio(pid)
     if pid in _ADVANCING:
         raise HTTPException(409, "this project is advancing — wait for a gate")
 
@@ -617,12 +682,19 @@ def patch_brief(pid: str, body: BriefPatch) -> dict[str, Any]:
 def get_project(pid: str) -> dict[str, Any]:
     run = _run_for(pid)
     bb = Blackboard.model_validate_json(run.blackboard_path.read_text())
+    live = _LIVE.get(pid)
     return {
         "project_id": pid,
         "stage": run.stage.value,
         "advancing": pid in _ADVANCING,
+        # Seconds since the in-flight run last reported anything; null when
+        # nothing is running. The client decides what counts as stuck.
+        "silent_for": (round(time.monotonic() - live.last_event_at) if live else None),
         "spent": round(run.spent, 4),
         "awaiting_gate": run.pending.gate.value if run.pending else None,
+        # Handed to the studio: the workshop's copy is the live site, and the
+        # pipeline no longer runs on this project.
+        "in_studio": _in_studio(pid),
         "blackboard": bb.model_dump(mode="json"),
         "log": [{"stage": e.stage.value, "kind": e.kind, "message": e.message,
                  "cost": e.cost} for e in run.log[-60:]],
@@ -643,6 +715,7 @@ def advance(pid: str) -> StreamingResponse:
     billed twice.
     """
     run = _run_for(pid)
+    _not_in_studio(pid)
     # Already in flight: attach rather than refuse. There is still exactly one
     # generator over the stages — the second caller gets its history and then
     # its tail, and bills nothing. The 409 this used to raise is what left the
@@ -651,6 +724,26 @@ def advance(pid: str) -> StreamingResponse:
     return StreamingResponse(_sse(live), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache",
                                       "X-Accel-Buffering": "no"})
+
+
+@app.post("/projects/{pid}/stop", tags=["run"],
+          summary="Stop the in-flight run at its next event")
+def stop(pid: str) -> dict[str, Any]:
+    """Ask a running advance to stop.
+
+    The only way to stop a run used to be killing the server, and that left an
+    orphaned worker serving stale state on the same port — which then ran a
+    design stage nobody asked for. This is cooperative: the run stops at the
+    next event it reports, so no stage is cut off halfway through a write, and
+    the next /advance resumes from the same stage.
+    """
+    live = _LIVE.get(pid)
+    if live is None:
+        raise HTTPException(409, "nothing is running for this project")
+    live.run.stop_requested = True
+    return {"project_id": pid, "stopping": True,
+            "note": "stops at the run's next event; a model call already in "
+                    "flight finishes first"}
 
 
 @app.get("/projects/{pid}/events", tags=["run"],
@@ -766,6 +859,7 @@ def rebuild(pid: str, body: Rebuild) -> dict[str, Any]:
     Two builder calls rather than a pipeline.
     """
     run = _run_for(pid)
+    _not_in_studio(pid)
     if pid in _ADVANCING:
         raise HTTPException(409, "this project is advancing — wait for a gate")
     if run.pending is not None:
@@ -867,6 +961,8 @@ def preview(pid: str, path: str = "") -> Any:
     rather than setting Next's assetPrefix at build time keeps the export
     portable: the same `out/` can be dropped on any host without a rebuild.
     """
+    if _in_studio(pid):
+        return _studio_preview(pid, path)
     base = (PROJECTS / pid / "workspace" / "out").resolve()
     target = (base / (path or "index.html")).resolve()
     if not str(target).startswith(str(base)):      # no traversal out of the export
@@ -979,6 +1075,207 @@ def logs(pid: str, kind: str | None = None, limit: int = 500) -> dict[str, Any]:
          summary="What a run cost, broken down by agent")
 def logs_summary(pid: str) -> dict[str, Any]:
     return telemetry.summarise_run(pid)
+
+
+# ── studio ──────────────────────────────────────────────────────────────────
+# Editing a finished site happens in the workshop (`sparrow.workshop`), never
+# here: the office holds the keys and the workshop runs model-written code. The
+# office hands the project over once, mints the agent a project-bound token for
+# the LLM gateway (a separate process — `sparrow.gateway`), and relays what
+# comes back.
+
+class StudioTurn(BaseModel):
+    message: str
+
+
+def _workshop() -> Workshop:
+    try:
+        return Workshop()
+    except WorkshopError as e:
+        raise HTTPException(e.status, e.detail)
+
+
+def _studio_ready(pid: str) -> Run:
+    run = _run_for(pid)
+    if pid in _ADVANCING:
+        raise HTTPException(409, "this project is still being generated")
+    if not (run.workspace / "package.json").is_file():
+        raise HTTPException(409, "this project has no generated site yet")
+    return run
+
+
+def _in_studio(pid: str) -> bool:
+    """Has this project been handed to the workshop? Its copy is then the live one."""
+    return (PROJECTS / pid / "studio.json").is_file()
+
+
+def _not_in_studio(pid: str) -> None:
+    """Refuse pipeline work on a project the studio has taken over.
+
+    After handover the workshop holds the site the owner is editing. A
+    pipeline stage resumed here would rewrite the office's stale copy and the
+    two would silently fork — the owner's studio edits on one side, the
+    regenerated sections on the other.
+    """
+    if _in_studio(pid):
+        raise HTTPException(409, "this site is being edited in the studio; "
+                                 "the pipeline no longer runs on it")
+
+
+def _studio_preview(pid: str, path: str) -> Response:
+    try:
+        store.valid_pid(pid)
+        r = _workshop().preview(pid, path)
+    except (WorkshopError, store.StoreError) as e:
+        raise HTTPException(502, f"studio preview unavailable: {e}")
+    except httpx.HTTPError as e:
+        raise HTTPException(502, f"studio preview unavailable: {type(e).__name__}")
+    if r.status_code >= 400:
+        raise HTTPException(r.status_code, path)
+    # No caching: the same URL changes with every studio edit.
+    return Response(r.content, media_type=r.headers.get("content-type"),
+                    headers={"Cache-Control": "no-store"})
+
+
+def _handover(pid: str, run: Run, ws: Workshop) -> None:
+    """Make sure the workshop holds the project and knows what it is."""
+    if ws.ensure(pid, run.workspace) or not _in_studio(pid):
+        # Build output is never shipped, so the workshop builds its own before
+        # the preview starts pointing at it.
+        ws.build(pid)
+        (PROJECTS / pid / "studio.json").write_text(json.dumps(
+            {"handed_over_at": time.time(), "workshop": ws.url}))
+    bb = Blackboard.model_validate_json(run.blackboard_path.read_text())
+    ws.put_dossier(pid, dossier.render(bb, steps.load_content(run),
+                                       f"/projects/{pid}/preview"))
+
+
+def _relay(e: WorkshopError) -> HTTPException:
+    return HTTPException(e.status if e.status < 500 else 502, e.detail)
+
+
+@app.post("/projects/{pid}/studio/turns", tags=["studio"],
+          summary="Ask the studio agent to change the finished site (SSE stream)")
+def studio_turn(pid: str, body: StudioTurn) -> StreamingResponse:
+    """One request from the user, e.g. "add a pricing page".
+
+    The first call hands the generated workspace to the workshop; from then on
+    the workshop's copy is the one that changes. Events: `status`, `tool`
+    (which tool on which file), `tool_error`, and finally `done` (the agent's
+    reply, the files changed, the checkpoint) or `error`.
+    """
+    run = _studio_ready(pid)
+    ws = _workshop()
+    try:
+        _handover(pid, run, ws)
+    except WorkshopError as e:
+        raise _relay(e)
+    token = gateway.TOKENS.issue(pid)
+    try:
+        events = ws.turn(pid, body.message, token)
+        first = next(events)
+    except WorkshopError as e:
+        raise _relay(e)
+
+    def sse():
+        yield f"data: {json.dumps(first)}\n\n"
+        try:
+            for ev in events:
+                yield f"data: {json.dumps(ev)}\n\n"
+        except (WorkshopError, OSError) as e:
+            yield f"data: {json.dumps({'kind': 'error', 'text': str(e)})}\n\n"
+
+    return StreamingResponse(sse(), media_type="text/event-stream")
+
+
+@app.get("/projects/{pid}/studio/suggestions", tags=["studio"],
+         summary="Suggested next changes for this site, as chips")
+def studio_suggestions(pid: str) -> dict:
+    """Six requests the owner can tap, written for this site.
+
+    Regenerated only when the site has changed since they were written —
+    keyed on the latest studio checkpoint — so opening the studio twice does
+    not cost two model calls.
+    """
+    run = _studio_ready(pid)
+    ws = _workshop()
+    try:
+        history = ws.checkpoints(pid) if ws.info(pid)["exists"] else []
+    except WorkshopError as e:
+        raise _relay(e)
+    after = history[0]["id"] if history else "generated"
+    cache = PROJECTS / pid / "studio-suggestions.json"
+    if cache.is_file():
+        cached = json.loads(cache.read_text())
+        if cached.get("after") == after:
+            return cached
+    bb = Blackboard.model_validate_json(run.blackboard_path.read_text())
+    content = steps.load_content(run)
+    drafted = sum(1 for e in content.values() for v in (e.get("provenance") or {}).values()
+                  if v != "user_supplied")
+    confirmed = sum(1 for e in content.values() for v in (e.get("provenance") or {}).values()
+                    if v == "user_supplied")
+    facts = "\n".join([
+        "Home page sections, top to bottom: "
+        + ", ".join(s.id for s in sorted(bb.sections, key=lambda s: s.order)),
+        "Images: " + ("; ".join(f"{a.id} ({a.provenance.value}, {a.kind.value})"
+                                for a in bb.assets) or "none"),
+        f"Copy: {confirmed} pieces confirmed by the owner, {drafted} drafted by the pipeline.",
+        "Already changed in the studio: "
+        + ("; ".join(c["message"] for c in history
+                     if c["message"] != "Imported the generated site") or "nothing yet"),
+    ])
+    from sparrow.agents.studio_guide import StudioGuide
+    try:
+        rows = StudioGuide().suggest(bb, facts)
+    except (ValueError, RuntimeError) as e:
+        raise HTTPException(502, f"could not write suggestions: {e}")
+    out = {"after": after, "suggestions": rows}
+    cache.write_text(json.dumps(out, indent=2))
+    return out
+
+
+@app.get("/projects/{pid}/studio/checkpoints", tags=["studio"],
+         summary="The edit history, newest first")
+def studio_checkpoints(pid: str) -> list[dict]:
+    _run_for(pid)
+    try:
+        return _workshop().checkpoints(pid)
+    except WorkshopError as e:
+        raise _relay(e)
+
+
+@app.post("/projects/{pid}/studio/undo", tags=["studio"], summary="Undo the latest edit")
+def studio_undo(pid: str) -> dict:
+    _run_for(pid)
+    try:
+        return _workshop().undo(pid)
+    except WorkshopError as e:
+        raise _relay(e)
+
+
+@app.post("/projects/{pid}/studio/restore/{cid}", tags=["studio"],
+          summary="Go back to an earlier version (recorded as a new one)")
+def studio_restore(pid: str, cid: str) -> dict:
+    _run_for(pid)
+    try:
+        return _workshop().restore(pid, cid)
+    except WorkshopError as e:
+        raise _relay(e)
+
+
+@app.get("/projects/{pid}/studio/pages", tags=["studio"],
+         summary="The built site's pages, as URL paths under the preview")
+def studio_pages(pid: str) -> list[str]:
+    """Where the preview can go. From the workshop once the studio holds the
+    site — it may have pages the generated export never had."""
+    _run_for(pid)
+    if _in_studio(pid):
+        try:
+            return _workshop().pages(pid)
+        except WorkshopError as e:
+            raise _relay(e)
+    return store.routes(PROJECTS / pid / "workspace" / "out")
 
 
 @app.get("/health", tags=["projects"], summary="Liveness")

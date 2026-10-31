@@ -11,9 +11,11 @@ next-env.d.ts
 
 # per-project agent workdirs (never committed)
 projects/
+workshop-data/
 
 # env
 .env
+workshop.env
 .env.local
 .env*.local
 
@@ -37,3 +39,9 @@ __pycache__/
 # sample mp4, and a one-off page that resumes a hardcoded project id.
 logotemp/
 frontend/public/resume.html
+backend/startgide.md
+
+# server output and run telemetry — regenerated on every run
+logs/*.out
+logs/old-*/
+logs/sparrow.jsonl
