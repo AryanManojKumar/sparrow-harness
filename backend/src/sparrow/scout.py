@@ -68,7 +68,20 @@ _SEGMENT = r"""
   const outerSemantic = semantic.filter(el => !semantic.some(o => o !== el && o.contains(el)));
 
   if (outerSemantic.length >= 3) {
-    bands = outerSemantic;
+    // The same rule the spine applies: an outer <section> taller than 55% of
+    // the page is a container. mafia.2k.com wraps its whole page in one
+    // 6,255px section, and taking it as one band left three bands — nav,
+    // everything, footer — and the site was dropped as too thin.
+    const pageH0 = document.body.scrollHeight;
+    bands = [];
+    for (const el of outerSemantic) {
+      if (box(el).height <= pageH0 * 0.55) { bands.push(el); continue; }
+      const inner = semantic.filter(s => s !== el && el.contains(s)
+        && !semantic.some(o => o !== s && o !== el && el.contains(o) && o.contains(s)));
+      if (inner.length >= 2) { bands.push(...inner); continue; }
+      const kids = [...el.children].filter(k => visible(k) && box(k).height >= opts.minHeight);
+      bands.push(...(kids.length >= 2 ? kids : [el]));
+    }
     // Pull in a header/footer the author left outside <section>.
     for (const sel of ['body > header', 'header', 'body > footer', 'footer']) {
       const el = document.querySelector(sel);
@@ -81,13 +94,26 @@ _SEGMENT = r"""
     // 7,059px of a 7,674px page — still a wrapper, not a section. Any child that
     // dominates the page is a container, so recurse into it and keep the rest.
     const pageH = document.body.scrollHeight;
+    // Children as the browser lays them out: a `display: contents` element has
+    // no box of its own, so its children stand in its place. mafia.2k.com is
+    // an Astro site whose every section sits inside a 0x0 <astro-island>, and
+    // the descent read twelve zero-height children and stopped.
+    const kidsOf = (node) => [...node.children].flatMap(c =>
+      getComputedStyle(c).display === 'contents' ? kidsOf(c) : [c]);
     const flatten = (node, depth) => {
       if (depth > 14) return [node];
-      const kids = [...node.children].filter(isBand);
+      const kids = kidsOf(node).filter(isBand);
       if (!kids.length) {
-        const tall = [...node.children].filter(
+        const tall = kidsOf(node).filter(
           el => visible(el) && box(el).height >= opts.minHeight);
-        return tall.length > 1 ? tall : [node];
+        if (tall.length > 1) return tall;
+        // One tall child under a node that dominates the page is another
+        // wrapper, whatever its width — mafia.2k.com nests its sections in a
+        // centred container narrower than the viewport, and the descent
+        // stopped there with the whole page as one 6,255px band.
+        if (tall.length === 1 && box(node).height > pageH * 0.55)
+          return flatten(tall[0], depth + 1);
+        return [node];
       }
       const out = [];
       for (const kid of kids) {
@@ -749,8 +775,86 @@ class SiteExtract:
     bands: list[Band] = field(default_factory=list)
 
 
+_AGE_GATE = r"""
+() => {
+  // Game and drink sites answer the first visit with a date-of-birth wall, and
+  // the scout photographed the wall: residentevil.com, killingfloor3.com and
+  // deadisland.com were unreadable as references for a zombie game. A visible
+  // birth-date form is filled with an adult date and its enter control pressed.
+  // Mechanics only — nothing here decides anything about the page behind it.
+  // Whole text: deepsilver's gate is rendered after the footer.
+  const text = document.body.innerText || '';
+  if (!/birth|your age|how old|\b1[78]\+|age verification|enter your (date|age)/i.test(text)) return 'none';
+  let filled = 0;
+  const set = (el, v) => {
+    const proto = el.tagName === 'SELECT' ? HTMLSelectElement.prototype : HTMLInputElement.prototype;
+    Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, v);
+    el.dispatchEvent(new Event('input', {bubbles: true}));
+    el.dispatchEvent(new Event('change', {bubbles: true}));
+    filled++;
+  };
+  // On screen only: deepsilver also carries a newsletter form with its own
+  // DD/MM/YYYY fields and its own Submit, further down the page.
+  let last = null;
+  for (const el of document.querySelectorAll('input,select')) {
+    const r = el.getBoundingClientRect();
+    if (r.width < 10 || r.height < 10) continue;
+    if (r.bottom < 0 || r.top > window.innerHeight) continue;
+    const label = el.labels && el.labels[0] ? el.labels[0].innerText : '';
+    const hint = [el.placeholder, el.name, el.id, el.getAttribute('aria-label'), label]
+      .join(' ').toLowerCase();
+    let v = null;
+    if (el.type === 'date') v = '1990-01-01';
+    else if (/yyyy|year|\byy\b/.test(hint)) v = '1990';
+    else if (/\bmm\b|month/.test(hint)) v = '01';
+    else if (/\bdd\b|\bday\b/.test(hint)) v = '01';
+    if (v === null) continue;
+    if (el.tagName === 'SELECT') {
+      const o = [...el.options].find(o => o.value === v || o.text.trim() === v
+                                        || (+o.value === +v && o.value !== ''));
+      if (o) { set(el, o.value); last = el; }
+    } else { set(el, v); last = el; }
+  }
+  // The enter control that belongs to the fields just filled: the nearest
+  // ancestor of the last one that holds a matching control wins.
+  const OKGO = /^(enter|submit|continue|confirm|verify|go|yes|i am (over )?1[78]|i'?m (over )?1[78])\b/i;
+  const matches = b => { const r = b.getBoundingClientRect();
+    return r.width > 10 && r.height > 10 && OKGO.test((b.innerText || b.value || '').trim()); };
+  for (let a = last && last.parentElement, depth = 0; a && depth < 6; a = a.parentElement, depth++) {
+    const own = [...a.querySelectorAll('button,a,input[type=submit],[role=button],div,span')]
+      .filter(b => b.matches('button,a,input[type=submit],[role=button]')
+                   || getComputedStyle(b).cursor === 'pointer')
+      .find(matches);
+    if (own) { own.click(); return `filled ${filled}, pressed ${(own.innerText || own.value).trim().slice(0, 20)}`; }
+  }
+  // Buttons first, then anything styled to be clicked: Capcom's "Confirm" is a
+  // div with a pointer cursor and no role.
+  const clickable = [...document.querySelectorAll('button,a,input[type=submit],[role=button]'),
+                     ...[...document.querySelectorAll('div,span')]
+                        .filter(e => getComputedStyle(e).cursor === 'pointer'
+                                     && e.children.length <= 2)];
+  const go = clickable
+    .filter(b => { const r = b.getBoundingClientRect(); return r.width > 10 && r.height > 10; })
+    .find(b => /^(enter|submit|continue|confirm|verify|go|yes|i am (over )?1[78]|i'?m (over )?1[78])\b/i
+                 .test((b.innerText || b.value || '').trim()));
+  if (go) { go.click(); return `filled ${filled}, pressed ${(go.innerText || go.value).trim().slice(0, 20)}`; }
+  return `filled ${filled}, nothing to press`;
+}
+"""
+
 _DISMISS = r"""
 () => {
+  // Consent managers that render inside a shadow root — Usercentrics on
+  // deepsilver.com covered the whole Dead Island 2 page, and nothing below
+  // can see into an open shadow root. Accept from inside it first.
+  const OKS = /^(accept|allow|agree|got it|ok|i agree|accept all|allow all)/i;
+  for (const host of document.querySelectorAll('*')) {
+    const root = host.shadowRoot;
+    if (!root) continue;
+    const b = [...root.querySelectorAll('button,[role="button"]')]
+      .find(b => OKS.test((b.innerText || b.textContent || '').trim()));
+    if (b) b.click();
+  }
   // Consent dialogs, chat launchers and region banners arrive with the VISIT,
   // not with the design, and they sit on top of the page in every screenshot
   // this harness takes. The reader duly described elevenlabs' privacy panel as
@@ -768,7 +872,10 @@ _DISMISS = r"""
     const cs = getComputedStyle(el);
     if (cs.position !== 'fixed' && cs.position !== 'sticky') continue;
     const r = el.getBoundingClientRect();
-    if (r.width < 120 || r.height < 60) continue;
+    // A thin full-width cookie bar is a consent dialog too — killingfloor3's
+    // is 22px tall and was in every band below the hero.
+    const bar = r.width > window.innerWidth * 0.6 && r.height >= 16;
+    if (!bar && (r.width < 120 || r.height < 60)) continue;
     const txt = (el.innerText || '').slice(0, 400);
     if (!WORDS.test(txt) && !WORDS.test(el.className || '') && !WORDS.test(el.id || '')) continue;
     const btn = [...el.querySelectorAll('button,a[role="button"],[role="button"]')]
@@ -1016,6 +1123,11 @@ def _extract_once(
             page.goto(url, wait_until="domcontentloaded", timeout=left_ms(timeout_ms))
             page.wait_for_timeout(2500)
             page.set_default_timeout(left_ms(25000))
+            try:
+                if page.evaluate(_AGE_GATE) != "none":
+                    page.wait_for_timeout(3000)
+            except Exception:
+                pass
             # BEFORE _SCROLL, and that ordering is the whole measurement.
             # Entrances are `once: true`: they fire the first time an element
             # reaches the viewport and never again. _SCROLL exists to trigger
@@ -1041,6 +1153,15 @@ def _extract_once(
             except Exception:
                 settled = 0
             page.wait_for_timeout(600 if settled else 1200)
+            # Again, after the scroll. Consent managers that load late —
+            # zombiearmy.com's privacy notice and dyinglightgame.com's
+            # Cookiebot bar both arrived after the first pass — sat in the
+            # corner of every band photographed.
+            try:
+                page.evaluate(_DISMISS)
+                page.wait_for_timeout(300)
+            except Exception:
+                pass
         except Exception as e:
             browser.close()
             over = _time.monotonic() >= deadline

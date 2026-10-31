@@ -119,6 +119,10 @@ class Run:
         self.spent: float = 0.0
         self.pending: GateRequest | None = None
         self.log: list[Event] = []
+        # Set from another thread (POST /stop). Checked between events, so a
+        # stage is never cut off halfway through writing a file — it stops at
+        # the next thing it reports, and resumes from its own stage pointer.
+        self.stop_requested: bool = False
 
     # ------------------------------------------------------------------ paths
 
@@ -137,6 +141,25 @@ class Run:
     @property
     def pending_path(self) -> Path:
         return self.dir / "pending.json"
+
+    @property
+    def spent_path(self) -> Path:
+        return self.dir / "spent.json"
+
+    def restore_spent(self) -> None:
+        """The run's total cost survives a restart. It lived on this object, so
+        every restart reset it: mananshooter reported $0.85 for a run that cost
+        three to four dollars across five server processes."""
+        try:
+            self.spent = float(json.loads(self.spent_path.read_text()).get("spent", 0.0))
+        except (OSError, ValueError, TypeError, AttributeError):
+            pass
+
+    def _save_spent(self) -> None:
+        try:
+            self.spent_path.write_text(json.dumps({"spent": round(self.spent, 4)}))
+        except OSError:
+            pass
 
     # ---------------------------------------------------------------- gates
 
@@ -207,7 +230,16 @@ class Run:
             try:
                 for ev in step(self):
                     self.spent += ev.cost
+                    if ev.cost:
+                        self._save_spent()
                     yield self._emit(ev)
+                    if self.stop_requested:
+                        self.stop_requested = False
+                        yield self._emit(Event(
+                            self.stage, "stopped",
+                            f"stopped on request during {self.stage.value} — advance "
+                            "again to resume this stage"))
+                        return
             except Halt as h:
                 self.set_pending(h.request)
                 yield self._emit(Event(self.stage, "awaiting", h.request.question,

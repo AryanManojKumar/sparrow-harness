@@ -10,6 +10,7 @@ rather than living in whoever is typing the commands.
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import re
@@ -438,7 +439,16 @@ def step_sources(run: Run, urls: list[str]) -> Iterator[Event]:
                 cost=usage.cost(provider.name, Tier.CHEAP))
 
     rankings: dict[str, dict] = {}
-    for t in comm.typical_order:
+    # Every type in the PRIMARY's own sequence, then the checklist. Ranking only
+    # `typical_order` — the types every source shares — meant a section the
+    # primary had and the others lacked never got a winner, and a type with no
+    # winner gets no blueprint and is silently dropped from the sitemap below.
+    # Measured on mananshooter-ow: cyberpunk.net opens hero -> product-showcase
+    # -> feature-grid -> cta; rockstargames.com had neither of the first two,
+    # and the page shipped with no hero at all — the mean deciding the skeleton
+    # again, one step past `primary_order`.
+    for t in dict.fromkeys([*primary_order(labelled, primary, comm),
+                            *comm.typical_order]):
         if not by_type.get(t):
             continue
         r, u = rank_section(provider, bb.brief, t, by_type[t])
@@ -491,8 +501,18 @@ def step_sources(run: Run, urls: list[str]) -> Iterator[Event]:
     # prose about a layout instead of the layout.
     winners: dict[str, dict] = {}
     for t, r in rankings.items():
-        won = next((c for c in by_type.get(t, []) if c.site == r.get("winner")), None)
+        pool = [c for c in by_type.get(t, []) if c.site == r.get("winner")]
+        # A ranking may name the band as well as the site ("hevyapp.com pos 4").
+        won = next((c for c in pool if c.position == r.get("winner_pos")), None) \
+            or (pool[0] if pool else None)
         if won is None:
+            # Never silent: a section with no winner reaches the builder with no
+            # source shot, no markup, no proof and no density, and looks like a
+            # section the sources simply do not have.
+            yield Event(Stage.SOURCES, "blocked",
+                        f"{t}: the ranker named {r.get('winner')!r}, which is not one of "
+                        f"{sorted({c.site for c in by_type.get(t, [])})} — this section "
+                        "will be built with no source band")
             continue
         # WIDTH COMES FROM THE PRIMARY, not from whichever source won this
         # section. §5 gives the primary the rhythm and pacing, and width rhythm
@@ -1210,7 +1230,8 @@ def step_content(run: Run) -> Iterator[Event]:
                    if (e.get("provenance") or {}).get(k) == "user_supplied"
                    and isinstance(v, str) and v.strip()]
         copy = editor.write(bb.brief, bb.constraints, bp, section_id=section.id,
-                            proof=proof, facts=carried)
+                            proof=proof, facts=carried,
+                            page_so_far=_page_lines(content))
         content[section.id] = {
             "slots": copy.slots,
             "provenance": {k: v.value for k, v in copy.provenance.items()},
@@ -1226,6 +1247,52 @@ def step_content(run: Run) -> Iterator[Event]:
     yield Event(Stage.CONTENT, "done",
                 f"copy drafted for {len(content)} section(s) · "
                 f"{asks} invented fact(s) to confirm")
+
+
+def confirmed_words(run: Run, bb: Blackboard) -> set[str]:
+    """Every word the page may state as fact: the brief, the constraints, the copy.
+
+    `content.json` holds what the content stage drafted and the gate settled —
+    an unconfirmed claim there was already asked about, answered, or retracted
+    at the asset stage. What is NOT in here is anything the builder or the
+    fixer wrote on its own, which is exactly what `audit_claims` is for.
+    """
+    from sparrow.audit import corpus_words
+
+    b = bb.brief
+    texts = [b.product_name or "", b.category or "", b.offering or "",
+             b.audience or "", b.tone or "", b.primary_action or "",
+             b.secondary_action or ""]
+    texts += [c.text for c in bb.constraints if not c.superseded_by]
+
+    def walk(v):
+        if isinstance(v, str):
+            texts.append(v)
+        elif isinstance(v, list):
+            for x in v:
+                walk(x)
+        elif isinstance(v, dict):
+            for x in v.values():
+                walk(x)
+
+    for e in load_content(run).values():
+        walk(e.get("slots") or {})
+    return corpus_words(*texts)
+
+
+def _page_lines(content: dict) -> list[str]:
+    """Every single-line slot drafted so far, as "section: slot — text".
+
+    Lists are left out on purpose: a nav's twelve labels or a FAQ's answers are
+    not the lines a reader hears as the page's voice, and they would crowd out
+    the ones that are — headlines, eyebrows, the sentence under a headline.
+    """
+    out: list[str] = []
+    for sid, e in content.items():
+        for k, v in (e.get("slots") or {}).items():
+            if isinstance(v, str) and v.strip() and len(v) < 220:
+                out.append(f"{sid}: {k} — {v.strip()}")
+    return out
 
 
 def content_asks(run: Run) -> list[dict]:
@@ -1253,7 +1320,13 @@ def split_list_answer(answer: str) -> list[str]:
     if "\n" in text or ";" in text:
         parts = re.split(r"[\n;]+", text)
     elif "(" not in text and "—" not in text and " - " not in text:
-        parts = re.split(r",\s*|\s+(?:and|&)\s+", text)
+        # Never inside a number, and only when every piece reads as a name. On
+        # fitnest "Google Play, rated 3.5 from 4,681 reviews" became three
+        # "attributions" against one quote, and the builder invented two
+        # testimonials to make the counts agree.
+        parts = re.split(r"(?<!\d),\s*|,(?!\d)\s*|\s+(?:and|&)\s+", text)
+        if any(len(p.split()) > 4 for p in parts):
+            parts = [text]
     else:
         # Sentences that each name a thing: "A (…) — …. B (…) — …."
         parts = re.split(r"(?<=[.!?])\s+(?=[A-Z])", text)
@@ -1315,7 +1388,7 @@ ASSET_PLAN = "asset-plan.json"
 # Per KIND, not one flat list. A logo is not an image with a different subject:
 # `generate` is what put a fabricated brand on a real business's site and `skip`
 # is what left the nav showing a lucide phone icon, so neither is offered.
-IMAGE_DECISIONS = ("upload", "generate", "skip")
+IMAGE_DECISIONS = ("upload", "as_is", "generate", "skip")
 
 # `wordmark` is not "skip" wearing a different label. It produces no file, and it
 # is a real answer: the name set in the design system's display typeface is a
@@ -1458,7 +1531,11 @@ def _is_portrait(brief: str, section_type: str = "") -> bool:
 def decisions_for(entry: dict) -> tuple[str, ...]:
     k = _kind(entry)
     return (LOGO_DECISIONS if k == "logo" else
-            PORTRAIT_DECISIONS if k == "portrait" else IMAGE_DECISIONS)
+            PORTRAIT_DECISIONS if k == "portrait" else
+            # A video upload is already passed through untouched; "as_is" is
+            # the still-image escape from scrub and restyle and means nothing here.
+            tuple(d for d in IMAGE_DECISIONS if d != "as_is") if k == "video" else
+            IMAGE_DECISIONS)
 
 
 VIDEO_SUFFIXES = {".mp4", ".webm", ".mov"}
@@ -2005,6 +2082,12 @@ def _image_choices(a: dict, upload_url: str) -> list[dict]:
          "detail": "Restyled to the chosen design direction. Any text it "
                    "gains that the original did not have is rejected.",
          "post_file_to": f"{upload_url}/{a['id']}"},
+        {"choice": "as_is",
+         "label": "Use my image exactly as it is",
+         "detail": "No privacy scrub and no restyle — for pictures that are "
+                   "already public, like your own store screenshots or "
+                   "marketing art. Choose this only if it shows no customer data.",
+         "post_file_to": f"{upload_url}/{a['id']}"},
         {"choice": "generate",
          "label": "Generate one from this description"},
         {"choice": "skip",
@@ -2069,9 +2152,9 @@ def record_asset_decisions(run: Run, decisions: dict[str, str]) -> list[dict]:
                 "decided individually, there is no answer for all of them"
                 + (" · a logo is never generated and never skipped: it is your "
                    "mark or it is your name" if _kind(a) == "logo" else ""))
-        if choice == "upload" and not a.get("upload"):
+        if choice in ("upload", "as_is") and not a.get("upload"):
             raise ValueError(
-                f"{a['id']} was answered 'upload' but no file has been posted to "
+                f"{a['id']} was answered '{choice}' but no file has been posted to "
                 f"/projects/{run.project_id}/assets/{a['id']} yet")
         a["decision"] = choice
     save_plan(run, plan)
@@ -2570,7 +2653,16 @@ def step_assets(run: Run) -> Iterator[Event]:
         rejected: list[str] = []
         scrubbed: list[str] = []
 
-        if decision == "upload" and kind == "portrait":
+        if decision == "as_is":
+            # The user's word that this picture is already public. Measured on
+            # fitnest: the scrub boxed every stock model's face on the app's own
+            # store screenshots and the restyle repainted the light UI dark and
+            # letterboxed the phone into 1536x1024. For a published image both
+            # are damage, not protection.
+            _write_png((run.dir / "uploads" / a["upload"]).read_bytes(), path, Image)
+            provenance = Provenance.USER_SUPPLIED
+            yield Event(Stage.ASSETS, "progress", f"{aid}: your image, used exactly as it is")
+        elif decision == "upload" and kind == "portrait":
             # Through untouched, like the logo. Scrub reads faces as PII and
             # restyle redraws them; the photo of the person is the one image on
             # the page that must be exactly what they gave.
@@ -2593,7 +2685,12 @@ def step_assets(run: Run) -> Iterator[Event]:
                             f"{aid}: real values substituted out of your screenshot "
                             f"before anything else saw it — {', '.join(scrubbed)}")
 
-            restyled = cur.restyle(scrub.image, bb.design_system)
+            # The upload's own shape. A fixed "wide" turned fitnest's 772x1660
+            # phone screens into 1536x1024 frames with the phone shrunk inside.
+            with Image.open(io.BytesIO(scrub.image)) as _im:
+                _w, _h = _im.size
+            shape = ("tall" if _h > _w * 1.15 else "wide" if _w > _h * 1.15 else "square")
+            restyled = cur.restyle(scrub.image, bb.design_system, shape=shape)
             # Compared SCRUBBED-against-restyled, never original-against-restyled.
             # The gate asks whether the image model invented copy, so the ground
             # truth is what the image model was GIVEN. Against the original,
@@ -3028,14 +3125,25 @@ def _inspect_once(run: Run, bb, blueprints, port: int = 4600,
                 if src_canvases else None)
     built_canvases: dict[int, list[dict]] = {}
     hidden_h1: set[int] = set()
+    repeated: dict[int, list[dict]] = {}
+    below_fold: dict[int, dict] = {}
     for r in reports.values():
         for c in (getattr(r, "canvases", None) or []):
             built_canvases.setdefault(c["index"], []).append(c)
         hidden_h1.update(getattr(r, "hidden_undrawn_h1", None) or [])
-    for pos, idx in enumerate(sorted(by_index)):
-        if pos >= len(ordered):
-            break
-        sec = ordered[pos]
+        for rp in (getattr(r, "repeated_images", None) or []):
+            repeated.setdefault(rp["index"], []).append(rp)
+        for hf in (getattr(r, "h1_below_fold", None) or []):
+            below_fold[hf["index"]] = hf
+    by_id = {s.id: s for s in ordered}
+    for idx in sorted(by_index):
+        # By the section's id, then by its DOM index — never by the shot's
+        # position in the list, which shifts whenever a short section is not
+        # photographed (see SectionShot.dom_id).
+        dom_id = next((sh.dom_id for sh in by_index[idx] if sh.dom_id), "")
+        sec = by_id.get(dom_id) or (ordered[idx] if idx < len(ordered) else None)
+        if sec is None:
+            continue
         if only is not None and sec.id not in only:
             continue
         if idx in hidden_h1 and sec.blueprint_id == "hero":
@@ -3046,6 +3154,25 @@ def _inspect_once(run: Run, bb, blueprints, port: int = 4600,
                       "headline. The sources hide an h1 only where a canvas renders the same "
                       "text; this one does not. Show the name in the design system's display "
                       "step. This is a measurement, not an opinion."),
+                where=f"{sec.target_path}", source="computed"))
+        hf = below_fold.get(idx)
+        if hf:
+            per_section.setdefault(sec.id, []).append(Defect(
+                severity="high", code="h1-below-fold",
+                what=(f"measured on the rendered page: this section's h1 starts {hf['top']}px "
+                      f"down, below the first {hf['fold']}px a reader sees on arrival — the "
+                      "page opens with no headline. Bring the headline into the first "
+                      "viewport: move what sits above it to below it, or make it "
+                      "smaller — do not remove any image, that fix is rejected. This "
+                      "is a measurement, not an opinion."),
+                where=f"{sec.target_path}", source="computed"))
+        for rp in repeated.get(idx, []):
+            per_section.setdefault(sec.id, []).append(Defect(
+                severity="high", code="image-repeated",
+                what=(f"measured on the rendered page: {rp['name']} is shown {rp['count']} "
+                      "times in this section, so cards that are meant to differ show the "
+                      "same picture. Give each its own asset from the asset list; if there "
+                      "are not enough, show fewer images rather than repeating one."),
                 where=f"{sec.target_path}", source="computed"))
         for c in built_canvases.get(idx, []):
             if cov_span and c.get("coverage") is not None:
@@ -3104,9 +3231,21 @@ def _inspect_once(run: Run, bb, blueprints, port: int = 4600,
 _ASSET_REF = re.compile(r"assets/[A-Za-z0-9._-]+")
 
 
-def _assets_lost(before: str, after: str) -> list[str]:
-    """Which images the section used to render and no longer does."""
-    return sorted(set(_ASSET_REF.findall(before)) - set(_ASSET_REF.findall(after)))
+def _assets_lost(before: str, after: str, public: Path | None = None) -> list[str]:
+    """Which images the section used to render and no longer does.
+
+    Only files that exist count. A reference to an asset no stage produced
+    renders as a broken image, and removing it is the fix `audit_asset_refs`
+    asks for — measured on mananshooter-ow, this guard rejected exactly that
+    removal and kept a dead `product-showcase-2.png` on the page.
+    """
+    gone = set(_ASSET_REF.findall(before)) - set(_ASSET_REF.findall(after))
+    if public is not None:
+        gone = {g for g in gone if (public / Path(g).name).is_file()}
+    return sorted(gone)
+
+
+REPORT_ONLY = {"unused-asset"}
 
 
 def _drift_defects(findings: list, bb: Blackboard) -> dict[str, list]:
@@ -3137,6 +3276,12 @@ def _drift_defects(findings: list, bb: Blackboard) -> dict[str, list]:
     allow = permitted(bb.design_system)
     out: dict[str, list] = {}
     for f in findings:
+        if f.category in REPORT_ONLY:
+            # Counted at the gate, never handed to the fixer. Measured on
+            # mananshooter-ow: told to place three unused hero images, the
+            # fixer stacked them above the headline and the hero grew to
+            # 2,640px. An unused picture is waste; a buried headline is damage.
+            continue
         sid = owner.get(f.file)
         if sid is None:
             # A .tsx no section owns. It is still reported in the count at the
@@ -3270,11 +3415,18 @@ def step_verify(run: Run) -> Iterator[Event]:
     # again and every other section keeps the verdict it already has.
     touched: set[str] | None = None
     verdicts: dict[str, list] = {}
+    # What the page may state as fact. Read once: the copy does not change
+    # inside verify, and the fixer is held to it every round.
+    from sparrow.audit import unconfirmed
+    confirmed = confirmed_words(run, bb)
 
     while True:
         findings = audit_dir(run.workspace / "src/components/sections", bb.design_system,
                              load_winners(run),
-                             {s.id: Path(s.target_path).name for s in bb.sections})
+                             {s.id: Path(s.target_path).name for s in bb.sections},
+                             confirmed=confirmed,
+                             public_assets=run.workspace / "public" / "assets",
+                             assets=bb.assets)
         try:
             page_level, fresh, cost = _inspect_once(run, bb, blueprints, port,
                                                     disputed, only=touched)
@@ -3392,11 +3544,23 @@ def step_verify(run: Run) -> Iterator[Event]:
             # differentiator. Dropping an asset is never the fix for a visual
             # defect; if the layout cannot hold the image, that is an escalation,
             # not a deletion.
-            lost = _assets_lost(before, out.code)
+            lost = _assets_lost(before, out.code, run.workspace / "public" / "assets")
             if lost:
                 yield Event(Stage.VERIFY, "blocked",
                             f"{sid}: fix rejected — it removed {', '.join(lost)}, "
                             "which the section is built to show")
+                continue
+            # The mirror of the rule above: a fix may not ADD a claim. Measured
+            # on mananshooter's last round — Steam, seven social accounts and a
+            # rating badge, each added to answer an inspector that reported it
+            # missing. Only claims new to this fix are held against it, so a fix
+            # that removes some invented text and leaves the rest still lands.
+            added = sorted(set(unconfirmed(out.code, confirmed))
+                           - set(unconfirmed(before, confirmed)))
+            if added:
+                yield Event(Stage.VERIFY, "blocked",
+                            f"{sid}: fix rejected — it adds {', '.join(added[:8])}, "
+                            "which nobody confirmed")
                 continue
             snapshots.setdefault(path, before)
             write_section(run.workspace, section, out.code,
@@ -3479,7 +3643,10 @@ def step_verify(run: Run) -> Iterator[Event]:
 
     findings = audit_dir(run.workspace / "src/components/sections", bb.design_system,
                              load_winners(run),
-                             {s.id: Path(s.target_path).name for s in bb.sections})
+                             {s.id: Path(s.target_path).name for s in bb.sections},
+                             confirmed=confirmed_words(run, bb),
+                             public_assets=run.workspace / "public" / "assets",
+                             assets=bb.assets)
     looked = True
     try:
         _, fresh, _ = _inspect_once(run, bb, blueprints, port + 10, disputed,

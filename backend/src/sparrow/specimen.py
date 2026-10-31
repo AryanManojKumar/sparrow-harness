@@ -154,7 +154,14 @@ def render(html_by_name: dict[str, str], out_dir: Path, width: int = 900) -> lis
         page = browser.new_page(viewport={"width": width, "height": 700},
                                 device_scale_factor=2)
         for name, html in html_by_name.items():
-            page.set_content(html, wait_until="networkidle")
+            # Bounded and best-effort. `networkidle` with no fallback meant one
+            # font request that never settled could hold the design stage — a
+            # specimen with a fallback face is still a specimen.
+            page.set_content(html, wait_until="load", timeout=20_000)
+            try:
+                page.wait_for_load_state("networkidle", timeout=8_000)
+            except Exception:
+                pass
             page.wait_for_timeout(400)          # let the webfonts paint
             path = out_dir / f"{name}.png"
             page.screenshot(path=str(path), full_page=True)

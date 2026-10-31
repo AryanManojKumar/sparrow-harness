@@ -48,6 +48,25 @@ def parse(value: str) -> tuple[float, float, float]:
 def check(ds: DesignSystem) -> list[Finding]:
     by = {c.token: c for c in ds.colors}
 
+    # A value that is not a colour is a finding, not a crash. Measured: a
+    # director wrote `oklch(0.66 0.16  thirty)` — the hue as a word — and the
+    # ValueError took the whole design stage down after four sources had been
+    # extracted and ranked. The repalette pass exists exactly for values that
+    # need moving; an unparseable one is the clearest case there is.
+    unparseable = []
+    for c in ds.colors:
+        try:
+            parse(c.value)
+        except ValueError:
+            unparseable.append(c)
+    if unparseable:
+        out = [Finding("not-a-colour",
+                       f"{c.token} is {c.value!r}, which is not an oklch colour — "
+                       "every channel must be a number: oklch(L C H)")
+               for c in unparseable]
+        # Nothing below can run without parsing, so stop at the real problem.
+        return out
+
     def L(token: str) -> float:
         return parse(by[token].value)[0]
 

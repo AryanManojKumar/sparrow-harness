@@ -142,6 +142,11 @@ def _footage_clause(ds: DesignSystem) -> str:
         + f"- the mood is: {ds.atmosphere}\n"
         + "- no on-screen graphics, no lower thirds, no logos, no product UI in focus, "
           "and NO WORDS OF ANY KIND written anywhere in the frame"
+        # The stills carry the same paragraph, so the loop and the pictures under
+        # it are one world. Without it the loop matched one source's footage and
+        # the stills another's — a sepia desert over grey rain.
+        + (f"\n\nTHIS FOOTAGE SHARES ONE WORLD WITH EVERY PICTURE ON THE PAGE:\n"
+           f"{ds.imagery_world}" if ds.imagery_world else "")
     )
 
 
@@ -158,13 +163,18 @@ def _style_clause(ds: DesignSystem) -> str:
         parts.append(f"{pick['accent'].name} {pick['accent'].value} at most once, "
                      "and only to mark something needing attention")
     parts += [
-        f"headings in {ds.font_display}, body in {ds.font_body}",
+        f"any text in {ds.font_display} for headings, {ds.font_body} for body",
         *([f"monospace ({ds.font_mono}) for any IDs, timestamps, paths or code"]
           if ds.font_mono else []),
-        f"corners no rounder than {ds.radius_card}; hairline borders over filled cards",
-        "no gradients, no glow, no coloured shadows",
     ]
-    return "\n".join(f"- {p}" for p in parts)
+    # Only what the design system recorded. This used to append "hairline
+    # borders over filled cards" and "no gradients, no glow" to every image —
+    # interface taste written into the prompt, applied to painted scenes too.
+    clause = "\n".join(f"- {p}" for p in parts)
+    if ds.imagery_world:
+        clause += ("\n\nEVERY PICTURE ON THIS PAGE SHARES ONE WORLD — read off the "
+                   f"reference sites' own imagery:\n{ds.imagery_world}")
+    return clause
 
 
 TRANSCRIBE = """Transcribe every piece of text visible in this image, exactly as written.
@@ -443,10 +453,18 @@ def seamless_loop(mp4: bytes, *, crossfade: float = 1.0) -> tuple[bytes, str]:
         if dur <= 2 * x + 0.5:
             return mp4, f"only {dur:.1f}s — too short to loop cleanly"
 
+        # Bars baked into the footage. Measured on mananshooter: veo returned
+        # 1920x1080 with ~120px of black top and bottom, and `object-cover`
+        # cannot remove what is inside the frame, so the hero showed a black
+        # band above and below the shot. Cropped here, before the loop chain.
+        crop = _letterbox(src)
+        pre = f"[0:v]{crop},split=3[v0][v1][v2];" if crop else \
+              "[0:v]split=3[v0][v1][v2];"
         chain = (
-            f"[0:v]trim={x}:{dur - x},setpts=PTS-STARTPTS[body];"
-            f"[0:v]trim={dur - x}:{dur},setpts=PTS-STARTPTS[tail];"
-            f"[0:v]trim=0:{x},setpts=PTS-STARTPTS[head];"
+            pre
+            + f"[v0]trim={x}:{dur - x},setpts=PTS-STARTPTS[body];"
+            f"[v1]trim={dur - x}:{dur},setpts=PTS-STARTPTS[tail];"
+            f"[v2]trim=0:{x},setpts=PTS-STARTPTS[head];"
             f"[tail][head]xfade=transition=fade:duration={x}:offset=0[blend];"
             f"[body][blend]concat=n=2:v=1:a=0[out]"
         )
@@ -461,7 +479,43 @@ def seamless_loop(mp4: bytes, *, crossfade: float = 1.0) -> tuple[bytes, str]:
 
         done = dst.read_bytes()
         return done, (f"looped and re-encoded · {len(mp4) / 1e6:.1f}MB → "
-                      f"{len(done) / 1e6:.1f}MB · {dur:.0f}s → {dur - x:.0f}s")
+                      f"{len(done) / 1e6:.1f}MB · {dur:.0f}s → {dur - x:.0f}s"
+                      + (f" · letterbox removed ({crop})" if crop else ""))
+
+
+def _letterbox(src: "pathlib.Path") -> str:
+    """An ffmpeg `crop=` for black bars baked into the footage, or "".
+
+    Read with cropdetect over the middle of the clip and taken as the most
+    common answer, so one dark frame does not crop the shot. Ignored unless the
+    bars are more than 2% of the frame: cropdetect reports a pixel or two of
+    edge noise on clean footage, and re-cropping that buys nothing.
+    """
+    import re as _re
+    import subprocess
+    from collections import Counter
+
+    try:
+        r = subprocess.run(
+            ["ffmpeg", "-v", "info", "-ss", "1", "-i", str(src), "-t", "4",
+             "-vf", "cropdetect=24:2:0", "-f", "null", "-"],
+            capture_output=True, text=True, timeout=120)
+        probe = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=width,height", "-of", "csv=p=0", str(src)],
+            capture_output=True, text=True, timeout=60).stdout.strip()
+        W, H = (int(v) for v in probe.split(",")[:2])
+    except (subprocess.SubprocessError, ValueError):
+        return ""
+    found = Counter(_re.findall(r"crop=(\d+:\d+:\d+:\d+)", r.stderr))
+    if not found:
+        return ""
+    w, h, cx, cy = (int(v) for v in found.most_common(1)[0][0].split(":"))
+    if (W - w) < W * 0.02 and (H - h) < H * 0.02:
+        return ""
+    # Even dimensions: libx264 with yuv420p refuses odd ones.
+    w, h = w - w % 2, h - h % 2
+    return f"crop={w}:{h}:{cx}:{cy}"
 
 
 class Curator(Agent):
@@ -582,26 +636,34 @@ class Curator(Agent):
         reading is "modify this logo", and the output would be a picture of a
         logo where a dashboard belongs.
         """
+        # WHAT KIND of picture is the brief's to say, not this prompt's. The
+        # blueprinter names it from the source band's own screenshot. This used
+        # to append "a realistic screenshot of real working software" to every
+        # brief, so a game whose sources show painted scenes got eight fake
+        # launchers — sidebars, session ids, an invented stash of 1,248,750 —
+        # wrapped round good scenes. The naming and logo rules below still hold
+        # wherever the picture really is an interface; they are conditional on
+        # what is drawn, not on a category keyword.
         naming = (
-            f"THE PRODUCT SHOWN IS CALLED \"{product_name}\". Wherever this "
+            f"If this picture contains the product's own interface and that "
             f"interface names itself — a sidebar header, a top bar, a window "
-            f"title, a browser tab, an empty state — it reads exactly "
-            f"\"{product_name}\". Do not invent a different product name, do not "
-            f"abbreviate it, and do not add a tagline under it.\n\n"
+            f"title, a browser tab — it reads exactly \"{product_name}\". Do not "
+            f"invent a different name, do not abbreviate it, do not add a tagline."
             if product_name else
-            "This interface does not name itself. Leave the sidebar header, "
-            "window title and browser tab free of any product name rather than "
-            "inventing one.\n\n"
+            "If this picture contains an interface, leave its header, window title "
+            "and tab free of any product name rather than inventing one."
         )
 
         prompt = (
             f"{brief}\n\n"
-            "Render this as a realistic screenshot of real working software — not an "
-            "illustration, not a mockup with placeholder boxes, not a diagram.\n\n"
-            f"{naming}"
-            f"Match this design system:\n{_style_clause(ds)}\n\n"
-            "Text must be legible and plausible. Any code, identifiers or timestamps must "
-            "look like real values a working system would produce."
+            "The brief above says what kind of picture this is. Take that literally "
+            "and make it finished — not a mockup with placeholder boxes, not a "
+            "diagram, unless the brief asks for one.\n\n"
+            f"{naming}\n\n"
+            "Add no text, numbers, labels or logos the brief does not call for. Text "
+            "that is called for must be legible, and any code, identifiers or "
+            "timestamps must look like real values.\n\n"
+            f"Match this design system:\n{_style_clause(ds)}"
         )
 
         if logo is None:
@@ -610,12 +672,12 @@ class Curator(Agent):
         prompt = (
             "The attached image is a REFERENCE, not the thing to edit. It is the "
             "product's logo. Do not output the logo, do not enlarge it, do not "
-            "redraw it and do not place it on a background as a composition. "
-            "Output the screenshot described below, and use the reference mark "
-            "exactly as drawn wherever that interface shows its branding — "
-            "typically small, in the top-left of a sidebar or top bar. Reproduce "
-            "its shapes and proportions; recolour it only if the design system "
-            "demands it.\n\n" + prompt
+            "redraw it and do not place it on a background as a composition. Use "
+            "it only if the picture described below has a place where the product "
+            "shows its own branding, such as an interface's header — reproduce its "
+            "shapes and proportions there, recoloured only if the design system "
+            "demands it. If the picture has no such place, leave the mark out "
+            "entirely.\n\n" + prompt
         )
         return eleven.generate(prompt, shape=shape, images=[_as_png(logo)])
 
@@ -792,6 +854,12 @@ class Curator(Agent):
         if not product_name.strip():
             return Branding(True, product_name, [], "")
         lines = self.transcribe(image)
+        if not lines:
+            # A picture with no text in it has nowhere to show a name — a
+            # painted scene, a photograph. Reporting "your name is missing" on
+            # those warned on every image of a game page whose sources show
+            # scenes, not software.
+            return Branding(True, product_name, [], "")
         flat = _norm(" ".join(lines))
         joined = _norm(product_name)
         tokens = [t for t in re.findall(r"[A-Za-z0-9]+", product_name.lower())

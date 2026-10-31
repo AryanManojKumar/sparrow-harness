@@ -298,7 +298,41 @@ def rank_section(
     m = _JSON.search(res.text)
     if not m:
         raise ValueError(f"no JSON ranking {section_type}: {res.text[:200]}")
-    return first_object(m.group(0), what="ranker reply"), res
+    out = first_object(m.group(0), what="ranker reply")
+    return _resolve_winner(out, candidates), res
+
+
+_POS = re.compile(r"\bpos(?:ition)?\s*(\d+)", re.I)
+
+
+def _resolve_winner(ranking: dict, candidates: list[Candidate]) -> dict:
+    """Make `winner` a site this run actually has, and keep any position it named.
+
+    The candidate lines read `[hevyapp.com] pos 4 · …`, so the model sometimes
+    answers "hevyapp.com pos 4" or "gymverse.app (pos 6)". The caller matched
+    `c.site == winner`, found nothing, and dropped the whole record — SILENTLY.
+    Measured on a fitness run: two of eight sections reached the builder with
+    no source shot, no markup, no proof and no density, while the design brief
+    happily named their winners. A ranking that names a real site in a form
+    this code did not expect is not a missing winner.
+    """
+    raw = str(ranking.get("winner") or "").strip()
+    if not raw:
+        return ranking
+    sites = {c.site for c in candidates}
+    if raw in sites:
+        return ranking
+    m = _POS.search(raw)
+    if m:
+        ranking["winner_pos"] = int(m.group(1))
+    bare = _POS.sub("", raw).strip(" ·-—()[]\"'")
+    if bare in sites:
+        ranking["winner"] = bare
+        return ranking
+    hit = [s for s in sites if s in raw or raw in s or s.split(".")[0] in raw]
+    if len(hit) == 1:
+        ranking["winner"] = hit[0]
+    return ranking
 
 
 def register_report(registers: dict[str, object]) -> str:

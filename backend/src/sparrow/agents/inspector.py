@@ -88,6 +88,7 @@ Each row is a thought that has actually produced a false report from this agent.
 | "The spacing here feels tight" | Feelings are not defects. If you cannot point at it, it is not yours to report. |
 | "This would look better as two columns" | You are not redesigning. Report what is broken, not what is different. |
 | "The brief mentions X but this section has no X" | Sections divide the brief between them. The blueprint says what THIS one carries; what it omits, it omits deliberately. |
+| "The blueprint describes social icons / a platform picker / an age rating / quotes, and none are here" | Names, platforms, links, ratings, numbers and quotes appear only when the user confirmed them. Absent means unconfirmed, and reporting the absence is how invented ones got built: seven fake social accounts, a Steam button and a rating badge, all added to fix your report. Never report a missing one. |
 | "The deterministic pass missed this contrast issue, I should flag it" | If it is not in the findings, it passed. Do not relitigate arithmetic. |
 | "This element might be misaligned" | Might is not a report. Either it visibly is, or you say nothing. |
 | "Content is cut off exactly at the top or bottom boundary" | Check whether something is covering it or whether the picture simply ends. A word hidden behind a bar is a defect; a section that finishes at its own edge is not. |"""
