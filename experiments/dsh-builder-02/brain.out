@@ -1,0 +1,191 @@
+03:55:52 created fps-shooter
+03:55:52   started   sources        sources …
+03:58:14   llm   ?                gpt-5.6-terra         868 in (0% cached)   313 out  $0.0137  33684ms
+03:58:14   progress  sources        www.counter-strike.net: 10 sections
+03:58:48   llm   ?                gpt-5.6-terra         678 in (0% cached)   251 out  $0.0109  5088ms
+03:58:48   progress  sources        playvalorant.com: 7 sections
+04:00:09   llm   ?                gpt-5.6-terra         794 in (0% cached)   240 out  $0.0112  6786ms
+04:00:09   progress  sources        www.reachthefinals.com: 9 sections
+04:00:11   llm   ?                gpt-5.6-terra         410 in (0% cached)    90 out  $0.0047  2450ms
+04:00:11   progress  sources        primary reference: www.counter-strike.net  $0.0047
+04:00:11 sources · progress · primary reference: www.counter-strike.net · $0.005
+04:00:15   llm   ?                gpt-5.6-terra         469 in (0% cached)   124 out  $0.0061  3277ms
+04:00:19   llm   ?                gpt-5.6-terra       1,022 in (0% cached)   283 out  $0.0136  4406ms
+04:00:22   llm   ?                gpt-5.6-terra         455 in (0% cached)   101 out  $0.0053  3175ms
+04:00:45   llm   reader           gpt-5.6-terra       3,964 in (0% cached)   810 out  $0.0441  17511ms
+04:00:45   progress  sources        read www.counter-strike.net: 6 observation(s) · This is a long-form Counter-Strike 2 launch dossier built fr
+04:00:52   llm   blueprinter      gpt-5.6-terra       1,965 in (0% cached)   600 out  $0.0278  7263ms
+04:00:52   progress  sources        chrome blueprint: nav
+04:00:58   llm   blueprinter      gpt-5.6-terra       4,817 in (0% cached)   255 out  $0.0317  5622ms
+04:00:58   progress  sources        chrome blueprint: footer
+04:01:08   llm   blueprinter      gpt-5.6-terra       3,584 in (0% cached)   610 out  $0.0362  10226ms
+04:01:21   llm   blueprinter      gpt-5.6-terra       4,718 in (0% cached)   899 out  $0.0506  13395ms
+04:01:39   llm   blueprinter      gpt-5.6-terra       6,772 in (0% cached)   794 out  $0.0577  17192ms
+04:01:39   done      sources        5 sections · 3 blueprints
+04:01:39 sources · done · 5 sections · 3 blueprints
+04:01:39   started   design         design …
+04:02:26   llm   design_director  gpt-5.6-terra      21,531 in (0% cached) 3,837 out  $0.2228  47624ms
+04:02:26   progress  design         direction 1: The page is remembered for its full-bleed Tactical Trace Field:   $0.2228
+04:02:26 design · progress · direction 1: The page is remembered for its full-bleed Tactical Trace Field:  · $0.223
+04:03:25   llm   design_director  gpt-5.6-terra      21,831 in (0% cached) 4,652 out  $0.2487  58427ms
+04:03:25   progress  design         direction 2: The page is remembered for its full-bleed Shot Group Field: an o  $0.2487
+04:03:25 design · progress · direction 2: The page is remembered for its full-bleed Shot Group Field: an o · $0.249
+04:04:32   llm   design_director  gpt-5.6-terra      22,024 in (0% cached) 4,866 out  $0.2561  67245ms
+04:04:32   progress  design         direction 3: The page is remembered for the Threshold Cut: a hard cobalt diag  $0.2561
+04:04:32 design · progress · direction 3: The page is remembered for the Threshold Cut: a hard cobalt diag · $0.256
+04:04:40   progress  design         specimen: direction-0
+04:04:40   progress  design         specimen: direction-1
+04:04:40   progress  design         specimen: direction-2
+04:04:40   progress  design         specimen: sources
+04:04:40   awaiting  design         Which direction should the site take?  (3 of 3 of your reference sites use a dark ground.)
+04:04:40 design · awaiting · Which direction should the site take?  (3 of 3 of your reference sites use a dark ground.)
+04:04:40 gate:design → direction 0
+04:04:40   started   compose        compose …
+04:05:15   llm   design_director  gpt-5.6-terra      29,824 in (0% cached) 2,022 out  $0.2098  34491ms
+04:05:15   progress  compose        5 section(s) · 5 distinct shape(s) · 4 band(s) off the page ground · signature: cta · motion: hero · 6 treatment placement(s)
+04:05:15   progress  compose        rhythm: The page moves from a compact command bar into a full-viewport cinematic opening, then pulls sharply inward to
+04:05:15   started   content        content …
+04:05:22   llm   content-editor   gpt-5.6-terra       1,689 in (0% cached)   570 out  $0.0255  7440ms
+04:05:22   progress  content        nav: 5 slot(s)
+04:05:29   llm   content-editor   gpt-5.6-terra       1,662 in (0% cached)   635 out  $0.0274  7376ms
+04:05:29   progress  content        hero: 6 slot(s)
+04:05:39   llm   content-editor   gpt-5.6-terra       1,738 in (0% cached)   847 out  $0.0341  9211ms
+04:05:39   progress  content        feature-detail: 8 slot(s), 1 to confirm
+04:05:42   llm   content-editor   gpt-5.6-terra       1,813 in (0% cached)   158 out  $0.0138  2865ms
+04:05:42   progress  content        cta: 2 slot(s)
+04:05:49   llm   content-editor   gpt-5.6-terra       1,996 in (0% cached)   738 out  $0.0321  7362ms
+04:05:49   progress  content        footer: 9 slot(s), 1 to confirm
+04:05:49   done      content        copy drafted for 5 section(s) · 2 invented fact(s) to confirm
+04:05:49 content · done · copy drafted for 5 section(s) · 2 invented fact(s) to confirm
+04:05:49   started   gate:assets    gate:assets …
+04:05:49   awaiting  gate:assets    15 image(s) go on this page — for each one: use your own file, have one generated, or leave it out. 2 line(s) of the copy state something about your business that we had to make up — confirm or correct them, or leave the draft as it is.
+04:05:49 gate:assets · awaiting · 15 image(s) go on this page — for each one: use your own file, have one generated, or leave it out. 2 line(s) of the copy state something ab
+Traceback (most recent call last):
+  File "/home/vo-01/Desktop/Prompts/Harness/backend/../experiments/dsh-builder-02/brain.py", line 121, in <module>
+    drive()
+  File "/home/vo-01/Desktop/Prompts/Harness/backend/../experiments/dsh-builder-02/brain.py", line 116, in drive
+    answer(run)
+  File "/home/vo-01/Desktop/Prompts/Harness/backend/../experiments/dsh-builder-02/brain.py", line 87, in answer
+    steps.record_asset_decisions(run, decisions)
+  File "/home/vo-01/Desktop/Prompts/Harness/backend/src/sparrow/steps.py", line 2156, in record_asset_decisions
+    raise ValueError(
+ValueError: hero-1 was answered 'upload' but no file has been posted to /projects/fps-shooter/assets/hero-1 yet
+04:06:42 fps-shooter exists — resuming where it stopped
+04:06:42   awaiting  gate:assets    15 image(s) go on this page — for each one: use your own file, have one generated, or leave it out. 2 line(s) of the copy state something about your business that we had to make up — confirm or correct them, or leave the draft as it is.
+04:06:42 gate:assets · awaiting · 15 image(s) go on this page — for each one: use your own file, have one generated, or leave it out. 2 line(s) of the copy state something ab
+04:06:42 gate:assets → {'nav-logo': 'upload', 'hero-1': 'skip', 'hero-2': 'generate', 'hero-3': 'generate', 'feature-detail-1': 'generate', 'feature-detail-2': 'generate', 'feature-detail-3': 'generate', 'feature-detail-4': 'generate', 'cta-1': 'generate', 'cta-2': 'generate', 'cta-3': 'generate', 'cta-4': 'generate', 'cta-5': 'generate', 'cta-6': 'generate', 'hero-motion': 'generate'}
+04:06:42   started   assets         assets …
+04:06:44   progress  assets         13 generations started 4 at a time
+04:06:44   progress  assets         nav-logo: your logo, used as it is — never sent to the image model, never redrawn
+04:06:44   progress  assets         hero-1 skipped — the builder composes this section from type and layout
+04:06:46   progress  image          image JPAZ0CCRsbLniVNY3W0u accepted by gpt-image-2
+04:06:46   progress  image          image FUgoIoZlZ1tUADyIOXWj accepted by gpt-image-2
+04:06:46   progress  image          image tQyXBFNaMPkoQZ94KXTT accepted by gpt-image-2
+04:06:46   progress  image          image JPAZ0CCRsbLniVNY3W0u new → generating
+04:06:46   progress  image          image VFXixiQF11VuD94yv79I accepted by gpt-image-2
+04:06:46   progress  image          image FUgoIoZlZ1tUADyIOXWj new → generating
+04:06:47   progress  image          image tQyXBFNaMPkoQZ94KXTT new → generating
+04:06:47   progress  image          image VFXixiQF11VuD94yv79I new → generating
+04:07:20   progress  image          image FUgoIoZlZ1tUADyIOXWj generating → completed
+04:07:21   progress  image          image tQyXBFNaMPkoQZ94KXTT generating → completed
+04:07:23   image elevenlabs       gpt-image-2           2.0MB  38657ms
+04:07:23   image elevenlabs       gpt-image-2           2.2MB  39264ms
+04:07:23   progress  assets         hero-2 generated · your logo passed as a reference for the branding inside it
+04:07:24   progress  image          image AgCtK4VFtrJ37Pjx5LoL accepted by gpt-image-2
+04:07:25   progress  image          image AgCtK4VFtrJ37Pjx5LoL new → generating
+04:07:25   progress  image          image JPAZ0CCRsbLniVNY3W0u generating → completed
+04:07:26   progress  image          image YfMOdh5xV7Y7SKipaocl accepted by gpt-image-2
+04:07:26   progress  image          image YfMOdh5xV7Y7SKipaocl new → generating
+04:07:26   progress  image          image VFXixiQF11VuD94yv79I generating → completed
+04:07:28   image elevenlabs       gpt-image-2           2.4MB  44432ms
+04:07:31   progress  image          image mYCCQGbcwqhQFvP28yDp accepted by gpt-image-2
+04:07:31   progress  image          image mYCCQGbcwqhQFvP28yDp new → generating
+04:07:41   image elevenlabs       gpt-image-2           2.2MB  56815ms
+04:07:43   progress  image          image FPWFPmtlOQTt1c33uZB8 accepted by gpt-image-2
+04:07:44   progress  image          image FPWFPmtlOQTt1c33uZB8 new → generating
+04:07:58   progress  image          image AgCtK4VFtrJ37Pjx5LoL generating → completed
+04:08:01   image elevenlabs       gpt-image-2           1.9MB  38021ms
+04:08:02   progress  image          image iWhJRzEjaJLOA149W353 accepted by gpt-image-2
+04:08:03   progress  image          image iWhJRzEjaJLOA149W353 new → generating
+04:08:04   progress  image          image mYCCQGbcwqhQFvP28yDp generating → completed
+04:08:04   progress  image          image YfMOdh5xV7Y7SKipaocl generating → completed
+04:08:09   image elevenlabs       gpt-image-2           2.6MB  41062ms
+04:08:12   progress  image          image VT680X3p85rRuT1KCs6h accepted by gpt-image-2
+04:08:12   progress  image          image VT680X3p85rRuT1KCs6h new → generating
+04:08:12   image elevenlabs       gpt-image-2           2.2MB  48968ms
+04:08:14   progress  image          image vqrwwmPI13GbojbfXyuR accepted by gpt-image-2
+04:08:15   progress  image          image vqrwwmPI13GbojbfXyuR new → generating
+04:08:17   llm   curator          gpt-5.6-terra       1,948 in (0% cached)    62 out  $0.0116  53720ms
+04:08:17   progress  image          image FPWFPmtlOQTt1c33uZB8 generating → completed
+04:08:20   image elevenlabs       gpt-image-2           2.3MB  38850ms
+04:08:20   progress  assets         hero-3 generated · your logo passed as a reference for the branding inside it
+04:08:21   progress  image          image jiwZYyJhhVHtgpkFTSBH accepted by gpt-image-2
+04:08:22   progress  image          image jiwZYyJhhVHtgpkFTSBH new → generating
+04:08:26   llm   curator          gpt-5.6-terra       1,948 in (0% cached)    52 out  $0.0113  6263ms
+04:08:29   progress  assets         feature-detail-1 generated · your logo passed as a reference for the branding inside it
+04:08:36   llm   curator          gpt-5.6-terra       1,948 in (0% cached)    45 out  $0.0111  6440ms
+04:32:14   progress  assets         feature-detail-2 generated · your logo passed as a reference for the branding inside it
+04:32:19   progress  image          image VT680X3p85rRuT1KCs6h generating → completed
+04:32:21   image elevenlabs       gpt-image-2           2.3MB  39242ms
+04:32:53   llm   curator          gpt-5.6-terra       1,948 in (0% cached)     4 out  $0.0099  38805ms
+04:32:53   progress  assets         feature-detail-3 generated · your logo passed as a reference for the branding inside it
+04:32:55   llm   curator          gpt-5.6-terra       2,647 in (0% cached)   203 out  $0.0193  46079ms
+04:32:56   progress  video          video LqpUoSJU3Y2vu4YATcyW accepted by veo-3.1-generate-001
+04:32:56   progress  video          video LqpUoSJU3Y2vu4YATcyW new → generating
+04:32:58   llm   curator          gpt-5.6-terra       1,948 in (0% cached)    26 out  $0.0105  4820ms
+04:32:59   progress  assets         feature-detail-4 generated · your logo passed as a reference for the branding inside it
+04:33:05   llm   curator          gpt-5.6-terra       1,948 in (0% cached)    28 out  $0.0106  5435ms
+04:33:06   progress  assets         cta-1 generated · your logo passed as a reference for the branding inside it
+04:33:12   llm   curator          gpt-5.6-terra       1,948 in (0% cached)    29 out  $0.0106  5957ms
+04:33:12   progress  assets         cta-2 generated · your logo passed as a reference for the branding inside it
+04:33:18   llm   curator          gpt-5.6-terra       1,948 in (0% cached)    61 out  $0.0116  5319ms
+04:33:18   failed    assets         RemoteDisconnected: Remote end closed connection without response  (eleven.py:65 in _req)
+04:33:18 assets · failed · RemoteDisconnected: Remote end closed connection without response  (eleven.py:65 in _req)
+stage failed: RemoteDisconnected: Remote end closed connection without response  (eleven.py:65 in _req)
+04:35:06 fps-shooter exists — resuming where it stopped
+04:35:06   started   assets         assets …
+04:35:06   progress  assets         5 generations started 4 at a time
+04:35:06   progress  assets         nav-logo: already produced (user_supplied) — kept
+04:35:06   progress  assets         hero-1 skipped — the builder composes this section from type and layout
+04:35:06   progress  assets         hero-2: already produced (generated) — kept
+04:35:06   progress  assets         hero-3: already produced (generated) — kept
+04:35:06   progress  assets         feature-detail-1: already produced (generated) — kept
+04:35:06   progress  assets         feature-detail-2: already produced (generated) — kept
+04:35:06   progress  assets         feature-detail-3: already produced (generated) — kept
+04:35:06   progress  assets         feature-detail-4: already produced (generated) — kept
+04:35:06   progress  assets         cta-1: already produced (generated) — kept
+04:35:06   progress  assets         cta-2: already produced (generated) — kept
+04:35:08   progress  image          image uIStEnH2Z2HHPJRsLgjt accepted by gpt-image-2
+04:35:08   progress  image          image AvVM14frkkn0xTlP9ROb accepted by gpt-image-2
+04:35:09   progress  image          image uIStEnH2Z2HHPJRsLgjt new → generating
+04:35:09   progress  image          image AvVM14frkkn0xTlP9ROb new → generating
+04:35:09   progress  image          image 7Vxlvsdp7yIgGNZCTDUO accepted by gpt-image-2
+04:35:10   progress  image          image 7Vxlvsdp7yIgGNZCTDUO new → generating
+04:35:10   progress  image          image wfzFmLuJ5LWbYXdqq6Pq accepted by gpt-image-2
+04:35:11   progress  image          image wfzFmLuJ5LWbYXdqq6Pq new → generating
+04:35:43   progress  image          image 7Vxlvsdp7yIgGNZCTDUO generating → completed
+04:35:44   progress  image          image wfzFmLuJ5LWbYXdqq6Pq generating → completed
+04:35:46   image elevenlabs       gpt-image-2           2.0MB  40113ms
+04:35:47   image elevenlabs       gpt-image-2           2.2MB  40680ms
+04:35:47   progress  assets         cta-3 generated · your logo passed as a reference for the branding inside it
+04:35:47   progress  image          image AvVM14frkkn0xTlP9ROb generating → completed
+04:35:47   progress  image          image uIStEnH2Z2HHPJRsLgjt generating → completed
+04:35:50   image elevenlabs       gpt-image-2           2.2MB  43394ms
+04:35:50   image elevenlabs       gpt-image-2           2.1MB  44185ms
+04:35:57   llm   curator          gpt-5.6-terra       1,948 in (0% cached)    31 out  $0.0107  10548ms
+04:35:58   progress  assets         cta-4 generated · your logo passed as a reference for the branding inside it
+04:36:00   llm   curator          gpt-5.6-terra       2,647 in (0% cached)   200 out  $0.0192  14031ms
+04:36:01   progress  video          video PIX948QR2RpiLKQ9aOfu accepted by veo-3.1-generate-001
+04:36:02   progress  video          video PIX948QR2RpiLKQ9aOfu new → generating
+04:36:03   llm   curator          gpt-5.6-terra       1,948 in (0% cached)     4 out  $0.0099  5094ms
+04:36:04   progress  assets         cta-5 generated · your logo passed as a reference for the branding inside it
+04:36:09   llm   curator          gpt-5.6-terra       1,948 in (0% cached)     4 out  $0.0099  4643ms
+04:36:10   progress  assets         cta-6 generated · your logo passed as a reference for the branding inside it
+04:36:15   llm   curator          gpt-5.6-terra       1,948 in (0% cached)    33 out  $0.0107  5094ms
+04:38:21   progress  video          video PIX948QR2RpiLKQ9aOfu generating → completed
+04:38:34   video elevenlabs       veo-3.1-generate-001   20.5MB  153247ms
+04:38:39   progress  assets         hero-motion generated · a silent ambient loop, not a demo · looped and re-encoded · 20.5MB → 4.0MB · 8s → 7s
+04:38:39   done      assets         14 asset(s) · 13 generated, 1 user_supplied · 1 skipped
+04:38:39 assets · done · 14 asset(s) · 13 generated, 1 user_supplied · 1 skipped
+04:38:39   started   build          build …
+04:38:39 reached BUILD — brain done in 213s, $1.01 spent; Sparrow's builder not run

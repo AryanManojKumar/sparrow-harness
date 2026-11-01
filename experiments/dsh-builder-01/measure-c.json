@@ -1,0 +1,87 @@
+{
+  "variant": "c",
+  "pages": [
+    "/"
+  ],
+  "page_info": {
+    "/": {
+      "height": 8732,
+      "blocks": 10,
+      "imgs": 4,
+      "videos": 1
+    }
+  },
+  "lines_of_tsx": 86,
+  "color_literals_in_code": 2,
+  "unconfirmed_claims": 4,
+  "claims_by_file": {
+    "src/components/sections/FeatureDetail.tsx": [
+      "Deployment",
+      "Integrations",
+      "Monitoring",
+      "POLICY"
+    ]
+  },
+  "broken_links": 23,
+  "broken_examples": [
+    {
+      "text": "Solutions",
+      "href": "/projects/exp-c/preview/solutions/",
+      "page": "/",
+      "problem": "page /solutions/ does not exist"
+    },
+    {
+      "text": "Industries: Banks, insurers, telcos & healthcare",
+      "href": "/projects/exp-c/preview/industries/",
+      "page": "/",
+      "problem": "page /industries/ does not exist"
+    },
+    {
+      "text": "How it works",
+      "href": "/projects/exp-c/preview/how-it-works/",
+      "page": "/",
+      "problem": "page /how-it-works/ does not exist"
+    },
+    {
+      "text": "Customers: Banking",
+      "href": "/projects/exp-c/preview/customers/banking/",
+      "page": "/",
+      "problem": "page /customers/banking/ does not exist"
+    },
+    {
+      "text": "Hear a call",
+      "href": "/projects/exp-c/preview/hear-a-call/",
+      "page": "/",
+      "problem": "page /hear-a-call/ does not exist"
+    },
+    {
+      "text": "Book a demo",
+      "href": "/projects/exp-c/preview/book-a-demo/",
+      "page": "/",
+      "problem": "page /book-a-demo/ does not exist"
+    },
+    {
+      "text": "Hear an agent handle a call",
+      "href": "/projects/exp-c/preview/hear-a-call/",
+      "page": "/",
+      "problem": "page /hear-a-call/ does not exist"
+    },
+    {
+      "text": "Read the case study",
+      "href": "/projects/exp-c/preview/case-studies/",
+      "page": "/",
+      "problem": "page /case-studies/ does not exist"
+    }
+  ],
+  "media": {
+    "img": 4,
+    "video": 1,
+    "user_files": [
+      "feature-detail-1.png",
+      "feature-grid-1.png",
+      "nav-logo.png",
+      "testimonial-motion.mp4"
+    ],
+    "other": []
+  }
+}

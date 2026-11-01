@@ -1,0 +1,85 @@
+{
+  "variant": "a",
+  "pages": [
+    "/"
+  ],
+  "page_info": {
+    "/": {
+      "height": 9030,
+      "blocks": 10,
+      "imgs": 5,
+      "videos": 1
+    }
+  },
+  "lines_of_tsx": 1975,
+  "color_literals_in_code": 31,
+  "unconfirmed_claims": 1,
+  "claims_by_file": {
+    "src/components/sections/Hero.tsx": [
+      "CONFIRM"
+    ]
+  },
+  "broken_links": 31,
+  "broken_examples": [
+    {
+      "text": "VoiceOwl",
+      "href": "#hero",
+      "page": "/",
+      "problem": "nothing on / has id \"hero\""
+    },
+    {
+      "text": "Solutions",
+      "href": "#feature-grid",
+      "page": "/",
+      "problem": "nothing on / has id \"feature-grid\""
+    },
+    {
+      "text": "Industries: Banks, insurers, telcos & healthcare",
+      "href": "#logo-wall",
+      "page": "/",
+      "problem": "nothing on / has id \"logo-wall\""
+    },
+    {
+      "text": "How it works",
+      "href": "#product-showcase",
+      "page": "/",
+      "problem": "nothing on / has id \"product-showcase\""
+    },
+    {
+      "text": "Customers: Banking",
+      "href": "#testimonial",
+      "page": "/",
+      "problem": "nothing on / has id \"testimonial\""
+    },
+    {
+      "text": "Hear a call",
+      "href": "#feature-detail",
+      "page": "/",
+      "problem": "nothing on / has id \"feature-detail\""
+    },
+    {
+      "text": "Book a demo",
+      "href": "#cta",
+      "page": "/",
+      "problem": "nothing on / has id \"cta\""
+    },
+    {
+      "text": "Book a demo",
+      "href": "#demo",
+      "page": "/",
+      "problem": "nothing on / has id \"demo\""
+    }
+  ],
+  "media": {
+    "img": 5,
+    "video": 1,
+    "user_files": [
+      "feature-detail-1.png",
+      "feature-grid-1.png",
+      "nav-logo.png",
+      "product-showcase-1.png",
+      "testimonial-motion.mp4"
+    ],
+    "other": []
+  }
+}

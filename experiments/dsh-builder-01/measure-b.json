@@ -1,0 +1,49 @@
+{
+  "variant": "b",
+  "pages": [
+    "/"
+  ],
+  "page_info": {
+    "/": {
+      "height": 5474,
+      "blocks": 11,
+      "imgs": 5,
+      "videos": 0
+    }
+  },
+  "lines_of_tsx": 83,
+  "color_literals_in_code": 0,
+  "unconfirmed_claims": 16,
+  "claims_by_file": {
+    "src/app/page.tsx": [
+      "01",
+      "02",
+      "03",
+      "04",
+      "2025",
+      "DIFFERENCE",
+      "Enterprise-ready",
+      "HIGH-STAKES",
+      "Let\u2019s",
+      "Live",
+      "REAL",
+      "Resolved",
+      "Resolving",
+      "VO",
+      "WORLD",
+      "WhatsApp"
+    ]
+  },
+  "broken_links": 0,
+  "broken_examples": [],
+  "media": {
+    "img": 5,
+    "video": 0,
+    "user_files": [
+      "feature-grid-1.png",
+      "nav-logo.png",
+      "product-showcase-1.png"
+    ],
+    "other": []
+  }
+}
