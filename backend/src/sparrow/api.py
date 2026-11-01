@@ -1200,14 +1200,19 @@ def studio_suggestions(pid: str) -> dict:
     run = _studio_ready(pid)
     ws = _workshop()
     try:
-        history = ws.checkpoints(pid) if ws.info(pid)["exists"] else []
+        held = ws.info(pid)["exists"]
+        history = ws.checkpoints(pid) if held else []
+        export = PROJECTS / pid / "workspace" / "out"
+        broken = ws.links(pid) if held else store.broken_links(export, f"/projects/{pid}/preview")
+        pages = ws.pages(pid) if held else store.routes(export)
     except WorkshopError as e:
         raise _relay(e)
     after = history[0]["id"] if history else "generated"
     cache = PROJECTS / pid / "studio-suggestions.json"
     if cache.is_file():
         cached = json.loads(cache.read_text())
-        if cached.get("after") == after:
+        # Written before "complete" existed: regenerate rather than serve less.
+        if cached.get("after") == after and "complete" in cached:
             return cached
     bb = Blackboard.model_validate_json(run.blackboard_path.read_text())
     content = steps.load_content(run)
@@ -1224,13 +1229,18 @@ def studio_suggestions(pid: str) -> dict:
         "Already changed in the studio: "
         + ("; ".join(c["message"] for c in history
                      if c["message"] != "Imported the generated site") or "nothing yet"),
+        "Pages that exist: " + (", ".join(pages) or "/"),
+        "Broken links on the site (text → href: problem):\n"
+        + ("\n".join(f"- {b['text']} → {b['href']}: {b['problem']} (on {b['page']})"
+                     for b in broken[:60]) or "- none"),
     ])
     from sparrow.agents.studio_guide import StudioGuide
     try:
-        rows = StudioGuide().suggest(bb, facts)
+        complete, rows = StudioGuide().suggest(bb, facts)
     except (ValueError, RuntimeError) as e:
         raise HTTPException(502, f"could not write suggestions: {e}")
-    out = {"after": after, "suggestions": rows}
+    out = {"after": after, "suggestions": rows, "broken_links": len(broken),
+           "complete": {"label": "Complete the site", "prompt": complete} if complete else None}
     cache.write_text(json.dumps(out, indent=2))
     return out
 

@@ -42,6 +42,15 @@ class WorkshopConfig:
     llm_url: str
     # Seconds an idle agent runtime is kept warm before it is closed.
     idle_seconds: int = 900
+    # The gateway's MCP endpoint, where the agent's generate_asset tool lives.
+    # Empty means "derive from llm_url" (same host, /mcp).
+    mcp_url: str = ""
+
+    @property
+    def assets_url(self) -> str:
+        if self.mcp_url:
+            return self.mcp_url
+        return self.llm_url.split("/llm/")[0].rstrip("/") + "/mcp"
 
     @classmethod
     def load(cls) -> "WorkshopConfig":
@@ -64,4 +73,5 @@ class WorkshopConfig:
             node=node.resolve(),
             llm_url=env.get("WORKSHOP_LLM_URL") or "http://127.0.0.1:8001/llm/v1",
             idle_seconds=int(env.get("WORKSHOP_IDLE_SECONDS") or 900),
+            mcp_url=env.get("WORKSHOP_MCP_URL") or "",
         )

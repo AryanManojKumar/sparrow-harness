@@ -23,6 +23,7 @@ import re
 import subprocess
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Iterator
@@ -63,6 +64,19 @@ PATCH = """\
     maxBytes: 65536
     projectRootMarkers: [package.json]
 
+# generate_asset: images and video, made by the office through the gateway with
+# the same project-bound token the model route uses. 10 minutes, because video is.
+- insert:
+    - id: studio-assets
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: studio
+        transport: streamable-http
+        url: {mcp_url}
+        headers:
+          Authorization: !!js '`Bearer ${{process.env.{token_env}}}`'
+        toolCallTimeoutMs: 600000
+
 - id: tool-plugin-manager
   disabled: true
 - id: tool-schedule
@@ -81,7 +95,7 @@ def runtime_paths() -> tuple[Path, Path]:
 def write_patch(cfg: WorkshopConfig) -> Path:
     path = cfg.root / "_config" / "studio.patch.yml"
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(PATCH.format(route=ROUTE, llm_url=cfg.llm_url,
+    path.write_text(PATCH.format(route=ROUTE, llm_url=cfg.llm_url, mcp_url=cfg.assets_url,
                                  token_env=TOKEN_ENV, model=MODEL))
     return path
 
@@ -147,6 +161,10 @@ class Busy(RuntimeError):
     pass
 
 
+class ModelUnavailable(RuntimeError):
+    pass
+
+
 @dataclass
 class _Live:
     harness: object
@@ -201,7 +219,10 @@ class Translator:
             if isinstance(args.get(key), str) and args[key]:
                 target = self._rel(args[key])
                 break
-        if name == "bash":
+        if name.endswith("generate_asset"):
+            target = str(args.get("filename", ""))
+            detail = f"{args.get('kind', '')} · {args.get('shape', '')}"
+        elif name == "bash":
             target = self._rel(str(args.get("command", "")))[:240]
             detail = str(args.get("description", ""))[:160]
         elif name == "edit":
@@ -272,6 +293,12 @@ class Studio:
         self._live: dict[str, _Live] = {}
         self._locks: dict[str, threading.Lock] = {}
         self._guard = threading.Lock()
+        # Every runtime is started from this one thread, which lives as long as
+        # the workshop. The jail runs with --die-with-parent, and Linux ties
+        # that to the THREAD that spawned the process, not the process: started
+        # from a turn's worker thread, the runtime was SIGKILLed the moment that
+        # turn ended, and the owner's next request hit a dead pipe (exit -9).
+        self._spawner = ThreadPoolExecutor(max_workers=1, thread_name_prefix="dsh-spawn")
         threading.Thread(target=self._reap, daemon=True).start()
 
     def _lock(self, pid: str) -> threading.Lock:
@@ -301,11 +328,17 @@ class Studio:
             dsh_home=str(proj.home), cwd=str(proj.workspace), dsh_bin=str(proj.launcher),
             provider=ROUTE, model=MODEL, patches=(str(self.patch),),
             env={TOKEN_ENV: token}, initialize_timeout_seconds=120)
+        self._spawner.submit(h.start).result()
         try:
             s = h.resume_session(SESSION)
         except Exception:
             s = h.start_session(SESSION)
         return _Live(h, s, token)
+
+    @staticmethod
+    def _alive(live: _Live) -> bool:
+        proc = getattr(live.harness.client, "_proc", None)
+        return proc is not None and proc.poll() is None
 
     def _close(self, pid: str) -> None:
         live = self._live.pop(pid, None)
@@ -339,6 +372,12 @@ class Studio:
 
         r = live.session.run(prompt, on_notification=on_n)
         live.last_used = time.time()
+        # A model that never answered (rate-limited, gateway down) ends the turn
+        # with finish_reason "error" and no text. Reported as "done, nothing
+        # changed" that looked to the owner like the request was ignored.
+        if r.finish_reason == "error" and not (r.final_response or "").strip():
+            raise ModelUnavailable("the model did not answer — it may be rate-limited; "
+                                   "try again in a few minutes")
         return r.final_response or ""
 
     def _settle(self, live: _Live, proj: store.Project, emit, repairs: int) -> dict:
@@ -424,13 +463,18 @@ class Studio:
         def work() -> None:
             try:
                 live = self._live.get(proj.pid)
-                if live is not None and live.token != token:
-                    self._close(proj.pid)  # a new token means a fresh runtime
+                if live is not None and (live.token != token or not self._alive(live)):
+                    # A new token means a fresh runtime; so does one that died
+                    # between turns — relaunched and resumed, never surfaced.
+                    self._close(proj.pid)
                     live = None
                 if live is None:
                     q.put({"kind": "status", "text": "starting"})
                     live = self._live[proj.pid] = self._launch(proj, token)
                 q.put(self._loop(live, proj, message, q.put))
+            except ModelUnavailable as e:
+                # The runtime is fine; only the model was not reachable. Keep it warm.
+                q.put({"kind": "error", "text": str(e)})
             except Exception as e:  # the runtime died or the gateway refused
                 self._close(proj.pid)
                 q.put({"kind": "error", "text": f"{type(e).__name__}: {e}"[:800]})

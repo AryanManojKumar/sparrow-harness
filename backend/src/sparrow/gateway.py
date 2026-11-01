@@ -74,44 +74,64 @@ def _sign(body: str) -> str:
     return base64.urlsafe_b64encode(mac).decode().rstrip("=")
 
 
-class Tokens:
-    """Signed, project-bound, expiring bearer tokens: `stu.<pid>.<exp>.<sig>`.
+# What a project's agent may generate. One letter per kind so the token stays
+# short; the office decides the set when it issues the token (today every kind,
+# from STUDIO_ASSET_KINDS; later per user), the gateway enforces it.
+ASSET_CAPS = {"image": "i", "video": "v"}
 
-    `issue` remembers the last token per project so a warm agent runtime keeps
-    the token it started with; an office restart forgets that, and the next
-    turn simply starts the runtime again with a new one.
+
+def default_caps() -> str:
+    kinds = os.environ.get("STUDIO_ASSET_KINDS", "image,video")
+    return "".join(ASSET_CAPS[k.strip()] for k in kinds.split(",") if k.strip() in ASSET_CAPS) or "-"
+
+
+class Tokens:
+    """Signed, project-bound, expiring bearer tokens: `stu.<pid>.<exp>.<caps>.<sig>`.
+
+    `caps` names what the agent holding it may generate (see ASSET_CAPS); it
+    is inside the signature, so neither the agent nor the workshop can widen
+    it. `issue` remembers the last token per project so a warm agent runtime
+    keeps the token it started with; an office restart forgets that, and the
+    next turn simply starts the runtime again with a new one.
     """
 
     def __init__(self) -> None:
-        self._last: dict[str, tuple[str, int]] = {}
+        self._last: dict[str, tuple[str, int, str]] = {}
         self._lock = threading.Lock()
 
-    def issue(self, pid: str) -> str:
+    def issue(self, pid: str, caps: str | None = None) -> str:
         if not _PID.match(pid):
             raise ValueError(f"invalid project id {pid!r}")
+        caps = caps if caps is not None else default_caps()
         now = int(time.time())
         with self._lock:
-            tok, exp = self._last.get(pid, ("", 0))
-            if exp - now > REUSE_MARGIN:
+            tok, exp, had = self._last.get(pid, ("", 0, ""))
+            if exp - now > REUSE_MARGIN and had == caps:
                 return tok
             exp = now + TOKEN_TTL
-            body = f"{pid}.{exp}"
+            body = f"{pid}.{exp}.{caps}"
             tok = f"stu.{body}.{_sign(body)}"
-            self._last[pid] = (tok, exp)
+            self._last[pid] = (tok, exp, caps)
             return tok
 
     @staticmethod
-    def check(token: str) -> str | None:
-        """The project a valid, unexpired token belongs to, or None."""
+    def claims(token: str) -> tuple[str, str] | None:
+        """(project, caps) of a valid, unexpired token, or None."""
         parts = token.split(".")
-        if len(parts) != 4 or parts[0] != "stu" or not _PID.match(parts[1]):
+        if len(parts) != 5 or parts[0] != "stu" or not _PID.match(parts[1]):
             return None
-        pid, exp, sig = parts[1], parts[2], parts[3]
-        if not exp.isdigit() or int(exp) <= time.time():
+        pid, exp, caps, sig = parts[1], parts[2], parts[3], parts[4]
+        if not exp.isdigit() or int(exp) <= time.time() or not re.fullmatch(r"[a-z-]{1,8}", caps):
             return None
-        if not hmac.compare_digest(sig, _sign(f"{pid}.{exp}")):
+        if not hmac.compare_digest(sig, _sign(f"{pid}.{exp}.{caps}")):
             return None
-        return pid
+        return pid, caps
+
+    @classmethod
+    def check(cls, token: str) -> str | None:
+        """The project a valid, unexpired token belongs to, or None."""
+        c = cls.claims(token)
+        return c[0] if c else None
 
 
 TOKENS = Tokens()
@@ -210,3 +230,166 @@ app.include_router(router)
 @app.get("/health")
 def health() -> dict:
     return {"ok": True}
+
+
+# ── assets: the agent's generate_asset tool, served over MCP ────────────────
+# The studio agent calls this the way it calls any tool; the owner never sees
+# an asset screen. It lives here, beside the model route, for the same reason:
+# the provider key (ElevenLabs) is the office's, and the agent reaches it only
+# through a project-bound token whose signed caps say which kinds it may make.
+# Minimal Streamable HTTP: one JSON-RPC request per POST, answered as JSON.
+
+MCP_PROTOCOLS = ("2025-06-18", "2025-03-26", "2024-11-05")
+_KIND_SHAPES = {"image": ("wide", "square", "tall"), "video": ("wide", "tall")}
+
+MCP_INSTRUCTIONS = (
+    "generate_asset makes new images and short video clips for this website and saves "
+    "them into public/assets/. Use it when a change needs imagery that does not exist "
+    "yet. Never use it to replace the owner's own photos or product screenshots, and "
+    "never for anything that must be read — interface text, data, logos come out as "
+    "gibberish. Generated imagery is illustrative: never present it as the owner's real "
+    "product, team or customers."
+)
+
+
+def _tool(caps: str) -> dict | None:
+    kinds = [k for k, c in ASSET_CAPS.items() if c in caps]
+    if not kinds:
+        return None
+    return {
+        "name": "generate_asset",
+        "description": (
+            "Generate an image" + (" or a short video clip" if "video" in kinds else "")
+            + " for the website and save it in public/assets/. Write the prompt like an "
+            "art director — subject, composition, light, palette — matched to the imagery "
+            "treatment in AGENTS.md. Images take under a minute; video several minutes, so "
+            "generate only what the page will use. Returns the src to put in the code."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "kind": {"type": "string", "enum": kinds},
+                "prompt": {"type": "string", "description": "What it must show, in detail."},
+                "shape": {"type": "string", "enum": ["wide", "square", "tall"],
+                          "description": "wide 3:2 (video 16:9) · square 1:1 (images only) · "
+                                         "tall 2:3 (video 9:16)"},
+                "filename": {"type": "string",
+                             "description": "Short lowercase name without extension, e.g. 'pricing-hero'."},
+            },
+            "required": ["kind", "prompt", "shape", "filename"],
+            "additionalProperties": False,
+        },
+    }
+
+
+def _ext(data: bytes) -> str:
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return "png"
+    if data[:3] == b"\xff\xd8\xff":
+        return "jpg"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "webp"
+    if data[4:8] == b"ftyp":
+        return "mp4"
+    if data[:4] == b"\x1a\x45\xdf\xa3":
+        return "webm"
+    return "png"
+
+
+def generate_asset(pid: str, caps: str, args: dict) -> tuple[str, bool]:
+    """Run one generate_asset call. Returns (text for the agent, is_error)."""
+    from sparrow import eleven
+    from sparrow.workshop.client import Workshop, WorkshopError
+
+    kind = str(args.get("kind", ""))
+    if kind not in ASSET_CAPS:
+        return f"kind must be one of {', '.join(ASSET_CAPS)}", True
+    if ASSET_CAPS[kind] not in caps:
+        return (f"This project is not allowed to generate {kind}. Use existing assets, "
+                "or tell the owner it needs their permission."), True
+    prompt = str(args.get("prompt", "")).strip()
+    if len(prompt) < 12:
+        return "prompt is too short — describe what the asset must show", True
+    shape = str(args.get("shape", "wide"))
+    if shape not in _KIND_SHAPES[kind]:
+        return f"shape for {kind} must be one of {', '.join(_KIND_SHAPES[kind])}", True
+    stem = re.sub(r"[^a-z0-9-]+", "-", str(args.get("filename", "")).lower()).strip("-")[:50]
+    stem = stem or f"{kind}-{int(time.time())}"
+    try:
+        data = (eleven.generate(prompt[:2000], shape=shape) if kind == "image"
+                else eleven.motion(prompt[:2000], shape=shape))
+    except Exception as e:  # provider refusal, unapproved model, timeout
+        return f"The {kind} could not be generated: {str(e)[:400]}", True
+    try:
+        saved = Workshop().put_asset(pid, f"{stem}.{_ext(data)}", data)
+    except WorkshopError as e:
+        return f"The {kind} was generated but could not be saved: {e.detail}", True
+    return (f"Saved {saved['path']} ({len(data) // 1024} KB). Use src=\"{saved['src']}\" — "
+            f"the base path is required. It is generated: illustrative, never the owner's "
+            f"real product, people or customers."), False
+
+
+def _rpc_result(rid, result) -> dict:
+    return {"jsonrpc": "2.0", "id": rid, "result": result}
+
+
+def _rpc_error(rid, code: int, message: str) -> dict:
+    return {"jsonrpc": "2.0", "id": rid, "error": {"code": code, "message": message}}
+
+
+async def _handle(msg: dict, pid: str, caps: str) -> dict | None:
+    from starlette.concurrency import run_in_threadpool
+
+    rid, method, params = msg.get("id"), msg.get("method", ""), msg.get("params") or {}
+    if rid is None:  # a notification: nothing to answer
+        return None
+    if method == "initialize":
+        asked = params.get("protocolVersion")
+        return _rpc_result(rid, {
+            "protocolVersion": asked if asked in MCP_PROTOCOLS else MCP_PROTOCOLS[0],
+            "capabilities": {"tools": {"listChanged": False}},
+            "serverInfo": {"name": "sparrow-studio", "version": "1"},
+            "instructions": MCP_INSTRUCTIONS,
+        })
+    if method == "ping":
+        return _rpc_result(rid, {})
+    if method == "tools/list":
+        tool = _tool(caps)
+        return _rpc_result(rid, {"tools": [tool] if tool else []})
+    if method == "tools/call":
+        if params.get("name") != "generate_asset" or _tool(caps) is None:
+            return _rpc_error(rid, -32602, f"unknown tool {params.get('name')!r}")
+        text, is_error = await run_in_threadpool(
+            generate_asset, pid, caps, params.get("arguments") or {})
+        return _rpc_result(rid, {"content": [{"type": "text", "text": text}], "isError": is_error})
+    return _rpc_error(rid, -32601, f"method not found: {method}")
+
+
+@app.post("/mcp")
+async def mcp(request: Request) -> Response:
+    token = request.headers.get("authorization", "").removeprefix("Bearer ").strip()
+    claims = Tokens.claims(token) if token else None
+    if claims is None:
+        raise HTTPException(401, "invalid or expired studio token")
+    try:
+        body = json.loads(await request.body())
+    except json.JSONDecodeError:
+        return Response(json.dumps(_rpc_error(None, -32700, "parse error")),
+                        media_type="application/json", status_code=400)
+    msgs = body if isinstance(body, list) else [body]
+    out = [r for m in msgs if isinstance(m, dict) and (r := await _handle(m, *claims)) is not None]
+    if not out:
+        return Response(status_code=202)
+    payload = out if isinstance(body, list) else out[0]
+    return Response(json.dumps(payload), media_type="application/json")
+
+
+@app.get("/mcp")
+def mcp_stream() -> Response:
+    # No server-initiated messages: the spec's answer is 405 on the GET stream.
+    return Response(status_code=405)
+
+
+@app.delete("/mcp")
+def mcp_end() -> Response:
+    return Response(status_code=200)

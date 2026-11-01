@@ -44,19 +44,37 @@ the page already has.
 the page or section, 1-3 sentences.
 - kind: one of page, content, look, motion, fix.
 
-Reply with JSON only: {"suggestions": [{"label": "...", "prompt": "...", "kind": "..."}]} \
-with exactly 6 items.
+Also write "complete": ONE comprehensive request that turns this into a finished \
+multi-page site in a single pass — the request an owner taps when they want the \
+whole thing done. It must:
+- name every page the site should have, judged from its category, audience and \
+offering AND from the broken links listed below (a footer that links to About, \
+Contact and Privacy is asking for those pages); say in a clause what goes on each, \
+drawn from facts the site already has;
+- make every broken link work: build the missing page, or point the link at the \
+right page or section (adding the section id it targets);
+- keep Nav and Footer identical across pages and add the new pages to them;
+- use visible placeholders for anything the owner has not given (names, prices, \
+addresses, legal text) and never invent facts.
+It is long by design: 8-15 sentences, plain imperative English.
+
+Reply with JSON only:
+{"complete": "...", "suggestions": [{"label": "...", "prompt": "...", "kind": "..."}]} \
+with exactly 6 suggestions.
 """
 
 
 class StudioGuide(Agent):
     name = "studio-guide"
     tier = Tier.MID
-    max_tokens = 2500
+    max_tokens = 4000
 
-    def suggest(self, bb: Blackboard, facts: str) -> list[dict]:
+    def suggest(self, bb: Blackboard, facts: str) -> tuple[str, list[dict]]:
+        """(the complete-the-site request, six suggestions)."""
         out = self.call(system=INSTRUCTIONS + "\n\n" + context_block(bb), user=facts)
-        rows = first_object(out.text, what="suggestions").get("suggestions") or []
+        body = first_object(out.text, what="suggestions")
+        complete = str(body.get("complete") or "").strip()[:4000]
+        rows = body.get("suggestions") or []
         clean = []
         for r in rows:
             label, prompt = str(r.get("label", "")).strip(), str(r.get("prompt", "")).strip()
@@ -64,4 +82,4 @@ class StudioGuide(Agent):
                 continue
             kind = r.get("kind") if r.get("kind") in KINDS else "content"
             clean.append({"label": label[:60], "prompt": prompt[:800], "kind": kind})
-        return clean[:6]
+        return complete, clean[:6]

@@ -141,6 +141,9 @@ def render(bb: Blackboard, content: dict, preview_base: str) -> str:
             "here is unoptimized and does NOT add the base path.",
             "- Static export: no API routes, no server actions, no `next/headers`, no "
             "runtime data fetching. Dynamic routes need `generateStaticParams`.",
+            "- New imagery comes from the `generate_asset` tool, which saves into "
+            "`public/assets/` and returns the exact `src`. Never reference a file that "
+            "does not exist, and never replace the owner's own images with generated ones.",
             "- Dependencies are fixed; adding a package fails the build. Available: "
             "React, `motion`, `lucide-react`, `radix-ui`, and the shadcn components "
             "in `src/components/ui/`.",

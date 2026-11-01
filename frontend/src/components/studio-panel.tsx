@@ -7,6 +7,7 @@ import {
   Check,
   ChevronRight,
   Clock,
+  Code2,
   ExternalLink,
   FilePlus2,
   History,
@@ -31,11 +32,12 @@ import {
   studioTurn,
   studioUndo,
   type StudioCheckpoint,
+  type StudioIdeas,
   type StudioEvent,
   type StudioSuggestion,
 } from "@/lib/api";
 import { SparrowMark } from "@/components/sparrow-mark";
-import { pageName } from "@/components/preview-pane";
+import { pageName, type PickedElement } from "@/components/preview-pane";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 
@@ -78,6 +80,7 @@ type Turn = {
   reply?: string;
   checkpoint?: string | null;
   changed?: string[];
+  attached?: PickedElement[];
 };
 
 const TOOL_LABEL: Record<string, string> = {
@@ -90,6 +93,7 @@ const TOOL_LABEL: Record<string, string> = {
   read_image: "View",
   subagent: "Task",
   skill: "Skill",
+  mcp__studio__generate_asset: "Generate",
 };
 
 function phaseText(text: string): string {
@@ -280,6 +284,44 @@ function changedPlaces(files: string[] = []): { path: string; label: string }[] 
     .filter((p) => (seen.has(p.label) ? false : (seen.add(p.label), true)));
 }
 
+// What the agent receives for the elements the owner clicked: enough to know
+// exactly what "this" means, and to find it in the source by its text.
+function attachmentContext(items: PickedElement[]): string {
+  if (!items.length) return "";
+  const rows = items.map((el, i) => {
+    const what = el.text ? `a <${el.tag}> reading "${el.text.slice(0, 200)}"` : `a <${el.tag}>`;
+    return `${i + 1}. On the ${pageName(el.page)} page (${el.page}), ${what} — in ${el.block}.\n   Markup: ${el.html}`;
+  });
+  return (
+    "\n\n---\nThe owner selected these elements in the preview. \"This\", \"here\" and \"it\" " +
+    "refer to them. Find each in the source by its text or markup before changing it.\n" +
+    rows.join("\n")
+  );
+}
+
+function ElementChip({ el, onRemove }: { el: PickedElement; onRemove?: () => void }) {
+  return (
+    <span
+      title={`${pageName(el.page)} page · ${el.block}`}
+      className="flex max-w-full items-center gap-1.5 rounded-md border border-indigo-400/40 bg-indigo-500/10 py-0.5 pl-1.5 pr-1 text-[11px] text-indigo-100"
+    >
+      <Code2 className="size-3 shrink-0 text-indigo-300" />
+      <span className="truncate">{el.label}</span>
+      <span className="shrink-0 text-indigo-300/70">{pageName(el.page)}</span>
+      {onRemove && (
+        <button
+          type="button"
+          onClick={onRemove}
+          aria-label="Remove"
+          className="shrink-0 rounded p-0.5 text-indigo-300/80 hover:bg-indigo-500/20 hover:text-white"
+        >
+          <X className="size-3" />
+        </button>
+      )}
+    </span>
+  );
+}
+
 function ago(at: number): string {
   const s = Math.max(0, Math.round(Date.now() / 1000 - at));
   if (s < 60) return "just now";
@@ -395,6 +437,9 @@ export function StudioPanel({
   onSiteChanged,
   onOpenPage,
   onShowBuildLog,
+  attachments = [],
+  onRemoveAttachment,
+  onClearAttachments,
 }: {
   projectId: string;
   title: string;
@@ -404,8 +449,14 @@ export function StudioPanel({
   /** Show a page of the site in the preview. */
   onOpenPage: (path: string) => void;
   onShowBuildLog: () => void;
+  /** Elements the owner clicked in the preview, waiting to go with the next message. */
+  attachments?: PickedElement[];
+  onRemoveAttachment?: (id: string) => void;
+  onClearAttachments?: () => void;
 }) {
   const [suggestions, setSuggestions] = useState<StudioSuggestion[] | null>(null);
+  const [complete, setComplete] = useState<StudioIdeas["complete"]>(null);
+  const [brokenLinks, setBrokenLinks] = useState(0);
   const [suggestError, setSuggestError] = useState(false);
   const [turns, setTurns] = useState<Turn[]>([]);
   const [draft, setDraft] = useState("");
@@ -423,7 +474,11 @@ export function StudioPanel({
   function loadSuggestions() {
     setSuggestError(false);
     getStudioSuggestions(projectId)
-      .then(setSuggestions)
+      .then((ideas) => {
+        setSuggestions(ideas.suggestions);
+        setComplete(ideas.complete);
+        setBrokenLinks(ideas.broken_links ?? 0);
+      })
       .catch(() => setSuggestError(true));
   }
 
@@ -435,6 +490,16 @@ export function StudioPanel({
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [turns]);
+
+  // A freshly picked element means the owner is about to say something about
+  // it: put the cursor where they will type.
+  useEffect(() => {
+    if (attachments.length) {
+      setPlanned(null);
+      setShowHistory(false);
+      inputRef.current?.focus();
+    }
+  }, [attachments.length]);
 
   useEffect(() => {
     if (!busy) return;
@@ -460,16 +525,18 @@ export function StudioPanel({
   async function send(message: string) {
     const text = message.trim();
     if (!text || busy) return;
+    const attached = attachments;
     setDraft("");
     setPlanned(null);
     setShowHistory(false);
+    onClearAttachments?.();
     setTurns((prev) => [
       ...prev,
-      { message: text, log: [], todos: [], state: "running", startedAt: Date.now() },
+      { message: text, attached, log: [], todos: [], state: "running", startedAt: Date.now() },
     ]);
     let ended = false;
     try {
-      await studioTurn(projectId, text, (e) => {
+      await studioTurn(projectId, text + attachmentContext(attached), (e) => {
         if (e.kind === "done") {
           ended = true;
           patchLast((t) => ({
@@ -485,6 +552,7 @@ export function StudioPanel({
           else if (e.reverted) onSiteChanged();
           if (e.checkpoint) {
             setSuggestions(null);
+            setComplete(null);
             loadSuggestions();
           }
           return;
@@ -550,6 +618,35 @@ export function StudioPanel({
   const lastKept = [...turns].reverse().find((t) => t.state === "done" && t.checkpoint);
   const fresh = turns.length === 0;
 
+  const completeCard = complete && !planned && (
+    <button
+      type="button"
+      disabled={busy}
+      onClick={() => {
+        setPlanned({ label: complete.label, prompt: complete.prompt, kind: "page" });
+        setDraft(complete.prompt);
+      }}
+      className="group mb-4 w-full rounded-xl bg-gradient-to-br from-indigo-500/70 via-fuchsia-500/50 to-amber-400/60 p-px text-left disabled:opacity-50"
+    >
+      <div className="rounded-[11px] bg-card/95 p-3.5 transition-colors group-hover:bg-card/80">
+        <div className="mb-1 flex items-center gap-2">
+          <span className="flex size-6 items-center justify-center rounded-md bg-gradient-to-br from-indigo-500 to-fuchsia-500 text-white">
+            <Sparkles className="size-3.5" />
+          </span>
+          <span className="text-sm font-semibold text-foreground">Complete the site</span>
+          <span className="ml-auto rounded-full bg-indigo-500/15 px-2 py-0.5 text-[10.5px] font-medium text-indigo-200">
+            Recommended
+          </span>
+        </div>
+        <p className="mb-2 text-xs text-muted-foreground">
+          Every page this site should have, built in its design, linked from the nav and footer
+          {brokenLinks > 0 ? ` — and the ${brokenLinks} link${brokenLinks === 1 ? "" : "s"} that go nowhere today fixed` : ""}.
+        </p>
+        <p className="line-clamp-2 text-[11.5px] text-foreground/70">{complete.prompt}</p>
+      </div>
+    </button>
+  );
+
   return (
     <div className="flex h-full flex-col">
       <div className="flex items-center justify-between border-b border-border px-4 py-2.5">
@@ -596,6 +693,7 @@ export function StudioPanel({
                 Ask for anything on the site. Each change is built, checked on the page, and can be
                 undone.
               </p>
+              {completeCard}
               <div className="grid grid-cols-2 gap-2">
                 {CAPABILITIES.map(({ icon: Icon, label, hint, starter }) => (
                   <button
@@ -619,6 +717,13 @@ export function StudioPanel({
             return (
               <div key={i} className="mb-5">
                 <div className="mb-2 ml-8 rounded-2xl rounded-tr-sm bg-secondary/70 px-3.5 py-2.5 text-sm text-foreground">
+                  {t.attached && t.attached.length > 0 && (
+                    <div className="mb-1.5 flex flex-wrap gap-1">
+                      {t.attached.map((el) => (
+                        <ElementChip key={el.id} el={el} />
+                      ))}
+                    </div>
+                  )}
                   {t.message}
                 </div>
                 <ActivityLog turn={t} now={now} />
@@ -715,6 +820,7 @@ export function StudioPanel({
 
           {!planned && (
             <div>
+              {!fresh && completeCard}
               <p className="mb-2 flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
                 <Lightbulb className="size-3.5" /> Ideas for {title}
               </p>
@@ -784,6 +890,13 @@ export function StudioPanel({
             ))}
           </div>
         )}
+        {attachments.length > 0 && (
+          <div className="mb-2 flex flex-wrap gap-1">
+            {attachments.map((el) => (
+              <ElementChip key={el.id} el={el} onRemove={() => onRemoveAttachment?.(el.id)} />
+            ))}
+          </div>
+        )}
         <div className="flex items-end gap-2 rounded-xl border border-border bg-card/60 px-3 py-2 focus-within:border-primary/50">
           <Textarea
             ref={inputRef}
@@ -796,7 +909,15 @@ export function StudioPanel({
               }
             }}
             rows={2}
-            placeholder={busy ? "Working on it…" : planned ? "Confirm the idea above, or type your own" : "Describe a change…"}
+            placeholder={
+              busy
+                ? "Working on it…"
+                : planned
+                  ? "Confirm the idea above, or type your own"
+                  : attachments.length
+                    ? "What should change about the selected element?"
+                    : "Describe a change… or use Select to point at something"
+            }
             disabled={busy || Boolean(planned)}
             className="text-sm"
           />

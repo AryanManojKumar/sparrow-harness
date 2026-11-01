@@ -23,6 +23,7 @@ import re
 import shutil
 import subprocess
 import tarfile
+from html.parser import HTMLParser
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
@@ -101,6 +102,101 @@ def routes(export: Path) -> list[str]:
             continue
         out.append("/" if rel == "." else f"/{rel}/")
     return sorted(out, key=lambda r: (r != "/", r))
+
+
+_ASSET = re.compile(r"^[a-z0-9][a-z0-9-]{0,60}\.(png|jpg|jpeg|webp|gif|mp4|webm)$")
+MAX_ASSET = 80_000_000
+
+
+def save_asset(proj: Project, name: str, data: bytes) -> str:
+    """Write a generated file into public/assets/. Returns its workspace path.
+
+    The name is a whole filename checked against a strict pattern — it comes
+    from the agent through the gateway, and it is about to become a path.
+    An existing file is never overwritten: the agent may be wrong about which
+    image it is replacing, and the owner's own photos live in this folder too.
+    """
+    if not _ASSET.match(name):
+        raise StoreError(f"invalid asset name {name!r}")
+    if not data or len(data) > MAX_ASSET:
+        raise StoreError("asset empty or too large")
+    folder = proj.workspace / "public" / "assets"
+    folder.mkdir(parents=True, exist_ok=True)
+    stem, ext = name.rsplit(".", 1)
+    target, n = folder / name, 2
+    while target.exists():
+        target, n = folder / f"{stem}-{n}.{ext}", n + 1
+    target.write_bytes(data)
+    return target.relative_to(proj.workspace).as_posix()
+
+
+class _Links(HTMLParser):
+    """Anchors (href + visible text) and element ids from one exported page."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.links: list[tuple[str, str]] = []
+        self.ids: set[str] = set()
+        self._href: str | None = None
+        self._text: list[str] = []
+
+    def handle_starttag(self, tag, attrs):
+        a = dict(attrs)
+        if a.get("id"):
+            self.ids.add(a["id"])
+        if tag == "a":
+            self._href, self._text = a.get("href") or "", []
+
+    def handle_data(self, data):
+        if self._href is not None:
+            self._text.append(data)
+
+    def handle_endtag(self, tag):
+        if tag == "a" and self._href is not None:
+            self.links.append((self._href, " ".join("".join(self._text).split())))
+            self._href = None
+
+
+def broken_links(export: Path, base: str) -> list[dict]:
+    """Links on the built site that go nowhere: [{text, href, page, problem}].
+
+    Three ways a generated link is dead, all seen on real builds: a `#`
+    placeholder, a page that was never made, and an in-page anchor whose
+    target never got the `id` (the generator's sections carry none). External,
+    mail and phone links are not checked.
+    """
+    pages = routes(export)
+    parsed: dict[str, _Links] = {}
+    for route in pages:
+        html = export / route.strip("/") / "index.html" if route != "/" else export / "index.html"
+        p = _Links()
+        p.feed(html.read_text(errors="replace"))
+        parsed[route] = p
+    base = base.rstrip("/")
+    out: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    for route, p in parsed.items():
+        for href, text in p.links:
+            if href.startswith(("http://", "https://", "mailto:", "tel:", "//")):
+                continue
+            problem = ""
+            if href in ("", "#"):
+                problem = "goes nowhere"
+            else:
+                path, _, anchor = href.partition("#")
+                if path.startswith(base):
+                    path = path[len(base):]
+                target = route if not path else ("/" + path.strip("/") + "/").replace("//", "/")
+                if target not in parsed:
+                    problem = f"page {target} does not exist"
+                elif anchor and anchor not in parsed[target].ids:
+                    problem = f"nothing on {target} has id \"{anchor}\""
+            key = (text, href)
+            if problem and key not in seen:
+                seen.add(key)
+                out.append({"text": text or "(no text)", "href": href, "page": route,
+                            "problem": problem})
+    return out
 
 
 def pack(workspace: Path) -> bytes:

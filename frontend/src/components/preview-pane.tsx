@@ -7,6 +7,7 @@ import {
   ExternalLink,
   Globe,
   Monitor,
+  MousePointerClick,
   RefreshCw,
   Smartphone,
   Tablet,
@@ -26,6 +27,65 @@ const DEVICE_WIDTH: Record<Device, number> = {
   tablet: 768,
   mobile: 390,
 };
+
+/** An element the owner clicked in the preview, as the chat attaches it. */
+export type PickedElement = {
+  id: string;
+  /** The page it is on, under the site root: "/pricing/". */
+  page: string;
+  tag: string;
+  /** Its visible text, trimmed. */
+  text: string;
+  /** Short chip label: "h1 · Pricing for customer operations." */
+  label: string;
+  /** The top-level block of the page it sits in, described for the agent. */
+  block: string;
+  /** Its own markup, truncated — enough to find it in the source. */
+  html: string;
+};
+
+// Inline pieces (a line-wrapping <span> inside a heading, an icon's <path>)
+// are not what an owner means by "this": promote them to the nearest element
+// that is — the heading, paragraph, button, link or image they belong to.
+const MEANINGFUL = "h1,h2,h3,h4,h5,h6,p,a,button,li,img,video,figure,blockquote,label,input,textarea,select,table";
+const INLINE = new Set(["SPAN", "STRONG", "EM", "B", "I", "SMALL", "BR", "SUP", "SUB", "MARK", "path", "svg", "g", "use", "circle", "rect", "line", "polyline"]);
+
+function meaningful(el: Element): Element {
+  if (!INLINE.has(el.tagName)) return el;
+  return el.closest(MEANINGFUL) ?? el.closest("div,section,header,footer,nav,article") ?? el;
+}
+
+function describe(el: Element, page: string): PickedElement {
+  const tag = el.tagName.toLowerCase();
+  const text = ((el as HTMLElement).innerText || el.textContent || "").replace(/\s+/g, " ").trim();
+  const alt = el.getAttribute("alt") || el.getAttribute("aria-label") || "";
+  // The block: the ancestor that is a direct child of <main> (or <body>) —
+  // the section the generator built as one component.
+  let block: Element | null = el;
+  while (block && block.parentElement && !["MAIN", "BODY"].includes(block.parentElement.tagName)) {
+    block = block.parentElement;
+  }
+  let blockDesc = "the page";
+  if (block && block.parentElement) {
+    const siblings = Array.from(block.parentElement.children);
+    const n = siblings.indexOf(block) + 1;
+    const heading = block.querySelector("h1, h2, h3")?.textContent?.replace(/\s+/g, " ").trim();
+    blockDesc = `block ${n} of ${siblings.length} on the page (a <${block.tagName.toLowerCase()}>${
+      heading ? ` whose heading reads "${heading.slice(0, 90)}"` : ""
+    })`;
+  }
+  const html = el.outerHTML.replace(/\s+/g, " ").slice(0, 1200);
+  const shown = (text || alt || (tag === "img" ? el.getAttribute("src")?.split("/").pop() : "") || "").slice(0, 60);
+  return {
+    id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    page,
+    tag,
+    text: text.slice(0, 400),
+    label: shown ? `${tag} · ${shown}` : tag,
+    block: blockDesc,
+    html,
+  };
+}
 
 /** "/" → "Home", "/pricing/" → "Pricing", "/blog/first-post/" → "Blog / First post". */
 export function pageName(path: string): string {
@@ -47,6 +107,7 @@ export function PreviewPane({
   pages = [],
   path,
   navNonce = 0,
+  onPick,
 }: {
   ready: boolean;
   /** The site's root, e.g. `/projects/{id}/preview/`. Same-origin with the
@@ -61,6 +122,8 @@ export function PreviewPane({
   path?: string;
   /** Bumped to (re)navigate to `path` even when it has not changed. */
   navNonce?: number;
+  /** Enables "Select": the owner clicks an element and it is handed here. */
+  onPick?: (el: PickedElement) => void;
 }) {
   const [device, setDevice] = useState<Device>("desktop");
   const [reloadKey, setReloadKey] = useState(0);
@@ -70,6 +133,12 @@ export function PreviewPane({
   const [current, setCurrent] = useState(path ?? "/");
   const [menuOpen, setMenuOpen] = useState(false);
   const [box, setBox] = useState({ w: 0, h: 0 });
+  const [selecting, setSelecting] = useState(false);
+  // Bumped on every frame load, so the inspector re-binds after navigation.
+  const [loadTick, setLoadTick] = useState(0);
+  const pickRef = useRef(onPick);
+  pickRef.current = onPick;
+  const canPick = Boolean(onPick);
   const stageRef = useRef<HTMLDivElement>(null);
   const frameRef = useRef<HTMLIFrameElement>(null);
 
@@ -92,12 +161,89 @@ export function PreviewPane({
     return () => ro.disconnect();
   }, [ready]);
 
+  // The inspector lives inside the site's own document (same-origin through
+  // the proxy): a highlight box follows the pointer, a click is captured
+  // before the site sees it — no link fires, no button runs — and the element
+  // is described for the chat. Escape leaves the mode.
+  useEffect(() => {
+    if (!selecting || !canPick) return;
+    let doc: Document | null = null;
+    try {
+      doc = frameRef.current?.contentDocument ?? null;
+    } catch {
+      doc = null;
+    }
+    if (!doc?.body) return;
+    const d = doc;
+    const hl = d.createElement("div");
+    const tag = d.createElement("div");
+    hl.style.cssText =
+      "position:fixed;pointer-events:none;z-index:2147483647;border:2px solid #818cf8;" +
+      "background:rgba(129,140,248,.10);border-radius:4px;transition:all 60ms ease-out;display:none";
+    tag.style.cssText =
+      "position:absolute;left:-2px;top:-22px;background:#818cf8;color:#fff;font:600 11px ui-monospace,monospace;" +
+      "padding:2px 6px;border-radius:4px 4px 4px 0;white-space:nowrap";
+    hl.appendChild(tag);
+    d.body.appendChild(hl);
+    const prevCursor = d.body.style.cursor;
+    d.body.style.cursor = "crosshair";
+
+    const move = (e: MouseEvent) => {
+      const el = e.target ? meaningful(e.target as Element) : null;
+      if (!el || el === d.body || el === d.documentElement) {
+        hl.style.display = "none";
+        return;
+      }
+      const r = el.getBoundingClientRect();
+      hl.style.display = "block";
+      hl.style.left = `${r.left}px`;
+      hl.style.top = `${r.top}px`;
+      hl.style.width = `${r.width}px`;
+      hl.style.height = `${r.height}px`;
+      tag.textContent = el.tagName.toLowerCase();
+      tag.style.top = r.top < 24 ? "100%" : "-22px";
+    };
+    const swallow = (e: Event) => {
+      e.preventDefault();
+      e.stopPropagation();
+    };
+    const click = (e: MouseEvent) => {
+      swallow(e);
+      const el = e.target ? meaningful(e.target as Element) : null;
+      if (!el || el === d.body) return;
+      const page = (() => {
+        const loc = d.location.pathname;
+        return base && loc.startsWith(base) ? loc.slice(base.length) || "/" : current;
+      })();
+      pickRef.current?.(describe(el, page));
+      setSelecting(false);
+    };
+    const key = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setSelecting(false);
+    };
+    d.addEventListener("mousemove", move, true);
+    d.addEventListener("click", click, true);
+    d.addEventListener("mousedown", swallow, true);
+    d.addEventListener("keydown", key, true);
+    window.addEventListener("keydown", key);
+    return () => {
+      d.removeEventListener("mousemove", move, true);
+      d.removeEventListener("click", click, true);
+      d.removeEventListener("mousedown", swallow, true);
+      d.removeEventListener("keydown", key, true);
+      window.removeEventListener("keydown", key);
+      hl.remove();
+      d.body.style.cursor = prevCursor;
+    };
+  }, [selecting, loadTick, canPick, base, current]);
+
   const width = DEVICE_WIDTH[device];
   const pad = 24;
   const scale = box.w ? Math.min(1, (box.w - pad * 2) / width) : 1;
   const frameH = box.h ? (box.h - pad * 2) / scale : 800;
 
   function onFrameLoad() {
+    setLoadTick((t) => t + 1);
     try {
       const loc = frameRef.current?.contentWindow?.location.pathname ?? "";
       if (base && loc.startsWith(base)) setCurrent(loc.slice(base.length) || "/");
@@ -115,7 +261,11 @@ export function PreviewPane({
   }
 
   const live = ready && Boolean(src);
-  const frameSrc = live ? `${base}${target === "/" ? "/" : target}` : undefined;
+  // The query string only defeats any cache between here and the workshop;
+  // the export ignores it. Without it a reload could show the build before.
+  const frameSrc = live
+    ? `${base}${target === "/" ? "/" : target}?v=${version}-${reloadKey}`
+    : undefined;
   const knownPages = pages.length ? pages : ["/"];
 
   return (
@@ -146,6 +296,24 @@ export function PreviewPane({
             </button>
           ))}
         </div>
+
+        {onPick && (
+          <button
+            type="button"
+            disabled={!live}
+            onClick={() => setSelecting((v) => !v)}
+            title="Select an element to talk about it (Esc to cancel)"
+            className={cn(
+              "flex h-7 items-center gap-1.5 rounded-md border px-2 text-xs transition-colors disabled:opacity-40",
+              selecting
+                ? "border-indigo-400/60 bg-indigo-500/15 text-indigo-200"
+                : "border-border text-muted-foreground hover:bg-muted hover:text-foreground"
+            )}
+          >
+            <MousePointerClick className="size-3.5" />
+            {selecting ? "Click an element" : "Select"}
+          </button>
+        )}
 
         <button
           type="button"
@@ -233,21 +401,34 @@ export function PreviewPane({
       <div ref={stageRef} className="relative flex-1 overflow-hidden bg-black/20">
         {live && box.w > 0 ? (
           <div
-            className="absolute left-1/2 top-6 overflow-hidden rounded-xl border border-border bg-white shadow-2xl shadow-black/50"
+            className={cn(
+              "absolute left-1/2 top-6 flex flex-col overflow-hidden rounded-xl border bg-white shadow-2xl shadow-black/60 transition-[box-shadow,border-color]",
+              selecting ? "border-indigo-400/70 ring-2 ring-indigo-400/30" : "border-white/10"
+            )}
             style={{
               width: width * scale,
               height: box.h - pad * 2,
               transform: "translateX(-50%)",
             }}
           >
+            {/* Window chrome, so the frame reads as a browser and not a panel. */}
+            <div className="flex h-7 shrink-0 items-center gap-1.5 border-b border-black/10 bg-[#ececee] px-3">
+              <span className="size-2.5 rounded-full bg-[#ff5f57]" />
+              <span className="size-2.5 rounded-full bg-[#febc2e]" />
+              <span className="size-2.5 rounded-full bg-[#28c840]" />
+              <span className="mx-auto max-w-[60%] truncate rounded-md bg-white/80 px-3 py-0.5 text-center font-mono text-[10px] text-black/50">
+                {pageName(current)} · {current}
+              </span>
+              <span className="w-[42px]" />
+            </div>
             <iframe
               ref={frameRef}
               key={`${version}-${reloadKey}`}
               src={frameSrc}
               title="Site preview"
               onLoad={onFrameLoad}
-              className="origin-top-left border-0"
-              style={{ width, height: frameH, transform: `scale(${scale})` }}
+              className="shrink-0 origin-top-left border-0"
+              style={{ width, height: frameH - 28 / scale, transform: `scale(${scale})` }}
             />
           </div>
         ) : (

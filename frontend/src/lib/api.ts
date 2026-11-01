@@ -523,9 +523,17 @@ export async function studioTurn(
   return readEvents<StudioEvent>(res, "studio", onEvent);
 }
 
-export async function getStudioSuggestions(projectId: string): Promise<StudioSuggestion[]> {
+export type StudioIdeas = {
+  suggestions: StudioSuggestion[];
+  /** One comprehensive request that finishes the site — every page, every link. */
+  complete: { label: string; prompt: string } | null;
+  /** Links on the built site that currently go nowhere. */
+  broken_links?: number;
+};
+
+export async function getStudioSuggestions(projectId: string): Promise<StudioIdeas> {
   const res = await fetch(`${API_URL}/projects/${projectId}/studio/suggestions`);
-  return (await asJson<{ suggestions: StudioSuggestion[] }>(res, "suggestions")).suggestions;
+  return asJson<StudioIdeas>(res, "suggestions");
 }
 
 export async function getStudioCheckpoints(projectId: string): Promise<StudioCheckpoint[]> {

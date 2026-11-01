@@ -85,9 +85,18 @@ class Workshop:
         with self._client(400) as c:
             return self._check(c.post(f"/projects/{pid}/build")).json()
 
+    def put_asset(self, pid: str, name: str, data: bytes) -> dict:
+        with self._client(120) as c:
+            return self._check(c.put(f"/projects/{pid}/assets/{name}", content=data,
+                                     headers={"content-type": "application/octet-stream"})).json()
+
     def pages(self, pid: str) -> list[str]:
         with self._client() as c:
             return self._check(c.get(f"/projects/{pid}/pages")).json()
+
+    def links(self, pid: str) -> list[dict]:
+        with self._client() as c:
+            return self._check(c.get(f"/projects/{pid}/links")).json()
 
     def checkpoints(self, pid: str) -> list[dict]:
         with self._client() as c:

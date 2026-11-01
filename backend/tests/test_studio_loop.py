@@ -179,3 +179,19 @@ def test_dossier_is_read_only_history_aware_and_outside_checkpoints(tmp_path):
     assert store.changed_files(proj) == [], "AGENTS.md is not part of the site's history"
     store.undo(proj)
     assert proj.dossier.is_file(), "undo does not roll back what the agent is told"
+
+
+def test_a_model_that_never_answers_is_an_error_not_a_silent_done(shop, tmp_path):
+    """Rate-limited upstream: the runtime ends the turn with finish_reason "error"
+    and no text. That must surface, not read as "nothing needed changing"."""
+    s, _ = shop
+    proj = _project(tmp_path)
+
+    class Silent:
+        def run(self, prompt, on_notification=None):
+            r = _Result("")
+            r.finish_reason = "error"
+            return r
+
+    with pytest.raises(studio.ModelUnavailable):
+        _turn(s, proj, Silent())

@@ -5,9 +5,11 @@
     PUT    /projects/{pid}/workspace            import a workspace (tar.gz body)
     GET    /projects/{pid}/workspace            export it back (tar.gz)
     PUT    /projects/{pid}/dossier              AGENTS.md: what the agent knows about the site
+    PUT    /projects/{pid}/assets/{name}        save a generated image or video into public/assets
     POST   /projects/{pid}/build                next build, jailed
     POST   /projects/{pid}/turns                one studio request (SSE stream)
     GET    /projects/{pid}/pages                the built site's pages
+    GET    /projects/{pid}/links                links on the built site that go nowhere
     GET    /projects/{pid}/checkpoints          history, newest first
     POST   /projects/{pid}/undo                 restore the previous checkpoint
     POST   /projects/{pid}/restore/{cid}        restore a named checkpoint
@@ -103,6 +105,18 @@ def create_app(cfg: WorkshopConfig | None = None, studio: Any = None) -> FastAPI
         store.write_dossier(p, text)
         return {"ok": True, "bytes": len(text)}
 
+    @app.put("/projects/{pid}/assets/{name}", dependencies=guarded)
+    async def put_asset(pid: str, name: str, request: Request) -> dict:
+        from sparrow.workshop.look import base_path
+        p = held(pid)
+        try:
+            rel = store.save_asset(p, name, await request.body())
+        except store.StoreError as e:
+            raise HTTPException(400, str(e))
+        # public/ is served at the site root, under the preview's base path.
+        src = f"{base_path(p.workspace)}/{rel.removeprefix('public/')}"
+        return {"path": rel, "src": src}
+
     @app.post("/projects/{pid}/build", dependencies=guarded)
     def build(pid: str) -> dict:
         p = held(pid)
@@ -129,6 +143,12 @@ def create_app(cfg: WorkshopConfig | None = None, studio: Any = None) -> FastAPI
     @app.get("/projects/{pid}/pages", dependencies=guarded)
     def pages(pid: str) -> list[str]:
         return store.routes(held(pid).export)
+
+    @app.get("/projects/{pid}/links", dependencies=guarded)
+    def links(pid: str) -> list[dict]:
+        from sparrow.workshop.look import base_path
+        p = held(pid)
+        return store.broken_links(p.export, base_path(p.workspace))
 
     @app.get("/projects/{pid}/checkpoints", dependencies=guarded)
     def checkpoints(pid: str) -> list[dict]:

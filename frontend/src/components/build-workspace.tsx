@@ -28,7 +28,7 @@ import {
 } from "@/lib/api";
 import { BuildCanvas } from "@/components/build-canvas";
 import { BuildFeed } from "@/components/build-feed";
-import { PreviewPane } from "@/components/preview-pane";
+import { PreviewPane, type PickedElement } from "@/components/preview-pane";
 import { GatePanel } from "@/components/gate-panel";
 import { StudioPanel } from "@/components/studio-panel";
 
@@ -46,6 +46,9 @@ type Phase =
   | "paused"
   | "done"
   | "error";
+
+const CHAT_MIN = 340;
+const CHAT_MAX = 760;
 
 export function BuildWorkspace() {
   const params = useSearchParams();
@@ -89,6 +92,11 @@ export function BuildWorkspace() {
   const [previewPath, setPreviewPath] = useState("/");
   const [navNonce, setNavNonce] = useState(0);
   const [sitePages, setSitePages] = useState<string[]>([]);
+  // Elements the owner clicked in the preview, attached to the next message.
+  const [picked, setPicked] = useState<PickedElement[]>([]);
+  // The studio column's width, dragged by the owner and remembered.
+  const [chatWidth, setChatWidth] = useState(420);
+  const dragging = useRef(false);
 
   // One leg of the run: from wherever it's paused to the next gate, the end,
   // or a failure. Re-entered after every gate answer, so the same function
@@ -360,6 +368,29 @@ export function BuildWorkspace() {
         previewReady &&
         ["verify", "gate:preview", "done"].includes(stoppedStage ?? "")));
 
+  useEffect(() => {
+    const saved = Number(localStorage.getItem("sparrow:chat-width"));
+    if (saved >= CHAT_MIN && saved <= CHAT_MAX) setChatWidth(saved);
+  }, []);
+
+  function startResize(e: React.PointerEvent<HTMLDivElement>) {
+    dragging.current = true;
+    // Captured, so the drag keeps working while the pointer is over the
+    // preview iframe, which would otherwise swallow every move event.
+    e.currentTarget.setPointerCapture(e.pointerId);
+  }
+  function onResize(e: React.PointerEvent<HTMLDivElement>) {
+    if (!dragging.current) return;
+    const w = Math.min(CHAT_MAX, Math.max(CHAT_MIN, window.innerWidth - e.clientX));
+    setChatWidth(w);
+  }
+  function endResize(e: React.PointerEvent<HTMLDivElement>) {
+    if (!dragging.current) return;
+    dragging.current = false;
+    e.currentTarget.releasePointerCapture(e.pointerId);
+    localStorage.setItem("sparrow:chat-width", String(Math.round(chatWidth)));
+  }
+
   function refreshPages() {
     if (id) getSitePages(id).then(setSitePages).catch(() => {});
   }
@@ -389,9 +420,8 @@ export function BuildWorkspace() {
     // In the studio the conversation sits on the right, beside the site it is
     // changing; while a run is building, the feed keeps the left column.
     <div
-      className={`relative grid h-screen grid-cols-1 ${
-        studioActive ? "md:grid-cols-[1fr_400px]" : "md:grid-cols-[380px_1fr]"
-      }`}
+      className={`relative grid h-screen grid-cols-1 overflow-hidden ${studioActive ? "" : "md:grid-cols-[380px_1fr]"}`}
+      style={studioActive ? { gridTemplateColumns: `minmax(0, 1fr) ${chatWidth}px` } : undefined}
     >
       {phase === "run" && id ? (
         <button
@@ -404,12 +434,33 @@ export function BuildWorkspace() {
         </button>
       ) : null}
       <div
-        className={`relative bg-card/30 overflow-hidden ${
+        className={`relative min-h-0 overflow-hidden bg-card/30 ${
           studioActive ? "border-l border-border md:order-2" : "border-r border-border"
         }`}
       >
+        {studioActive && (
+          <div
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="Resize chat"
+            onPointerDown={startResize}
+            onPointerMove={onResize}
+            onPointerUp={endResize}
+            onDoubleClick={() => {
+              setChatWidth(420);
+              localStorage.setItem("sparrow:chat-width", "420");
+            }}
+            title="Drag to resize · double-click to reset"
+            className="group absolute inset-y-0 left-0 z-30 w-2 cursor-col-resize"
+          >
+            <div className="h-full w-0.5 bg-transparent transition-colors group-hover:bg-primary/60 group-active:bg-primary" />
+          </div>
+        )}
         {studioActive && !showBuildLog ? (
           <StudioPanel
+            attachments={picked}
+            onRemoveAttachment={(pid) => setPicked((p) => p.filter((x) => x.id !== pid))}
+            onClearAttachments={() => setPicked([])}
             projectId={id || ""}
             title={stored?.prompt ?? "Your site"}
             onSiteChanged={(path) => {
@@ -481,6 +532,7 @@ export function BuildWorkspace() {
           pages={sitePages}
           path={previewPath}
           navNonce={navNonce}
+          onPick={studioActive ? (el) => setPicked((p) => [...p, el].slice(-5)) : undefined}
           ready={previewReady}
           src={id && previewReady ? sitePreviewUrl(id) : undefined}
           waitingLabel={

@@ -218,7 +218,11 @@ def test_tokens_are_signed_bound_to_one_project_and_expire(secret, monkeypatch):
     # Re-binding a token to another project breaks the signature.
     forged = a.replace(".alpha.", ".beta.")
     assert gateway.Tokens.check(forged) is None
-    assert gateway.Tokens.check("stu.alpha.99999999999.AAAA") is None
+    assert gateway.Tokens.check("stu.alpha.99999999999.iv.AAAA") is None
+    # The capability set is signed too: an image-only token cannot be widened.
+    img = t.issue("gamma", caps="i")
+    assert gateway.Tokens.claims(img) == ("gamma", "i")
+    assert gateway.Tokens.check(img.replace(".i.", ".iv.")) is None
     # A different secret (another office) cannot vouch for it.
     monkeypatch.setenv("GATEWAY_SECRET", "x" * 40)
     assert gateway.Tokens.check(a) is None
@@ -279,7 +283,7 @@ def test_gateway_swaps_token_for_real_key_and_model(gw):
 
 def test_gateway_refuses_bad_tokens_and_other_models(gw):
     client, seen = gw
-    r = client.post("/llm/v1/chat/completions", headers={"authorization": "Bearer stu.site-1.9999999999.nope"},
+    r = client.post("/llm/v1/chat/completions", headers={"authorization": "Bearer stu.site-1.9999999999.iv.nope"},
                     json={"model": "studio", "messages": []})
     assert r.status_code == 401
     tok = gateway.TOKENS.issue("site-1")
@@ -332,3 +336,79 @@ def test_routes_lists_owner_pages_only(tmp_path):
         (out / rel / "index.html").write_text("x")
     assert store.routes(out) == ["/", "/blog/first/", "/pricing/"]
     assert store.routes(tmp_path / "missing") == []
+
+
+def test_broken_links_finds_placeholders_missing_pages_and_missing_anchors(tmp_path):
+    out, base = tmp_path / "out", "/projects/p/preview"
+    (out / "pricing").mkdir(parents=True)
+    (out / "index.html").write_text(
+        f'<nav><a href="#">Careers</a><a href="#features">Features</a>'
+        f'<a href="{base}/pricing/">Pricing</a><a href="{base}/about/">About</a>'
+        f'<a href="https://x.com">X</a><a href="mailto:a@b.c">Mail</a></nav>'
+        f'<section id="hero"><a href="#hero">Top</a></section>')
+    (out / "pricing" / "index.html").write_text(f'<a href="{base}/#hero">Home hero</a>')
+    found = {(b["text"], b["problem"]) for b in store.broken_links(out, base)}
+    assert found == {("Careers", "goes nowhere"),
+                     ("Features", 'nothing on / has id "features"'),
+                     ("About", "page /about/ does not exist")}
+
+
+# ── assets over MCP ─────────────────────────────────────────────────────────
+
+def _mcp(client, token, method, params=None, rid=1):
+    return client.post("/mcp", headers={"authorization": f"Bearer {token}"},
+                       json={"jsonrpc": "2.0", "id": rid, "method": method, "params": params or {}})
+
+
+def test_mcp_offers_only_the_kinds_the_token_allows(secret):
+    client = TestClient(gateway.app)
+    t = gateway.Tokens()
+    init = _mcp(client, t.issue("site-1"), "initialize", {"protocolVersion": "2025-06-18"}).json()
+    assert init["result"]["protocolVersion"] == "2025-06-18"
+    full = _mcp(client, t.issue("site-1", caps="iv"), "tools/list").json()["result"]["tools"]
+    assert full[0]["inputSchema"]["properties"]["kind"]["enum"] == ["image", "video"]
+    img = _mcp(client, t.issue("site-2", caps="i"), "tools/list").json()["result"]["tools"]
+    assert img[0]["inputSchema"]["properties"]["kind"]["enum"] == ["image"]
+    none = _mcp(client, t.issue("site-3", caps="-"), "tools/list").json()["result"]["tools"]
+    assert none == []
+    assert client.post("/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"}).status_code == 401
+
+
+def test_generate_asset_refuses_kinds_outside_the_caps_without_calling_the_provider(monkeypatch):
+    from sparrow import eleven
+    monkeypatch.setattr(eleven, "motion", lambda *a, **k: pytest.fail("provider was called"))
+    text, err = gateway.generate_asset("site-1", "i", {"kind": "video", "prompt": "a calm office at dusk",
+                                                       "shape": "wide", "filename": "x"})
+    assert err and "not allowed" in text
+
+
+def test_generate_asset_saves_through_the_workshop(monkeypatch):
+    from sparrow import eleven
+    from sparrow.workshop import client as wclient
+    png = b"\x89PNG\r\n\x1a\n" + b"0" * 64
+    monkeypatch.setattr(eleven, "generate", lambda prompt, shape: png)
+    saved = {}
+
+    class FakeWorkshop:
+        def put_asset(self, pid, name, data):
+            saved.update(pid=pid, name=name, data=data)
+            return {"path": f"public/assets/{name}", "src": f"/projects/{pid}/preview/assets/{name}"}
+
+    monkeypatch.setattr(wclient, "Workshop", FakeWorkshop)
+    text, err = gateway.generate_asset("site-1", "iv", {
+        "kind": "image", "prompt": "a sunlit desk with a notebook", "shape": "wide",
+        "filename": "Pricing Hero!"})
+    assert not err
+    assert saved == {"pid": "site-1", "name": "pricing-hero.png", "data": png}
+    assert 'src="/projects/site-1/preview/assets/pricing-hero.png"' in text
+
+
+def test_save_asset_never_overwrites_and_rejects_bad_names(tmp_path):
+    proj = store.project(tmp_path / "root", "site-1")
+    store.import_workspace(proj, store.pack(_site(tmp_path)))
+    assert store.save_asset(proj, "hero.png", b"a") == "public/assets/hero.png"
+    assert store.save_asset(proj, "hero.png", b"b") == "public/assets/hero-2.png"
+    assert (proj.workspace / "public/assets/hero.png").read_bytes() == b"a"
+    for bad in ["../x.png", "x.exe", "X.png", "a/b.png", ".png"]:
+        with pytest.raises(store.StoreError):
+            store.save_asset(proj, bad, b"a")
