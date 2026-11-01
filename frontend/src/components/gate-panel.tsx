@@ -47,6 +47,8 @@ function outcomeOf(choice: string, kind: AssetKind): { icon: React.ReactNode; te
   switch (choice) {
     case "upload":
       return { icon: <Upload className="size-3" />, text: "your file will be used" };
+    case "as_is":
+      return { icon: <Upload className="size-3" />, text: "your file, untouched" };
     case "generate":
       return {
         icon: <Sparkles className="size-3" />,
@@ -103,7 +105,7 @@ export function GatePanel({
     try {
       // Upload any files for assets marked as "upload"
       for (const [assetId, decision] of Object.entries(assetDecisions)) {
-        if (decision === "upload") {
+        if (decision === "upload" || decision === "as_is") {
           const file = uploadedFiles[assetId];
           if (!file) {
             throw new Error(`${assetId}: chose upload but no file selected`);
@@ -447,7 +449,7 @@ export function GatePanel({
                               </span>
                             </label>
 
-                            {c.choice === "upload" && current === "upload" && (
+                            {(c.choice === "upload" || c.choice === "as_is") && current === c.choice && (
                               <div className="ml-5 mt-2">
                                 <Input
                                   type="file"
@@ -505,7 +507,7 @@ export function GatePanel({
                 const parts = [
                   genImage > 0 && `${genImage} image${genImage === 1 ? "" : "s"} will be generated`,
                   genVideo > 0 && `${genVideo} video will be generated`,
-                  n("upload").length > 0 && `${n("upload").length} of your own file${n("upload").length === 1 ? "" : "s"} used`,
+                  n("upload").length + n("as_is").length > 0 && `${n("upload").length + n("as_is").length} of your own file${n("upload").length + n("as_is").length === 1 ? "" : "s"} used`,
                   n("wordmark").length > 0 && "the name set as a wordmark",
                   n("skip").length > 0 && `${n("skip").length} left out`,
                 ].filter(Boolean);

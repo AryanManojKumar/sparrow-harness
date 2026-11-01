@@ -70,7 +70,7 @@ export function createProject(input: {
   }).then((r) => asJson(r, "create project"));
 }
 
-export type RunEventKind = "started" | "progress" | "blocked" | "awaiting" | "done" | "failed";
+export type RunEventKind = "started" | "progress" | "blocked" | "awaiting" | "done" | "failed" | "stopped";
 
 export type RunEvent = {
   stage: string;
@@ -114,10 +114,22 @@ export async function follow(
   return readEvents(res, "follow", onEvent);
 }
 
-async function readEvents(
+/**
+ * Ask the in-flight run to stop. Cooperative: it stops at the run's next
+ * event, so a stage is never cut off mid-write, and Resume picks the same
+ * stage up again. The stream the caller is reading ends with a "stopped" event.
+ */
+export async function stopRun(projectId: string): Promise<void> {
+  const res = await fetch(`${API_URL}/projects/${projectId}/stop`, { method: "POST" });
+  if (!res.ok && res.status !== 409) {
+    throw new Error(`stop failed (${res.status})`);
+  }
+}
+
+async function readEvents<T = RunEvent>(
   res: Response,
   what: string,
-  onEvent: (e: RunEvent) => void
+  onEvent: (e: T) => void
 ): Promise<void> {
   if (!res.ok || !res.body) {
     throw new Error(`${what} failed (${res.status})`);
@@ -141,7 +153,7 @@ async function readEvents(
       const line = chunk.split("\n").find((l) => l.startsWith("data: "));
       if (!line) continue;
       try {
-        onEvent(JSON.parse(line.slice("data: ".length)) as RunEvent);
+        onEvent(JSON.parse(line.slice("data: ".length)) as T);
       } catch {
         // A malformed chunk shouldn't kill the stream — skip it.
       }
@@ -311,6 +323,15 @@ export function uploadAsset(
   }).then((r) => asJson(r, "upload asset"));
 }
 
+/**
+ * The preview as the console's own origin serves it (next.config proxies it to
+ * the API). Same-origin is what lets the preview's address bar follow the page
+ * the owner navigates to inside the site.
+ */
+export function sitePreviewUrl(projectId: string): string {
+  return `/projects/${projectId}/preview/`;
+}
+
 export function previewUrl(projectId: string): string {
   return `${API_URL}/projects/${projectId}/preview/`;
 }
@@ -413,6 +434,8 @@ export type ProjectDetail = {
   /** True while a run is executing on the server. The console used to ignore
    *  this and show "Stopped" over a run in progress. */
   advancing?: boolean;
+  /** Handed to the studio; the pipeline no longer runs on it. */
+  in_studio?: boolean;
   spent: number;
   awaiting_gate: string | null;
   blackboard: {
@@ -444,4 +467,94 @@ export function getProject(projectId: string): Promise<ProjectDetail> {
 /** A stage id like "gate:design" means a human is blocking the run. */
 export function isWaitingOnHuman(stage?: string): boolean {
   return Boolean(stage?.startsWith("gate:"));
+}
+
+// ── studio ────────────────────────────────────────────────────────────────
+// Editing a finished site. The agent runs in the workshop, never in the
+// office; the office relays. One request is one "turn": it streams progress
+// and ends with `done` (what changed, the agent's plain-language reply) or
+// `error`.
+
+export type StudioEvent =
+  | { kind: "status"; text: string }
+  | { kind: "tool"; id: string; tool: string; target: string; detail: string }
+  | { kind: "tool_result"; id: string; ok: boolean; summary: string }
+  | { kind: "todos"; items: { content: string; status: "pending" | "in_progress" | "completed" }[] }
+  | { kind: "note"; text: string }
+  | {
+      kind: "done";
+      reply: string;
+      changed: string[];
+      checkpoint: string | null;
+      /** The change broke the site and was thrown away; nothing was kept. */
+      reverted: boolean;
+      seconds: number;
+    }
+  | { kind: "error"; text: string };
+
+export type StudioSuggestion = {
+  label: string;
+  prompt: string;
+  kind: "page" | "content" | "look" | "motion" | "fix";
+};
+
+export type StudioCheckpoint = { id: string; at: number; message: string };
+
+export async function studioTurn(
+  projectId: string,
+  message: string,
+  onEvent: (e: StudioEvent) => void,
+  signal?: AbortSignal
+): Promise<void> {
+  const res = await fetch(`${API_URL}/projects/${projectId}/studio/turns`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ message }),
+    signal,
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    let detail = body;
+    try {
+      detail = JSON.parse(body).detail ?? body;
+    } catch {}
+    throw new Error(String(detail).slice(0, 300) || `studio failed (${res.status})`);
+  }
+  return readEvents<StudioEvent>(res, "studio", onEvent);
+}
+
+export type StudioIdeas = {
+  suggestions: StudioSuggestion[];
+  /** One comprehensive request that finishes the site — every page, every link. */
+  complete: { label: string; prompt: string } | null;
+  /** Links on the built site that currently go nowhere. */
+  broken_links?: number;
+};
+
+export async function getStudioSuggestions(projectId: string): Promise<StudioIdeas> {
+  const res = await fetch(`${API_URL}/projects/${projectId}/studio/suggestions`);
+  return asJson<StudioIdeas>(res, "suggestions");
+}
+
+export async function getStudioCheckpoints(projectId: string): Promise<StudioCheckpoint[]> {
+  const res = await fetch(`${API_URL}/projects/${projectId}/studio/checkpoints`);
+  return asJson(res, "checkpoints");
+}
+
+export async function studioUndo(projectId: string): Promise<void> {
+  const res = await fetch(`${API_URL}/projects/${projectId}/studio/undo`, { method: "POST" });
+  await asJson(res, "undo");
+}
+
+export async function studioRestore(projectId: string, checkpoint: string): Promise<void> {
+  const res = await fetch(`${API_URL}/projects/${projectId}/studio/restore/${checkpoint}`, {
+    method: "POST",
+  });
+  await asJson(res, "restore");
+}
+
+/** The site's pages as paths under the preview: ["/", "/pricing/"]. */
+export async function getSitePages(projectId: string): Promise<string[]> {
+  const res = await fetch(`${API_URL}/projects/${projectId}/studio/pages`);
+  return asJson(res, "pages");
 }

@@ -102,6 +102,20 @@ they needed nothing lands nowhere near it, and reads as a stack of text blocks n
 how good the copy is. If this section is one that in the sources shows something, say what
 it shows.
 
+SAY WHAT KIND OF PICTURE IT IS, AS THE SOURCE SHOWS IT. The screenshot is how this source
+pictures this section, and the kind of picture is as much a decision as the subject: open
+each asset sentence by naming that kind in your own words, from what you can see in the
+evidence. Do not reach for a product screenshot because the brief sells a product — a page
+whose source shows a painted scene, a photograph or a drawing there gets that, and an
+interface capture is only right where the source shows an interface.
+
+A MARK IS A CLAIM, NOT A PICTURE. Some of what a source shows is not imagery but proof — a
+ratings-board mark, award laurels, a review score, a platform or store badge, a press or
+partner logo. Drawn for this business, each is a fact nobody gave: a generated rating mark
+is a fabricated official classification. Never list one as an asset. Where the source's
+section carries one, say in `structure` that it appears only if the user supplies the
+real thing.
+
 JSON only, no prose, no code fence:
 
 {

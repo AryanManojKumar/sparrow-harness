@@ -15,7 +15,9 @@ import {
   getProject,
   getSections,
   interview,
-  previewUrl,
+  getSitePages,
+  sitePreviewUrl,
+  stopRun,
   type AssetPlanEntry,
   type BlackboardAsset,
   type Direction,
@@ -26,8 +28,9 @@ import {
 } from "@/lib/api";
 import { BuildCanvas } from "@/components/build-canvas";
 import { BuildFeed } from "@/components/build-feed";
-import { PreviewPane } from "@/components/preview-pane";
+import { PreviewPane, type PickedElement } from "@/components/preview-pane";
 import { GatePanel } from "@/components/gate-panel";
+import { StudioPanel } from "@/components/studio-panel";
 
 type StoredPayload = { prompt: string; urls: string[] };
 
@@ -43,6 +46,9 @@ type Phase =
   | "paused"
   | "done"
   | "error";
+
+const CHAT_MIN = 340;
+const CHAT_MAX = 760;
 
 export function BuildWorkspace() {
   const params = useSearchParams();
@@ -75,6 +81,22 @@ export function BuildWorkspace() {
   const [assetPlan, setAssetPlan] = useState<AssetPlanEntry[]>([]);
   const [madeAssets, setMadeAssets] = useState<BlackboardAsset[]>([]);
   const startedRef = useRef(false);
+  // Studio: once the site is finished the sidebar becomes the place to keep
+  // changing it. The build log stays one click away rather than disappearing.
+  const [showBuildLog, setShowBuildLog] = useState(false);
+  // Bumped whenever a studio change lands or is undone, so the preview reloads.
+  const [siteVersion, setSiteVersion] = useState(0);
+  const [inStudio, setInStudio] = useState(false);
+  // Which page of the site the preview shows, and the pages it can show. A
+  // studio change jumps the preview to the page it touched.
+  const [previewPath, setPreviewPath] = useState("/");
+  const [navNonce, setNavNonce] = useState(0);
+  const [sitePages, setSitePages] = useState<string[]>([]);
+  // Elements the owner clicked in the preview, attached to the next message.
+  const [picked, setPicked] = useState<PickedElement[]>([]);
+  // The studio column's width, dragged by the owner and remembered.
+  const [chatWidth, setChatWidth] = useState(420);
+  const dragging = useRef(false);
 
   // One leg of the run: from wherever it's paused to the next gate, the end,
   // or a failure. Re-entered after every gate answer, so the same function
@@ -153,6 +175,11 @@ export function BuildWorkspace() {
       setErrorMessage(finalEvent.message);
       return;
     }
+    if (finalEvent.kind === "stopped") {
+      setStoppedStage(finalEvent.stage ?? null);
+      setPhase("paused");
+      return;
+    }
     if (finalEvent.kind === "awaiting") {
       const g = await getGate(projectId);
       setGate(g);
@@ -229,6 +256,7 @@ export function BuildWorkspace() {
           getAssetPlan(id).then(setAssetPlan);
           if (resumeHasPreview) setPreviewReady(true);
           setStoppedStage(detail.stage ?? null);
+          setInStudio(Boolean(detail.in_studio));
           if (!payload) {
             const b = detail.blackboard?.brief;
             setStored({
@@ -329,6 +357,54 @@ export function BuildWorkspace() {
   // exists the preview takes it back — a real page beats a drawing of one.
   const showCanvas = phase === "run" && !previewReady;
 
+  // Finished — this run just completed; or a project reopened from the home
+  // screen that stopped with its site already built (many runs end at verify
+  // with a complete page); or one the studio has already taken over.
+  const studioActive =
+    Boolean(id) &&
+    (phase === "done" ||
+      inStudio ||
+      (phase === "paused" &&
+        previewReady &&
+        ["verify", "gate:preview", "done"].includes(stoppedStage ?? "")));
+
+  useEffect(() => {
+    const saved = Number(localStorage.getItem("sparrow:chat-width"));
+    if (saved >= CHAT_MIN && saved <= CHAT_MAX) setChatWidth(saved);
+  }, []);
+
+  function startResize(e: React.PointerEvent<HTMLDivElement>) {
+    dragging.current = true;
+    // Captured, so the drag keeps working while the pointer is over the
+    // preview iframe, which would otherwise swallow every move event.
+    e.currentTarget.setPointerCapture(e.pointerId);
+  }
+  function onResize(e: React.PointerEvent<HTMLDivElement>) {
+    if (!dragging.current) return;
+    const w = Math.min(CHAT_MAX, Math.max(CHAT_MIN, window.innerWidth - e.clientX));
+    setChatWidth(w);
+  }
+  function endResize(e: React.PointerEvent<HTMLDivElement>) {
+    if (!dragging.current) return;
+    dragging.current = false;
+    e.currentTarget.releasePointerCapture(e.pointerId);
+    localStorage.setItem("sparrow:chat-width", String(Math.round(chatWidth)));
+  }
+
+  function refreshPages() {
+    if (id) getSitePages(id).then(setSitePages).catch(() => {});
+  }
+
+  useEffect(() => {
+    if (previewReady) refreshPages();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [previewReady, id]);
+
+  function openPage(path: string) {
+    setPreviewPath(path);
+    setNavNonce((n) => n + 1);
+  }
+
   const STAGE_HEADLINE: Record<string, string> = {
     brief: "Reading the brief",
     sources: "Studying your reference sites",
@@ -341,8 +417,62 @@ export function BuildWorkspace() {
   };
 
   return (
-    <div className="grid h-screen grid-cols-1 md:grid-cols-[380px_1fr]">
-      <div className="border-r border-border bg-card/30 overflow-hidden">
+    // In the studio the conversation sits on the right, beside the site it is
+    // changing; while a run is building, the feed keeps the left column.
+    <div
+      className={`relative grid h-screen grid-cols-1 overflow-hidden ${studioActive ? "" : "md:grid-cols-[380px_1fr]"}`}
+      style={studioActive ? { gridTemplateColumns: `minmax(0, 1fr) ${chatWidth}px` } : undefined}
+    >
+      {phase === "run" && id ? (
+        <button
+          type="button"
+          onClick={() => stopRun(id).catch(() => {})}
+          className="absolute bottom-4 right-4 z-20 rounded-md border border-border bg-card px-3 py-1.5 text-sm text-foreground shadow-sm hover:bg-muted"
+          title="Stops at the run's next step; Resume continues from the same stage"
+        >
+          Stop run
+        </button>
+      ) : null}
+      <div
+        className={`relative min-h-0 overflow-hidden bg-card/30 ${
+          studioActive ? "border-l border-border md:order-2" : "border-r border-border"
+        }`}
+      >
+        {studioActive && (
+          <div
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="Resize chat"
+            onPointerDown={startResize}
+            onPointerMove={onResize}
+            onPointerUp={endResize}
+            onDoubleClick={() => {
+              setChatWidth(420);
+              localStorage.setItem("sparrow:chat-width", "420");
+            }}
+            title="Drag to resize · double-click to reset"
+            className="group absolute inset-y-0 left-0 z-30 w-2 cursor-col-resize"
+          >
+            <div className="h-full w-0.5 bg-transparent transition-colors group-hover:bg-primary/60 group-active:bg-primary" />
+          </div>
+        )}
+        {studioActive && !showBuildLog ? (
+          <StudioPanel
+            attachments={picked}
+            onRemoveAttachment={(pid) => setPicked((p) => p.filter((x) => x.id !== pid))}
+            onClearAttachments={() => setPicked([])}
+            projectId={id || ""}
+            title={stored?.prompt ?? "Your site"}
+            onSiteChanged={(path) => {
+              setPreviewReady(true);
+              refreshPages();
+              if (path) openPage(path);
+              else setSiteVersion((v) => v + 1);
+            }}
+            onOpenPage={openPage}
+            onShowBuildLog={() => setShowBuildLog(true)}
+          />
+        ) : (
         <BuildFeed
           prompt={stored?.prompt ?? "…"}
           urls={stored?.urls ?? []}
@@ -362,6 +492,16 @@ export function BuildWorkspace() {
           onResume={() => id && runLeg(id)}
           onAnswerGate={answerAndContinue}
         />
+        )}
+        {studioActive && showBuildLog && (
+          <button
+            type="button"
+            onClick={() => setShowBuildLog(false)}
+            className="absolute bottom-4 left-4 z-10 rounded-md border border-border bg-card px-3 py-1.5 text-sm text-foreground shadow-sm hover:bg-muted"
+          >
+            Back to editing
+          </button>
+        )}
       </div>
 
       {gateInMainPane && gate ? (
@@ -388,8 +528,13 @@ export function BuildWorkspace() {
         />
       ) : (
         <PreviewPane
+          version={siteVersion}
+          pages={sitePages}
+          path={previewPath}
+          navNonce={navNonce}
+          onPick={studioActive ? (el) => setPicked((p) => [...p, el].slice(-5)) : undefined}
           ready={previewReady}
-          src={id && previewReady ? previewUrl(id) : undefined}
+          src={id && previewReady ? sitePreviewUrl(id) : undefined}
           waitingLabel={
             phase === "interview"
               ? "Drafting the brief…"

@@ -305,9 +305,163 @@ def audit_display(sections: Path, ds: DesignSystem, hero_file: str | None) -> li
     return out
 
 
+# ----------------------------------------------------------------- the truth gate
+#
+# Everything a reader can see that the page claims as fact — a name, a platform,
+# a figure — must trace to something the user confirmed or the brief states.
+# Measured on mananshooter: verify's last round added "Play now on Steam", seven
+# social accounts and an age-rating badge, all to satisfy an inspector that
+# reported their absence; on fitnest the builder wrote three named testimonials
+# nobody gave. Nothing in the loop compared what was rendered with what was
+# confirmed, so each one shipped. This is that comparison, done on the code.
+
+_JSX_TEXT = re.compile(r">([^<>{}]+)<")
+_PROP_TEXT = re.compile(
+    r"""\b(?:aria-label|alt|title|label|placeholder)=(?:"([^"]+)"|'([^']+)'|\{`([^`]+)`\})""")
+_FIELD_TEXT = re.compile(
+    r"""\b(?:label|name|title|text|platform|alt|caption)\s*:\s*(?:"([^"]+)"|'([^']+)'|`([^`]+)`)""")
+_TOKEN = re.compile(r"[A-Za-z][A-Za-z0-9'’+-]*|\d[\d,.]*\+?")
+
+
+_LANDMARK = re.compile(r"<(?:motion\.)?(nav|section|header|footer|aside|main|form)\b[^<>]*$")
+
+
+def _landmark_before(code: str, at: int) -> bool:
+    """Whether the attribute at `at` sits inside a landmark element's tag."""
+    return bool(_LANDMARK.search(code[max(0, at - 600):at]))
+
+
+def visible_text(code: str) -> list[str]:
+    """The strings in a section file a reader can actually see or hear."""
+    out: list[str] = []
+    for rx in (_JSX_TEXT, _PROP_TEXT, _FIELD_TEXT):
+        for m in rx.finditer(code):
+            for g in m.groups():
+                if not (g and g.strip()):
+                    continue
+                # `>` and `<` also bracket code — `y = reduce ? 0 : 24;` sits
+                # between an arrow and a tag. Copy has no statement punctuation.
+                if rx is _JSX_TEXT and re.search(r"[;=(){}]|&&|\|\|", g):
+                    continue
+                # An aria-label on a landmark names a REGION — <nav
+                # aria-label="Primary">, <nav aria-label="Legal"> — not a fact.
+                # On a link or a button it is still read, and still counts:
+                # "Follow us on Discord" is a claim whoever reads it out.
+                if rx is _PROP_TEXT and _landmark_before(code, m.start()):
+                    continue
+                out.append(re.sub(r"\$\{[^}]*\}", " ", g))
+    return out
+
+
+def claim_tokens(code: str) -> set[str]:
+    """Tokens that assert something: a capitalised word or anything with a digit.
+
+    Lower-case words are left out on purpose. "fight", "every", "night" are the
+    voice of a sentence, and a gate that rejected those would reject every edit
+    to a line of copy. What gets invented is names and numbers — Steam,
+    Discord, PEGI 18, 1,248,750 — and those are capitalised or numeric.
+    """
+    out: set[str] = set()
+    for s in visible_text(code):
+        # A clock reading in a drawn interface is furniture, not a claim.
+        s = re.sub(r"\b\d{1,2}:\d{2}(?::\d{2})?\b", " ", s)
+        toks = [t.strip(".,+’'") for t in _TOKEN.findall(s)]
+        for i, t in enumerate(toks):
+            numeric = any(c.isdigit() for c in t)
+            # The first word of a multi-word string is capitalised by sentence
+            # case, not because it names something: "Primary navigation".
+            # A one-word string still counts — "Steam" alone is a claim.
+            capital = t[:1].isupper() and not (i == 0 and len(toks) > 1)
+            if len(t) >= 2 and (capital or numeric):
+                out.add(t)
+    return out
+
+
+def corpus_words(*texts: str) -> set[str]:
+    """Every word in the confirmed material, lower-cased, for membership tests."""
+    words: set[str] = set()
+    for t in texts:
+        for w in _TOKEN.findall(t or ""):
+            words.add(w.strip(".,+’'").lower())
+    return words
+
+
+def unconfirmed(code: str, confirmed: set[str]) -> list[str]:
+    """Claim tokens in `code` that appear nowhere in the confirmed material."""
+    return sorted(t for t in claim_tokens(code) if t.lower() not in confirmed)
+
+
+def audit_claims(sections: Path, confirmed: set[str]) -> list[Finding]:
+    out: list[Finding] = []
+    for p in sorted(sections.glob("*.tsx")):
+        code = p.read_text()
+        bad = unconfirmed(code, confirmed)
+        if bad:
+            line = next((i for i, l in _lines(p) if any(b in l for b in bad)), 1)
+            out.append(Finding(
+                p.name, line, "unconfirmed-claim",
+                f"visible text names {', '.join(bad[:12])} — none of it is in the "
+                "confirmed copy or the brief. Remove it, or replace it with the "
+                "section's confirmed copy; never substitute another name or figure"))
+    return out
+
+
+_ASSET_REF = re.compile(r"""/assets/([A-Za-z0-9_.-]+\.(?:png|jpe?g|webp|svg|gif|avif|mp4|webm))""")
+
+
+def audit_asset_refs(sections: Path, public_assets: Path) -> list[Finding]:
+    """Every asset a section points at exists on disk.
+
+    The builder wrote `age-rating.png` into the footer of mananshooter — an
+    asset no stage ever produced — and the page shipped a broken image with
+    alt text claiming an official rating. A reference to a file that does not
+    exist is never a styling question.
+    """
+    out: list[Finding] = []
+    for p in sorted(sections.glob("*.tsx")):
+        for i, l in _lines(p):
+            for name in _ASSET_REF.findall(l):
+                if not (public_assets / name).is_file():
+                    out.append(Finding(
+                        p.name, i, "missing-asset",
+                        f"references /assets/{name}, which does not exist — no stage "
+                        "produced it. Remove the element; do not point it at another file"))
+    return out
+
+
+def audit_unused_assets(sections: Path, section_files: dict[str, str],
+                        assets: list) -> list[Finding]:
+    """Every asset produced for a section is shown by that section.
+
+    Measured on mananshooter-ow: three hero images were generated, paid for
+    and never placed — the hero rendered only its video loop, and nothing
+    checked that what the asset stage made reached the page.
+    """
+    out: list[Finding] = []
+    for a in assets:
+        fname = section_files.get(a.section_id)
+        if not fname or a.kind.value == "logo":
+            continue
+        p = sections / fname
+        if not p.is_file():
+            continue
+        name = Path(a.path).name
+        stem = name.rsplit(".", 1)[0]
+        if stem not in p.read_text():
+            out.append(Finding(
+                fname, 1, "unused-asset",
+                f"{name} was produced for this section and is not shown anywhere in "
+                f"it ({a.width}x{a.height}; brief: {a.brief[:120]}). Place it where "
+                "the section's structure calls for imagery"))
+    return out
+
+
 def audit_dir(sections: Path, ds: DesignSystem,
               source_bands: dict[str, dict] | None = None,
-              section_files: dict[str, str] | None = None) -> list[Finding]:
+              section_files: dict[str, str] | None = None,
+              confirmed: set[str] | None = None,
+              public_assets: Path | None = None,
+              assets: list | None = None) -> list[Finding]:
     out: list[Finding] = []
     for p in sorted(sections.glob("*.tsx")):
         out.extend(audit_file(p, ds))
@@ -315,6 +469,12 @@ def audit_dir(sections: Path, ds: DesignSystem,
         out.extend(audit_enclosure(sections, source_bands, section_files))
     if section_files:
         out.extend(audit_display(sections, ds, section_files.get("hero")))
+    if confirmed:
+        out.extend(audit_claims(sections, confirmed))
+    if public_assets is not None:
+        out.extend(audit_asset_refs(sections, public_assets))
+    if assets and section_files:
+        out.extend(audit_unused_assets(sections, section_files, assets))
     return out
 
 

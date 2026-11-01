@@ -11,6 +11,7 @@ import argparse
 import re
 import shutil
 import subprocess
+import time
 import sys
 from pathlib import Path
 
@@ -233,9 +234,26 @@ def _with_metadata(src: str, brief) -> str:
     return _DESC.sub(lambda _m: f'description: "{_esc(desc)}"', src, count=1)
 
 
-def _run_build(ws: Path) -> tuple[bool, str]:
+# A build failure that is not about the code: next/font fetches every family
+# from fonts.googleapis.com at build time, and a network that drops one — a
+# filtered office Wi-Fi, a flaky link — fails the build with a font error and
+# no compile error at all. Measured on a real run: three families failed, the
+# stage raised, and twelve paid-for assets sat in a workspace that compiled
+# perfectly a minute later. Retried once, and only for this signature.
+_TRANSIENT = re.compile(
+    r"issue establishing a connection while requesting https://fonts\.googleapis\.com"
+    r"|ECONNRESET|ETIMEDOUT|EAI_AGAIN|socket hang up", re.I)
+
+
+def _run_build(ws: Path, *, retry_transient: bool = True) -> tuple[bool, str]:
     r = subprocess.run(["pnpm", "build"], cwd=ws, capture_output=True, text=True)
-    return r.returncode == 0, (r.stdout + r.stderr)
+    out = r.stdout + r.stderr
+    if r.returncode != 0 and retry_transient and _TRANSIENT.search(out):
+        print("  build failed on a network fetch, not on the code — retrying once")
+        time.sleep(5)
+        r = subprocess.run(["pnpm", "build"], cwd=ws, capture_output=True, text=True)
+        out = r.stdout + r.stderr
+    return r.returncode == 0, out
 
 
 def _repair_until_builds(bb, ws: Path, provider_name: str,

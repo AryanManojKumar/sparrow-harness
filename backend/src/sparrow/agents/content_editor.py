@@ -250,6 +250,7 @@ class ContentEditor(Agent):
         source_slots: dict[str, str] | None = None,
         proof: dict | None = None,
         facts: list[str] | None = None,
+        page_so_far: list[str] | None = None,
     ) -> Copy:
         parts = [
             "<brief>\n"
@@ -317,6 +318,16 @@ class ContentEditor(Agent):
                 "already carry. Do not restate them here and do not ask for them again; "
                 "ask for something this section could carry that the page does not yet "
                 "hold.\n" + "\n".join(f"- {f}" for f in facts[:20]) + "\n</already_carried>")
+        if page_so_far:
+            # CLAUDE.md §11, first gap: seven headings, all paraphrases of the
+            # offering, two byte-identical — because each call drafted alone.
+            # The blackboard already held every line; it was never projected.
+            parts.append(
+                "<page_so_far>\nWhat the sections above this one already say, in "
+                "page order. A reader meets these first. This section's lines must "
+                "say something none of them says — not a paraphrase, not the same "
+                "claim in new words, not the same opening word.\n"
+                + "\n".join(f"- {l}" for l in page_so_far[:40]) + "\n</page_so_far>")
         out = self.call(system=SYSTEM, user="\n\n".join(parts))
         return _parse(out.text, section_id, blueprint, source_slots or {},
                       constraints)

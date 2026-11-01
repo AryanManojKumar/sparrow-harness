@@ -62,6 +62,11 @@ class SectionShot:
     path: Path
     width: int
     height: int
+    # The section's own id attribute. Screenshots skip sections under 40px, so
+    # the n-th SHOT is not the n-th section: mananshooter-ow's 36px nav was
+    # skipped and every verdict landed one section late — the hero's picture
+    # judged as "the nav", the footer's as "the feature grid".
+    dom_id: str = ""
 
     @property
     def image_tokens(self) -> int:
@@ -98,6 +103,16 @@ class PageReport:
     # measures `heading_drawn` on a source, inverted. A hidden h1 that a canvas
     # draws is a technique; a hidden h1 nothing draws is a missing headline.
     hidden_undrawn_h1: list[int] = field(default_factory=list)
+    # Per section, an image shown more than once in it: {index, name, count}.
+    # Measured on the rendered page because the code cannot show it —
+    # mananshooter's showcase had ONE <Image> inside a .map(), and it rendered
+    # the same three-panel picture in all three cards.
+    repeated_images: list[dict] = field(default_factory=list)
+    # Per section, where its h1 starts when it starts BELOW the first viewport:
+    # {index, top, fold}. Measured on mananshooter-ow: the hero grew to 2,640px
+    # with three stacked images above its headline, a reader's first screen
+    # was pictures with no words, and the visual pass called the hero clean.
+    h1_below_fold: list[dict] = field(default_factory=list)
 
 
 def base_path(directory: Path) -> str:
@@ -414,6 +429,41 @@ _JAMMED = r"""
 #
 # scrollWidth vs clientWidth catches it whether the parent clips or not: if it
 # clips, the text is silently truncated; if it does not, the text spills.
+_H1_FOLD = r"""
+(() => {
+  const out = [];
+  const secs = [...document.querySelectorAll('main > section, main > div > section')];
+  secs.forEach((sec, i) => {
+    const h = sec.querySelector('h1');
+    if (!h) return;
+    const top = Math.round(h.getBoundingClientRect().top + window.scrollY);
+    if (top > window.innerHeight) out.push({index: i, top, fold: window.innerHeight});
+  });
+  return out;
+})()
+"""
+
+_REPEATED = r"""
+(() => {
+  const out = [];
+  const secs = [...document.querySelectorAll('main > section, main > div > section')];
+  secs.forEach((sec, i) => {
+    const seen = {};
+    for (const im of sec.querySelectorAll('img')) {
+      const r = im.getBoundingClientRect();
+      if (r.width < 60 || r.height < 60) continue;
+      const src = (im.currentSrc || im.src || '').split('?')[0].split('/').pop();
+      // One asset in several crops is still one picture: hero-1--card.png.
+      const key = src.replace(/--[a-z]+(?=\.)/, '').replace(/\.[a-z0-9]+$/, '');
+      if (key) seen[key] = (seen[key] || 0) + 1;
+    }
+    for (const [name, count] of Object.entries(seen))
+      if (count > 1) out.push({index: i, name, count});
+  });
+  return out;
+})()
+"""
+
 _SPILL = r"""
 () => [...document.querySelectorAll('main *')]
   .filter(e => {
@@ -586,7 +636,8 @@ def inspect_page(
                 path = out_dir / f"{name}-s{i:02d}.png"
                 el.screenshot(path=str(path))
                 shots.append(SectionShot(
-                    i, name, path, int(box["width"]), int(box["height"])
+                    i, name, path, int(box["width"]), int(box["height"]),
+                    dom_id=el.get_attribute("id") or "",
                 ))
 
             reports[name] = PageReport(
@@ -601,6 +652,8 @@ def inspect_page(
                 density=page.evaluate(_DENSITY) if name == "desktop" else [],
                 canvases=canvases,
                 hidden_undrawn_h1=page.evaluate(_HIDDEN_H1) if name == "desktop" else [],
+                repeated_images=page.evaluate(_REPEATED) if name == "desktop" else [],
+                h1_below_fold=page.evaluate(_H1_FOLD) if name == "desktop" else [],
             )
             page.close()
         browser.close()

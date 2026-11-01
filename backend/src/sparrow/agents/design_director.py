@@ -223,6 +223,11 @@ JSON only. No prose outside it, no code fence.
   "radius_full_allowed": "what may legitimately be fully round",
   "shadow_rest": "shadow-sm", "shadow_hover": "shadow-md",
   "imagery_treatment": "how product imagery is presented",
+  "imagery_world": "what the sources' own pictures have in common with each other, said
+                    concretely enough that a model given only this paragraph would draw a
+                    set that belongs together — then the same, carried over to this brief.
+                    Read it off the screenshots; if the sources' pictures share nothing, say
+                    so.",
   "motion": "what moves, how far, how long",
   "arrival": "what happens as the reader arrives at a section: what enters, in what
               order, from where, and how much is staggered. Sequence cannot be measured

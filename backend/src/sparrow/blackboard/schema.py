@@ -193,6 +193,13 @@ class DesignSystem(BaseModel):
     shadow_scale: list[str] = Field(default_factory=list)   # e.g. ["shadow-none", "shadow-sm", "shadow-[0_24px_60px_-30px_oklch(...)]"]
 
     imagery_treatment: str
+    # What every generated picture on the page shares, read off the sources' own
+    # imagery. Each asset is generated from its own one-line brief, so with
+    # nothing shared the set never agrees: mananshooter's hero loop came back a
+    # sepia desert under grey-and-red stills, while emergent's five images were
+    # visibly one world. `imagery_treatment` is the FRAME; this is the picture.
+    # Defaulted so older systems validate.
+    imagery_world: str = ""
     motion: str
     # What happens as a reader ARRIVES at a section — order, direction, stagger.
     # Separate from `motion` because scout cannot measure it: a screenshot holds a
