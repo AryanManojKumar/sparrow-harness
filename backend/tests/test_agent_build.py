@@ -410,3 +410,28 @@ def test_a_checkpoint_mid_assets_keeps_the_stand_ins_it_has_not_replaced(planned
     after = {a.id: a for a in steps._bb(planned).assets}
     assert list(after) == ["nav-logo", "hero-1", "grid-1"]
     assert after["hero-1"].provenance == Provenance.RESTYLED
+
+
+def test_the_owners_extra_images_survive_replanning_and_reach_the_agent(project, monkeypatch):
+    from PIL import Image
+    from sparrow import steps
+
+    monkeypatch.setattr(steps, "asset_plan", lambda run: [dict(PLAN[1])])
+    buf = io.BytesIO()
+    Image.effect_noise((1600, 1000), 60).convert("RGB").save(buf, "PNG")
+    with pytest.raises(ValueError):
+        steps.add_owner_image(project, "a.png", buf.getvalue(), "  ")
+    first = steps.add_owner_image(project, "agents.png", buf.getvalue(), "AI agents and chats")
+    second = steps.add_owner_image(project, "crm.png", buf.getvalue(), "All the CRM tools")
+    assert (first["id"], second["id"]) == ("owner-1", "owner-2")
+    plan = steps.merged_plan(project)
+    assert [a["id"] for a in plan] == ["hero-1", "owner-1", "owner-2"]
+    steps.record_asset_decisions(project, {"hero-1": "generate", "owner-1": "as_is",
+                                           "owner-2": "as_is"})
+    assert [a["decision"] for a in steps.resolved_plan(project)] == ["generate", "as_is", "as_is"]
+
+    stand_ins = agent_build.placeholders(project, steps._bb(project))
+    assert stand_ins == ["hero-1"], "an image used as it is goes in at once"
+    assert not agent_build._still_stand_in(project.workspace / "public/assets/owner-1.png")
+    text = agent_build.dossier_for(project)
+    assert "place it where it fits: AI agents and chats" in text

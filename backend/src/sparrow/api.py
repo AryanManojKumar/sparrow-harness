@@ -40,7 +40,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -946,6 +946,27 @@ async def upload_asset(pid: str, asset_id: str,
         raise HTTPException(400, str(e))
     return {"asset_id": asset_id, "stored": entry["upload"], "bytes": len(data),
             "next": "answer the asset gate with this asset set to 'upload'"}
+
+
+@app.post("/projects/{pid}/owner-images", tags=["run"],
+          summary="Add another of the user's own images, beyond the planned slots")
+async def add_owner_image(pid: str, caption: str = Form(...),
+                          file: UploadFile = File(...)) -> dict[str, Any]:
+    """More real material than the plan had slots for, captioned by the owner.
+
+    Answered `upload` already; it can be changed at the gate like any slot.
+    """
+    run = _run_for(pid)
+    data = await file.read()
+    if not data:
+        raise HTTPException(400, "empty upload")
+    if len(data) > MAX_UPLOAD:
+        raise HTTPException(413, f"image is larger than {MAX_UPLOAD // 1_000_000}MB")
+    try:
+        entry = steps.add_owner_image(run, file.filename or "upload.png", data, caption)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"asset_id": entry["id"], "stored": entry["upload"], "bytes": len(data)}
 
 
 # HEAD as well as GET. A frontend checking "is there a preview here?" before

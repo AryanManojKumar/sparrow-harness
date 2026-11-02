@@ -1612,7 +1612,37 @@ def merged_plan(run: Run) -> list[dict]:
             # the top of it and the page never saw the video.
             if prior.get("kind") == "video":
                 a["kind"] = "video"
+    # The owner's extra images are not from any blueprint, so re-enumeration
+    # never produces them; they are carried over as they were added.
+    planned = {a["id"] for a in plan}
+    plan += [a for a in existing.values() if a.get("extra") and a["id"] not in planned]
     return plan
+
+
+def add_owner_image(run: Run, filename: str, data: bytes, caption: str) -> dict:
+    """One more of the owner's own images, beyond the slots the plan asked for.
+
+    The section plans ask for what their blueprint has room for — one picture
+    on twenty-crm, whose owner had seven. When the agent designs the page the
+    slots no longer decide the layout, so the rest of the owner's material
+    goes in too, with their caption as the brief, and the agent places it.
+    """
+    caption = " ".join(caption.split())[:300]
+    if not caption:
+        raise ValueError("say in a line what the image shows — it is how the page "
+                         "decides where it goes")
+    plan = merged_plan(run)
+    n = 1 + max((int(a["id"].rsplit("-", 1)[1]) for a in plan
+                 if a.get("extra") and a["id"].rsplit("-", 1)[1].isdigit()), default=0)
+    entry = {"id": f"owner-{n}", "section_id": "any", "kind": "image", "brief": caption,
+             "prominence": "supporting", "extra": True, "decision": "upload"}
+    plan.append(entry)
+    save_plan(run, plan)
+    try:
+        return record_upload(run, entry["id"], filename, data)
+    except ValueError:
+        save_plan(run, [a for a in plan if a["id"] != entry["id"]])
+        raise
 
 
 def load_reading(run: Run) -> dict:

@@ -251,6 +251,18 @@ def placeholders(run: Run, bb: Blackboard) -> list[str]:
                                  path=f"assets/{dest.name}", width=1280, height=720))
             stand_ins.append(aid)
             continue
+        if upload is not None and decision == "as_is":
+            # The owner's word that it is public: shipped untouched, so a copy now.
+            dest = public / "assets" / f"{aid}.png"
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            steps._write_png(upload.read_bytes(), dest, Image)
+            with Image.open(dest) as im:
+                w, h = im.size
+            records.append(Asset(
+                **base, kind=AssetKind.IMAGE, provenance=Provenance.USER_SUPPLIED,
+                path=f"assets/{dest.name}", width=w, height=h,
+                variants={k: f"assets/{v}" for k, v in derive_variants(dest).items()}))
+            continue
         size = wide
         if upload is not None and upload.is_file():
             try:

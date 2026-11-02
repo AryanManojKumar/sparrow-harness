@@ -158,8 +158,10 @@ def render(bb: Blackboard, content: dict, preview_base: str,
                     "generating anything new. Images also exist as `--hero` (wide), "
                     "`--card` and `--mobile` crops beside the original.", ""]
             out += [_lines(f"`{preview_base}/{a.path}` — {a.kind.value}, "
-                           f"{label.get(a.provenance, a.provenance)}, planned for "
-                           f"{a.section_id}: {a.brief[:200]}" for a in bb.assets), ""]
+                           f"{label.get(a.provenance, a.provenance)}, "
+                           + ("place it where it fits" if a.section_id == "any"
+                              else f"planned for {a.section_id}")
+                           + f": {a.brief[:200]}" for a in bb.assets), ""]
         else:
             out += [_lines(f"`{a.path}` — {label.get(a.provenance, a.provenance)}, "
                            f"used in `{a.section_id}`: {a.brief[:120]}" for a in bb.assets), ""]
