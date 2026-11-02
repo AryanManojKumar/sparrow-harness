@@ -52,6 +52,25 @@ def _bb(run: Run) -> Blackboard:
     return Blackboard.model_validate_json(run.blackboard_path.read_text())
 
 
+def parallel(fn, items: list, workers: int = 6) -> list:
+    """`[fn(x) for x in items]`, run concurrently, results in input order.
+
+    For calls that do not read each other's output. The sources stage made
+    every one of its model calls in a line — per site, per section type, per
+    blueprint — though none of them depended on another. Each task runs in a
+    copy of the caller's context so telemetry still labels its calls with the
+    project and stage.
+    """
+    import contextvars
+    from concurrent.futures import ThreadPoolExecutor
+
+    if len(items) <= 1:
+        return [fn(x) for x in items]
+    with ThreadPoolExecutor(max_workers=min(workers, len(items))) as pool:
+        futures = [pool.submit(contextvars.copy_context().run, fn, x) for x in items]
+        return [f.result() for f in futures]
+
+
 # --------------------------------------------------------------- one write path
 #
 # CLAUDE.md §3: agents propose diffs, an orchestrator applies or rejects them,
@@ -304,13 +323,19 @@ def step_sources(run: Run, urls: list[str]) -> Iterator[Event]:
     vocabulary: dict[str, object] = {}   # counted components, per source
     out_dir = run.dir / "sources"
 
-    for url in urls:
-        site = url.split("//")[-1].split("/")[0]
+    def _read_site(url: str):
         # shots=True. This defaulted to True and the sources stage turned it
         # off, so no agent in the pipeline had ever seen a source site — the
         # design agent designed from a word count and the builder built from
         # prose. A section screenshot is ~1,700 tokens against a $3.50 run.
         r = extract(url, out_dir, shots=True)
+        types = classify(provider, r.bands) if r.ok and len(r.bands) >= 4 else []
+        return r, types
+
+    # The sites are independent: read all of them at once, then take the
+    # results in the order the user gave them.
+    for url, (r, types) in zip(urls, parallel(_read_site, urls, workers=3)):
+        site = url.split("//")[-1].split("/")[0]
         if not r.ok or len(r.bands) < 4:
             yield Event(Stage.SOURCES, "blocked",
                         f"{site}: unreadable or too thin — skipped")
@@ -327,7 +352,6 @@ def step_sources(run: Run, urls: list[str]) -> Iterator[Event]:
         # directly and never exercised this seam.
         if r.register is not None and r.register.components is not None:
             vocabulary[site] = r.register.components
-        types = classify(provider, r.bands)
         labelled[site] = [(t, b.index + 1) for t, b in zip(types, r.bands)]
         for t, b in zip(types, r.bands):
             cand = Candidate(site, t, b.index + 1, b.height, b.words, b.images,
@@ -447,11 +471,10 @@ def step_sources(run: Run, urls: list[str]) -> Iterator[Event]:
     # -> feature-grid -> cta; rockstargames.com had neither of the first two,
     # and the page shipped with no hero at all — the mean deciding the skeleton
     # again, one step past `primary_order`.
-    for t in dict.fromkeys([*primary_order(labelled, primary, comm),
-                            *comm.typical_order]):
-        if not by_type.get(t):
-            continue
-        r, u = rank_section(provider, bb.brief, t, by_type[t])
+    to_rank = [t for t in dict.fromkeys([*primary_order(labelled, primary, comm),
+                                         *comm.typical_order]) if by_type.get(t)]
+    for t, (r, u) in zip(to_rank, parallel(
+            lambda t: rank_section(provider, bb.brief, t, by_type[t]), to_rank)):
         rankings[t] = r
         if u is not None:
             run.spent += u.cost(provider.name, Tier.CHEAP)
@@ -599,30 +622,37 @@ def step_sources(run: Run, urls: list[str]) -> Iterator[Event]:
 
     # Chrome gets blueprints too, written from whatever the sources showed even
     # though it was never ranked.
-    for name in CHROME_ORDER:
+    # Every blueprint reads the rankings and the order, never another
+    # blueprint, so all of them are written at once.
+    def _chrome(name: str):
         cands = by_type_all.get(name, [])
         stub = {"winner": cands[0].site if cands else None,
                 "why": "page chrome — required on every page, not ranked",
                 "adopt": [], "unopposed": True}
-        bp, u = bper.write(bb.brief, name, stub, cands,
-                           [x for x in order if x in rankings],
-                           vocabulary=vocabulary,
-                           shot=_b64(winners.get(name, {}).get("shot")),
-                           imagery=imagery, motion=motion_line)
+        return bper.write(bb.brief, name, stub, cands,
+                          [x for x in order if x in rankings],
+                          vocabulary=vocabulary,
+                          shot=_b64(winners.get(name, {}).get("shot")),
+                          imagery=imagery, motion=motion_line)
+
+    def _content(t: str):
+        return bper.write(bb.brief, t, rankings[t], by_type.get(t, []),
+                          [x for x in order if x != t],
+                          vocabulary=vocabulary,
+                          shot=_b64(winners.get(t, {}).get("shot")),
+                          imagery=imagery, motion=motion_line)
+
+    chrome = list(CHROME_ORDER)
+    body = [(i, t) for i, t in enumerate(order) if t in rankings]
+    written = parallel(lambda job: _chrome(job[1]) if job[0] == "chrome" else _content(job[1]),
+                       [("chrome", n) for n in chrome] + [("body", t) for _, t in body])
+    for name, (bp, u) in zip(chrome, written[:len(chrome)]):
         comp = "".join(w.capitalize() for w in name.replace("-", " ").split())
         (bp_dir / f"{'00' if name == 'nav' else '99'}-{name}.md").write_text(
             to_markdown(bp, comp))
         run.spent += u.cost(provider.name, bper.tier)
         yield Event(Stage.SOURCES, "progress", f"chrome blueprint: {name}")
-
-    for i, t in enumerate(order):
-        if t not in rankings:
-            continue
-        bp, u = bper.write(bb.brief, t, rankings[t], by_type.get(t, []),
-                           [x for x in order if x != t],
-                           vocabulary=vocabulary,
-                           shot=_b64(winners.get(t, {}).get("shot")),
-                           imagery=imagery, motion=motion_line)
+    for (i, t), (bp, u) in zip(body, written[len(chrome):]):
         comp = "".join(w.capitalize() for w in t.replace("-", " ").split())
         (bp_dir / f"{i + 1:02d}-{t}.md").write_text(to_markdown(bp, comp))
         run.spent += u.cost(provider.name, bper.tier)

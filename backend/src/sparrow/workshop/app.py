@@ -10,6 +10,7 @@
     POST   /projects/{pid}/turns                one studio request (SSE stream)
     GET    /projects/{pid}/pages                the built site's pages
     GET    /projects/{pid}/links                links on the built site that go nowhere
+    GET    /projects/{pid}/shots?route=/        screenshots of a built page (base64 JPEG tiles)
     GET    /projects/{pid}/checkpoints          history, newest first
     POST   /projects/{pid}/undo                 restore the previous checkpoint
     POST   /projects/{pid}/restore/{cid}        restore a named checkpoint
@@ -39,6 +40,8 @@ from sparrow.workshop.config import WorkshopConfig
 class TurnBody(BaseModel):
     message: str
     llm_token: str
+    look: bool = True          # screenshot and polish after the change
+    fresh: bool = False        # run in a new session, not the studio conversation
 
 
 def create_app(cfg: WorkshopConfig | None = None, studio: Any = None) -> FastAPI:
@@ -130,7 +133,7 @@ def create_app(cfg: WorkshopConfig | None = None, studio: Any = None) -> FastAPI
         if not body.message.strip():
             raise HTTPException(400, "empty message")
         try:
-            events = studio.turn(p, body.message, body.llm_token)
+            events = studio.turn(p, body.message, body.llm_token, body.look, body.fresh)
         except studio_mod.Busy:
             raise HTTPException(409, "a studio turn is already running")
 
@@ -149,6 +152,14 @@ def create_app(cfg: WorkshopConfig | None = None, studio: Any = None) -> FastAPI
         from sparrow.workshop.look import base_path
         p = held(pid)
         return store.broken_links(p.export, base_path(p.workspace))
+
+    @app.get("/projects/{pid}/shots", dependencies=guarded)
+    def shots(pid: str, route: str = "/") -> list[dict]:
+        from sparrow.workshop import look
+        p = held(pid)
+        if route not in store.routes(p.export):
+            raise HTTPException(404, f"no built page {route!r}")
+        return look.shoot(p.export, look.base_path(p.workspace), [route])
 
     @app.get("/projects/{pid}/checkpoints", dependencies=guarded)
     def checkpoints(pid: str) -> list[dict]:

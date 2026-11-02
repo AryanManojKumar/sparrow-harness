@@ -98,6 +98,10 @@ class Workshop:
         with self._client() as c:
             return self._check(c.get(f"/projects/{pid}/links")).json()
 
+    def shots(self, pid: str, route: str = "/") -> list[dict]:
+        with self._client(120) as c:
+            return self._check(c.get(f"/projects/{pid}/shots", params={"route": route})).json()
+
     def checkpoints(self, pid: str) -> list[dict]:
         with self._client() as c:
             return self._check(c.get(f"/projects/{pid}/checkpoints")).json()
@@ -110,11 +114,13 @@ class Workshop:
         with self._client() as c:
             return self._check(c.post(f"/projects/{pid}/restore/{cid}")).json()
 
-    def turn(self, pid: str, message: str, llm_token: str) -> Iterator[dict]:
+    def turn(self, pid: str, message: str, llm_token: str,
+             look: bool = True, fresh: bool = False) -> Iterator[dict]:
         """Stream one studio turn's events."""
         with self._client(None) as c:
             with c.stream("POST", f"/projects/{pid}/turns",
-                          json={"message": message, "llm_token": llm_token}) as r:
+                          json={"message": message, "llm_token": llm_token,
+                                "look": look, "fresh": fresh}) as r:
                 if r.status_code >= 400:
                     r.read()
                     self._check(r)

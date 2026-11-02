@@ -242,7 +242,7 @@ def _write_exclude(proj: Project) -> None:
     # must not roll back what the agent is told about the site.
     exclude = proj.git_dir / "info" / "exclude"
     exclude.parent.mkdir(parents=True, exist_ok=True)
-    exclude.write_text("".join(f"/{x}\n" for x in (*EXCLUDE, "AGENTS.md")))
+    exclude.write_text("".join(f"/{x}\n" for x in (*EXCLUDE, "AGENTS.md", "refs")))
 
 
 def write_dossier(proj: Project, text: str) -> None:

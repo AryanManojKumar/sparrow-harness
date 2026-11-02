@@ -50,7 +50,7 @@ class StubEditor:
         self.calls: list[str] = []
 
     def write(self, _brief, _constraints, blueprint, *, section_id, source_slots=None,
-              proof=None, facts=None):
+              proof=None, facts=None, page_so_far=None):
         self.calls.append(section_id)
         if section_id == "nav":
             return Copy(section_id="nav",

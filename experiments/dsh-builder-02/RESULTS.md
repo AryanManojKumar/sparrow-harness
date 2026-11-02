@@ -12,19 +12,20 @@ loop on gpt-5.6-terra. Reproduce with `../dsh-builder-01/run.py` and
 - **C+** — same brain, plan reframed as material ("you own the craft"), all source
   bands, guardrails kept.
 - **B+** — free agent + Sparrow as materials and guardrails (curated assets, FACTS.md,
-  brand rule). **Not completed:** the VoiceOwl APIM subscription hit its $50 weekly cap
-  mid-experiment; both attempts were refused upstream.
+  brand rule), no section plan. First two attempts were refused upstream (the VoiceOwl
+  APIM subscription's $50 weekly cap); run on 2026-11-02 after the reset.
 
-| | B | C | C+ |
-|---|---|---|---|
-| Time · model calls | 374 s · 16 | 364 s · 20 | 351 s · 25 |
-| Sections · height | 8 · 5341 px | 5 · 5138 px | 5 · 4710 px |
-| Imagery | 3 self-generated, no video | 8 + hero video | 10 + hero video |
-| Invented facts | map names, a fake "02:14" trailer | 1 | platform badges (from Sparrow's content stage) |
-| Broken links | 0 | 3 | 0 |
-| Closest reference colour (ΔE, `brand.py`) | 10.6 to THE FINALS' red, 10.2 to VALORANT's | 81.6+ | 81.6+ |
+| | B | C | C+ | B+ |
+|---|---|---|---|---|
+| Time · model calls | 374 s · 16 | 364 s · 20 | 351 s · 25 | 272 s · 14 |
+| Sections · height | 8 · 5341 px | 5 · 5138 px | 5 · 4710 px | 9 · 6231 px |
+| Imagery | 3 self-generated, no video | 8 + hero video | 10 + hero video | 14 curated + hero video |
+| Invented facts | map names, a fake "02:14" trailer | 1 | platform badges (from Sparrow's content stage) | none found |
+| Broken links | 0 | 3 | 0 | 0 |
+| Closest reference colour (ΔE, `brand.py`) | 10.6 to THE FINALS' red, 10.2 to VALORANT's | 81.6+ | 81.6+ | 62+ (own midnight/acid-green) |
 
-The owner's verdict: **B looks best.**
+The owner's verdict before B+: **B looks best.** B+ keeps B's design energy (editorial
+type, a cream band against the dark, varied sections) and fixes all three of its flaws.
 
 ## Findings
 
@@ -46,7 +47,15 @@ The owner's verdict: **B looks best.**
   the studio turn as "done, nothing changed". It now surfaces as an error
   (`studio.ModelUnavailable`, with a test).
 
-## Next
+- **B+ is the answer.** A free agent designing from the references, held by Sparrow's
+  curated assets, a facts sheet and the brand rule, produced the best page of the
+  experiment — B's craft, its own palette (ΔE 62+ from every reference), all curated
+  imagery and the real video (the trailer button opens it), nothing invented, in the
+  fewest calls.
 
-Run B+ when the budget resets — it is the test of "DeepSeek designs, Sparrow scouts,
-curates and guards". Setup is ready (`run.py setup bplus`).
+## Decision
+
+DeepSeek designs and builds; Sparrow scouts, curates, holds the facts and guards. The
+composer's per-section plan is dropped from the critical path; its measurements remain
+available as reference. One caveat: one run on one project — the first real run of the
+new pipeline should be a different category (a B2B brief).

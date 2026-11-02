@@ -352,6 +352,8 @@ def _run_for(pid: str) -> Run:
         raise HTTPException(404, f"no project {pid!r}")
     urls = json.loads((PROJECTS / pid / "urls.json").read_text()) \
         if (PROJECTS / pid / "urls.json").exists() else []
+    from sparrow import agent_build
+    agent = agent_build.enabled()
     run = Run(pid, ROOT, {
         Stage.BRIEF: steps.step_brief,
         Stage.SOURCES: lambda r: steps.step_sources(r, urls),
@@ -362,12 +364,17 @@ def _run_for(pid: str) -> Run:
         # which made half of that gate silently unreachable. A stage absent from
         # this dict is not an error — `_advance` treats it as a gate with
         # nothing pending and steps over it.
-        Stage.COMPOSE: steps.step_compose,
         Stage.CONTENT: steps.step_content,
         Stage.GATE_ASSETS: steps.step_asset_gate,
         Stage.ASSETS: steps.step_assets,
-        Stage.BUILD: steps.step_build,
-        Stage.VERIFY: steps.step_verify,
+        # The agent designs the site (experiment dsh-builder-02, B+): no
+        # composer, and BUILD/VERIFY run in the workshop. VERIFY follows how
+        # the site was actually built, not the current setting, so a project
+        # built either way finishes the way it started.
+        Stage.BUILD: agent_build.step_build if agent else steps.step_build,
+        Stage.VERIFY: lambda r: (agent_build.step_verify(r)
+                                 if agent_build.agent_designed(r.dir) else steps.step_verify(r)),
+        **({} if agent else {Stage.COMPOSE: steps.step_compose}),
     })
     # Resume where the project actually got to. Without this a server restart
     # sends every project back to `brief`, and the next /advance re-extracts
@@ -715,7 +722,7 @@ def advance(pid: str) -> StreamingResponse:
     billed twice.
     """
     run = _run_for(pid)
-    _not_in_studio(pid)
+    _not_in_studio(pid, advancing=True)
     # Already in flight: attach rather than refuse. There is still exactly one
     # generator over the stages — the second caller gets its history and then
     # its tail, and bills nothing. The 409 this used to raise is what left the
@@ -1109,7 +1116,7 @@ def _in_studio(pid: str) -> bool:
     return (PROJECTS / pid / "studio.json").is_file()
 
 
-def _not_in_studio(pid: str) -> None:
+def _not_in_studio(pid: str, advancing: bool = False) -> None:
     """Refuse pipeline work on a project the studio has taken over.
 
     After handover the workshop holds the site the owner is editing. A
@@ -1117,6 +1124,13 @@ def _not_in_studio(pid: str) -> None:
     two would silently fork — the owner's studio edits on one side, the
     regenerated sections on the other.
     """
+    # An agent-designed site is in the workshop from BUILD on, and its VERIFY
+    # works there too — advancing through verify and the preview gate is the
+    # pipeline finishing, not forking.
+    from sparrow import agent_build
+    if (advancing and agent_build.agent_designed(PROJECTS / pid)
+            and _run_for(pid).stage in (Stage.VERIFY, Stage.GATE_PREVIEW)):
+        return
     if _in_studio(pid):
         raise HTTPException(409, "this site is being edited in the studio; "
                                  "the pipeline no longer runs on it")
@@ -1146,8 +1160,9 @@ def _handover(pid: str, run: Run, ws: Workshop) -> None:
         (PROJECTS / pid / "studio.json").write_text(json.dumps(
             {"handed_over_at": time.time(), "workshop": ws.url}))
     bb = Blackboard.model_validate_json(run.blackboard_path.read_text())
-    ws.put_dossier(pid, dossier.render(bb, steps.load_content(run),
-                                       f"/projects/{pid}/preview"))
+    from sparrow import agent_build
+    ws.put_dossier(pid, agent_build.dossier_for(run, bb) if agent_build.agent_designed(run.dir)
+               else dossier.render(bb, steps.load_content(run), f"/projects/{pid}/preview"))
 
 
 def _relay(e: WorkshopError) -> HTTPException:
@@ -1186,6 +1201,17 @@ def studio_turn(pid: str, body: StudioTurn) -> StreamingResponse:
             yield f"data: {json.dumps({'kind': 'error', 'text': str(e)})}\n\n"
 
     return StreamingResponse(sse(), media_type="text/event-stream")
+
+
+def _possible_claims(pid: str) -> str:
+    """What the agent-build verify set aside for the owner (`agent_build.AUTO_FIX`)."""
+    try:
+        rows = json.loads((PROJECTS / pid / "verify-findings.json").read_text())
+    except (OSError, ValueError):
+        return "- none recorded"
+    rows = rows.get("for_owner", []) if isinstance(rows, dict) else []
+    return "\n".join(f"- {r['where']}: {r['detail'].split('. If any', 1)[0]}"
+                     for r in rows[:5]) or "- none"
 
 
 @app.get("/projects/{pid}/studio/suggestions", tags=["studio"],
@@ -1230,6 +1256,8 @@ def studio_suggestions(pid: str) -> dict:
         + ("; ".join(c["message"] for c in history
                      if c["message"] != "Imported the generated site") or "nothing yet"),
         "Pages that exist: " + (", ".join(pages) or "/"),
+        "Words on the page the owner never gave us — possibly invented names, numbers "
+        "or facts, to check and remove if so:\n" + _possible_claims(pid),
         "Broken links on the site (text → href: problem):\n"
         + ("\n".join(f"- {b['text']} → {b['href']}: {b['problem']} (on {b['page']})"
                      for b in broken[:60]) or "- none"),
