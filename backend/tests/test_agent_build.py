@@ -127,8 +127,12 @@ class FakeWorkshop:
     def put_dossier(self, pid, text):
         FakeWorkshop.dossier = text
 
-    def turn(self, pid, message, token, look=True, fresh=False):
-        FakeWorkshop.looks.append(look)
+    def put_asset(self, pid, name, data, replace=False):
+        FakeWorkshop.assets_put.append((name, replace))
+        return {"path": f"public/assets/{name}"}
+
+    def turn(self, pid, message, token, look=True, fresh=False, look_only=False):
+        FakeWorkshop.looks.append("only" if look_only else look)
         FakeWorkshop.fresh.append(fresh)
         FakeWorkshop.turns.append(message)
         yield {"kind": "tool", "tool": "write", "target": "src/app/page.tsx", "detail": "9 lines"}
@@ -158,7 +162,7 @@ def project(tmp_path, monkeypatch):
     import sparrow.workshop.client as client
     monkeypatch.setattr(client, "Workshop", FakeWorkshop)
     FakeWorkshop.turns, FakeWorkshop.endings, FakeWorkshop.links_found = [], [], []
-    FakeWorkshop.looks, FakeWorkshop.fresh = [], []
+    FakeWorkshop.looks, FakeWorkshop.fresh, FakeWorkshop.assets_put = [], [], []
     run = Run("ledger", tmp_path, {})
     run.dir.mkdir(parents=True)
     run.blackboard_path.write_text(_bb().model_dump_json())
@@ -190,6 +194,114 @@ def test_a_build_that_never_lands_leaves_the_pipeline_in_charge(project):
         list(agent_build.step_build(project))
     assert not (project.dir / "studio.json").exists()
     assert agent_build.agent_designed(project.dir)
+
+
+# ── images made while the agent builds ──────────────────────────────────────
+
+PLAN = [
+    {"id": "nav-logo", "section_id": "nav", "kind": "logo", "brief": "the mark",
+     "prominence": "supporting", "decision": "upload", "upload": "logo.png"},
+    {"id": "hero-1", "section_id": "hero", "kind": "image", "brief": "the dashboard",
+     "prominence": "dominant", "decision": "generate"},
+    {"id": "grid-1", "section_id": "grid", "kind": "image", "brief": "a detail",
+     "prominence": "supporting", "decision": "generate"},
+    {"id": "quote-1", "section_id": "quote", "kind": "image", "brief": "a face",
+     "prominence": "supporting", "decision": "skip"},
+]
+
+
+@pytest.fixture
+def planned(project, monkeypatch):
+    from PIL import Image
+    from sparrow import steps
+
+    monkeypatch.setattr(steps, "resolved_plan", lambda run: [dict(a) for a in PLAN])
+    (project.dir / "uploads").mkdir()
+    Image.new("RGB", (300, 100), (10, 20, 30)).save(project.dir / "uploads/logo.png")
+    return project
+
+
+def _made(run, ids):
+    """A stand-in ASSETS stage: real (noisy) files for `ids`, recorded as made."""
+    from PIL import Image
+    from sparrow import steps
+    from sparrow.agents.curator import derive_variants
+
+    def fake(r):
+        bb = steps._bb(r)
+        for a in bb.assets:
+            if a.id in ids:
+                f = r.workspace / "public" / a.path
+                Image.effect_noise((1536, 1024), 60).convert("RGB").save(f)
+                derive_variants(f)
+                a.provenance = Provenance.GENERATED
+        yield from ()
+        bb.assets = [a for a in bb.assets if a.id in ids or a.kind == AssetKind.LOGO]
+        steps._replace(r, "/assets", [a.model_dump(mode="json") for a in bb.assets],
+                       agent="curator", summary="made")
+        (r.dir / steps.PENDING_ASSETS).unlink(missing_ok=True)
+    return fake
+
+
+def test_stand_ins_have_the_final_paths_and_sizes_and_the_logo_is_real(planned):
+    from PIL import Image
+    from sparrow import steps
+
+    stand_ins = agent_build.placeholders(planned, steps._bb(planned))
+    assert stand_ins == ["hero-1", "grid-1"]
+    assert steps.pending_assets(planned) == {"hero-1", "grid-1"}
+    public = planned.workspace / "public" / "assets"
+    with Image.open(public / "hero-1.png") as im:
+        assert im.size == (1536, 1024)
+    assert (public / "hero-1--card.png").is_file()
+    assert (public / "nav-logo.png").read_bytes() == (planned.dir / "uploads/logo.png").read_bytes()
+    assert not (public / "quote-1.png").exists()
+    ids = [a.id for a in steps._bb(planned).assets]
+    assert ids == ["nav-logo", "hero-1", "grid-1"]
+
+
+def test_build_starts_on_stand_ins_then_looks_once_the_images_are_in(planned, monkeypatch):
+    from sparrow import steps
+
+    monkeypatch.setattr(steps, "step_assets", _made(planned, {"hero-1"}))
+    list(agent_build.step_assets(planned))
+    FakeWorkshop.endings = [
+        {"kind": "done", "checkpoint": "abc", "reverted": False, "reply": "Built."},
+        {"kind": "done", "checkpoint": "def", "reverted": False, "reply": "Looked."},
+    ]
+    events = list(agent_build.step_build(planned))
+    assert FakeWorkshop.looks == [False, "only"]
+    assert FakeWorkshop.turns[1].startswith("The real images are now in place")
+    # grid-1 never arrived: the agent is told to take it off the page
+    assert "grid-1" in FakeWorkshop.turns[1] and "hero-1" not in FakeWorkshop.turns[1]
+    sent = dict(FakeWorkshop.assets_put)
+    assert sent["hero-1.png"] is True and "hero-1--card.png" in sent
+    assert "grid-1.png" not in sent
+    assert not steps.pending_assets(planned)
+    assert events[-1].kind == "done" and (planned.dir / "studio.json").is_file()
+
+
+def test_a_restart_mid_build_makes_the_images_here_instead(planned, monkeypatch):
+    from sparrow import steps
+
+    agent_build.placeholders(planned, steps._bb(planned))      # no thread: as after a restart
+    monkeypatch.setattr(steps, "step_assets", _made(planned, {"hero-1", "grid-1"}))
+    FakeWorkshop.endings = [
+        {"kind": "done", "checkpoint": "abc", "reverted": False, "reply": "Built."},
+        {"kind": "done", "checkpoint": "def", "reverted": False, "reply": "Looked."},
+    ]
+    list(agent_build.step_build(planned))
+    assert "could not be made" not in FakeWorkshop.turns[1]
+
+
+def test_nothing_to_make_builds_with_the_look_as_before(planned, monkeypatch):
+    from sparrow import steps
+
+    monkeypatch.setattr(steps, "resolved_plan", lambda run: [dict(PLAN[0])])
+    list(agent_build.step_assets(planned))
+    FakeWorkshop.endings = [{"kind": "done", "checkpoint": "abc", "reverted": False}]
+    list(agent_build.step_build(planned))
+    assert FakeWorkshop.looks == [True]
 
 
 def test_verify_sends_findings_back_then_stops_at_the_preview_gate(project):
@@ -284,3 +396,17 @@ def test_parallel_keeps_input_order():
     from sparrow import steps
     out = steps.parallel(lambda x: (_t.sleep(0.05 * (3 - x)), x)[1], [0, 1, 2])
     assert out == [0, 1, 2]
+
+
+def test_a_checkpoint_mid_assets_keeps_the_stand_ins_it_has_not_replaced(planned):
+    from sparrow import steps
+
+    agent_build.placeholders(planned, steps._bb(planned))
+    hero = next(a for a in steps._bb(planned).assets if a.id == "hero-1")
+    real = hero.model_copy(update={"provenance": Provenance.RESTYLED})
+    steps._checkpoint_assets(planned, [])
+    assert [a.id for a in steps._bb(planned).assets] == ["nav-logo", "hero-1", "grid-1"]
+    steps._checkpoint_assets(planned, [real])
+    after = {a.id: a for a in steps._bb(planned).assets}
+    assert list(after) == ["nav-logo", "hero-1", "grid-1"]
+    assert after["hero-1"].provenance == Provenance.RESTYLED

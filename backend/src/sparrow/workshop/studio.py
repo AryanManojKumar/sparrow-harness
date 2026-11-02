@@ -402,17 +402,21 @@ class Studio:
         return result
 
     def _loop(self, live: _Live, proj: store.Project, message: str, emit,
-              look_after: bool = True) -> dict:
+              look_after: bool = True, look_only: bool = False) -> dict:
         """edit → build (→ repair) → look (→ polish → build) → one checkpoint.
 
         Whatever the user is shown has built. A change that never builds is
         thrown away without a trace — it was never on the page, so there is
         nothing to undo — and the user is told that plainly.
+
+        `look_only` skips the edit: the files changed outside the agent (real
+        images over the placeholders it built with), so the site is built and
+        the agent looks, with `message` saying what changed.
         """
         t0 = time.time()
         base = store.head(proj)
-        reply = self._run(live, proj, message, emit)
-        if not store.files_since(proj, base):
+        reply = "" if look_only else self._run(live, proj, message, emit)
+        if not look_only and not store.files_since(proj, base):
             return {"kind": "done", "reply": reply, "changed": [], "checkpoint": None,
                     "reverted": False, "seconds": round(time.time() - t0, 1)}
 
@@ -436,6 +440,7 @@ class Studio:
 
             emit({"kind": "status", "text": "looking at the result"})
             shots = look.shoot(proj.export, look.base_path(proj.workspace),
+                               ["/"] if look_only else
                                look.routes_for(store.files_since(proj, base)))
         except _Skip:
             pass
@@ -445,6 +450,8 @@ class Studio:
         if shots:
             blocks: list[dict] = [{"type": "text", "text": LOOK.format(
                 pages=", ".join(sorted({s["route"] for s in shots})))}]
+            if look_only:
+                blocks.insert(0, {"type": "text", "text": message})
             for s in shots:
                 blocks.append({"type": "text", "text": f"{s['route']} — part {s['part']} of {s['of']}"})
                 blocks.append({"type": "image", "data": s["data"], "mimeType": "image/jpeg"})
@@ -467,7 +474,8 @@ class Studio:
                 "seconds": round(time.time() - t0, 1)}
 
     def turn(self, proj: store.Project, message: str, token: str,
-             look_after: bool = True, fresh: bool = False) -> Iterator[dict]:
+             look_after: bool = True, fresh: bool = False,
+             look_only: bool = False) -> Iterator[dict]:
         """Run one user request. Yields events; the last is `done` or `error`.
 
         The turn runs on its own thread and finishes even if the caller stops
@@ -499,7 +507,7 @@ class Studio:
                     # owner talks to is untouched.
                     live = replace(live, session=live.harness.start_session(
                         f"task-{int(time.time() * 1000)}"))
-                q.put(self._loop(live, proj, message, q.put, look_after))
+                q.put(self._loop(live, proj, message, q.put, look_after, look_only))
             except ModelUnavailable as e:
                 # The runtime is fine; only the model was not reachable. Keep it warm.
                 q.put({"kind": "error", "text": str(e)})

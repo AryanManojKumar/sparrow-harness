@@ -42,6 +42,7 @@ class TurnBody(BaseModel):
     llm_token: str
     look: bool = True          # screenshot and polish after the change
     fresh: bool = False        # run in a new session, not the studio conversation
+    look_only: bool = False    # no edit first: build, then look and polish
 
 
 def create_app(cfg: WorkshopConfig | None = None, studio: Any = None) -> FastAPI:
@@ -109,11 +110,11 @@ def create_app(cfg: WorkshopConfig | None = None, studio: Any = None) -> FastAPI
         return {"ok": True, "bytes": len(text)}
 
     @app.put("/projects/{pid}/assets/{name}", dependencies=guarded)
-    async def put_asset(pid: str, name: str, request: Request) -> dict:
+    async def put_asset(pid: str, name: str, request: Request, replace: bool = False) -> dict:
         from sparrow.workshop.look import base_path
         p = held(pid)
         try:
-            rel = store.save_asset(p, name, await request.body())
+            rel = store.save_asset(p, name, await request.body(), replace=replace)
         except store.StoreError as e:
             raise HTTPException(400, str(e))
         # public/ is served at the site root, under the preview's base path.
@@ -133,7 +134,8 @@ def create_app(cfg: WorkshopConfig | None = None, studio: Any = None) -> FastAPI
         if not body.message.strip():
             raise HTTPException(400, "empty message")
         try:
-            events = studio.turn(p, body.message, body.llm_token, body.look, body.fresh)
+            events = studio.turn(p, body.message, body.llm_token, body.look, body.fresh,
+                                 **({"look_only": True} if body.look_only else {}))
         except studio_mod.Busy:
             raise HTTPException(409, "a studio turn is already running")
 

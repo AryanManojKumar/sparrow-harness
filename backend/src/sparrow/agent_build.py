@@ -9,6 +9,9 @@ fixed all three. This module is B+ in the pipeline:
 
 - Sparrow keeps everything upstream: the brief, the scouted references, the
   copy with its provenance, the material gate and the curated assets.
+- ASSETS settles the copy, then the images are made in the background while
+  the agent builds on placeholders of the final size (`step_assets`). They
+  are swapped in when ready and the agent looks at the real page.
 - BUILD hands that to the studio agent in the workshop — references as `refs/`,
   facts and assets in the dossier — and the agent designs and builds the site
   in one studio turn (edit → build → look → polish). From then on the workshop
@@ -32,6 +35,7 @@ import os
 import re
 import shutil
 import tempfile
+import threading
 import time
 from collections.abc import Iterator
 from pathlib import Path
@@ -144,7 +148,7 @@ def describe(e: dict) -> str | None:
 
 
 def _turn(run: Run, message: str, stage: Stage, look: bool = True,
-          fresh: bool = False) -> Iterator[Event | dict]:
+          fresh: bool = False, look_only: bool = False) -> Iterator[Event | dict]:
     """Stream one studio turn as Events; the last item yielded is the turn's end."""
     from sparrow import gateway
     from sparrow.workshop.client import Workshop
@@ -153,7 +157,7 @@ def _turn(run: Run, message: str, stage: Stage, look: bool = True,
     t0 = time.time()
     end: dict | None = None
     for e in ws.turn(run.project_id, message, gateway.TOKENS.issue(run.project_id),
-                     look=look, fresh=fresh):
+                     look=look, fresh=fresh, **({"look_only": True} if look_only else {})):
         if e.get("kind") in ("done", "error"):
             end = e
             continue
@@ -167,6 +171,231 @@ def _turn(run: Run, message: str, stage: Stage, look: bool = True,
                 {"usage": used}, cost=used["cost"])
     yield end or {"kind": "error", "text": "the turn ended without an answer"}
 
+
+# ── assets, made while the agent builds ─────────────────────────────────────
+#
+# Measured on sparrow-ide-v4: 2 min 46 s of image generation, then a 5 minute
+# build that only needed the images' paths and sizes. Both are known from the
+# plan before anything is generated (`public/assets/{id}.png`, the provider's
+# fixed shapes, an upload's own size), so the build starts on stand-ins and the
+# agent looks once the real files are in.
+
+_BACKGROUND: dict[str, dict] = {}
+
+
+def _stand_in(path: Path, size: tuple[int, int], colour: str) -> None:
+    from PIL import Image
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        Image.new("RGB", size, colour).save(path)
+    except ValueError:
+        Image.new("RGB", size, "#9aa0a6").save(path)
+
+
+def _stand_in_video(path: Path, size: tuple[int, int]) -> bool:
+    import subprocess
+
+    try:
+        subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i",
+                        f"color=c=gray:s={size[0]}x{size[1]}:d=2", "-pix_fmt", "yuv420p",
+                        str(path)], check=True, timeout=30)
+        return True
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def placeholders(run: Run, bb: Blackboard) -> list[str]:
+    """Stand-ins for every asset still to be made, recorded as the assets.
+
+    Returns the ids that are stand-ins. A logo or video the owner uploaded is
+    only a copy, so it is put in place for real; an asset already produced is
+    kept as it is.
+    """
+    from PIL import Image
+
+    from sparrow import steps
+    from sparrow.agents.curator import _SIZES, derive_variants
+    from sparrow.blackboard.schema import Asset, AssetKind, Prominence, Provenance
+
+    public = run.workspace / "public"
+    done = {a.id: a for a in bb.assets if (public / a.path).exists()}
+    colour = next((c.value for c in (bb.design_system.colors if bb.design_system else [])
+                   if re.search(r"muted|surface|subtle|panel", c.name, re.I)), "#9aa0a6")
+    wide = _wide_size(_SIZES)
+    records: list[Asset] = []
+    stand_ins: list[str] = []
+    for a in steps.resolved_plan(run):
+        aid, decision, kind = a["id"], a.get("decision") or "generate", steps._kind(a)
+        if decision == "skip" or (kind == "logo" and decision == "wordmark"):
+            continue
+        if aid in done and done[aid].kind.value == kind:
+            records.append(done[aid])
+            continue
+        base = dict(id=aid, section_id=a["section_id"], brief=a["brief"],
+                    prominence=Prominence(a["prominence"]))
+        upload = run.dir / "uploads" / a["upload"] if a.get("upload") else None
+        if upload is not None and decision == "upload" and kind in ("logo", "video"):
+            dest = public / "assets" / f"{aid}{upload.suffix.lower() if kind == 'logo' else upload.suffix}"
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(upload.read_bytes())
+            w, h = steps._logo_size(dest) if kind == "logo" else (0, 0)
+            records.append(Asset(**base, kind=AssetKind(kind), provenance=Provenance.USER_SUPPLIED,
+                                 path=f"assets/{dest.name}", width=w, height=h))
+            continue
+        if a["brief"].lstrip().lower().startswith("[video]") or kind == "video":
+            dest = public / "assets" / f"{aid}.mp4"
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            _stand_in_video(dest, (1280, 720))
+            records.append(Asset(**base, kind=AssetKind.VIDEO, provenance=Provenance.GENERATED,
+                                 path=f"assets/{dest.name}", width=1280, height=720))
+            stand_ins.append(aid)
+            continue
+        size = wide
+        if upload is not None and upload.is_file():
+            try:
+                with Image.open(upload) as im:
+                    size = im.size
+            except OSError:
+                pass
+        dest = public / "assets" / f"{aid}.png"
+        _stand_in(dest, size, colour)
+        records.append(Asset(
+            **base, kind=AssetKind.PORTRAIT if kind == "portrait" else AssetKind.IMAGE,
+            provenance=Provenance.USER_SUPPLIED if upload is not None else Provenance.GENERATED,
+            path=f"assets/{dest.name}", width=size[0], height=size[1],
+            variants={k: f"assets/{v}" for k, v in derive_variants(dest).items()}))
+        stand_ins.append(aid)
+    (run.dir / steps.PENDING_ASSETS).write_text(json.dumps(stand_ins))
+    bb.assets = records
+    steps._replace(run, "/assets", [r.model_dump(mode="json") for r in records],
+                   agent="curator", summary=f"{len(stand_ins)} placeholder(s) while the "
+                                            "images are made")
+    return stand_ins
+
+
+def _wide_size(sizes: dict) -> tuple[int, int]:
+    """The pixel size a generated "wide" image comes back at."""
+    v = sizes.get("wide")
+    if isinstance(v, (tuple, list)) and len(v) == 2:
+        return int(v[0]), int(v[1])
+    if isinstance(v, str) and ":" in v:
+        w, h = (int(x) for x in v.split(":"))
+        return 1536, round(1536 * h / w)
+    return 1536, 1024
+
+
+def _background(run: Run) -> None:
+    """Run the real ASSETS stage on its own thread; events wait in a queue."""
+    import contextvars
+    import queue
+
+    from sparrow import steps
+
+    q: queue.Queue = queue.Queue()
+    job = {"queue": q, "error": None}
+
+    def work() -> None:
+        try:
+            for ev in steps.step_assets(run):
+                q.put(ev)
+        except Exception as e:  # noqa: BLE001 — reported when the build collects it
+            job["error"] = f"{type(e).__name__}: {e}"
+        finally:
+            q.put(None)
+
+    job["thread"] = threading.Thread(target=contextvars.copy_context().run, args=(work,),
+                                     daemon=True)
+    _BACKGROUND[run.project_id] = job
+    job["thread"].start()
+
+
+def step_assets(run: Run) -> Iterator[Event]:
+    """ASSETS when the agent builds: settle the copy, start the images, move on."""
+    from sparrow import steps
+
+    yield from steps._retract_unanswered_claims(run)
+    stand_ins = placeholders(run, steps._bb(run))
+    if not stand_ins:
+        (run.dir / steps.PENDING_ASSETS).unlink(missing_ok=True)
+        yield Event(Stage.ASSETS, "done", "nothing to make — the build starts now")
+        return
+    _background(run)
+    yield Event(Stage.ASSETS, "done",
+                f"{len(stand_ins)} image(s) being made while the agent builds — it starts "
+                "on placeholders of the final size")
+
+
+def collect_assets(run: Run) -> Iterator[Event]:
+    """Wait for the background images and relay what happened.
+
+    A restart loses the thread; the stand-ins are still on disk and marked, so
+    the stage simply runs here instead.
+    """
+    from sparrow import steps
+
+    if not steps.pending_assets(run):
+        return
+    job = _BACKGROUND.pop(run.project_id, None)
+    if job is None:
+        events = steps.step_assets(run)
+    else:
+        def drain():
+            while (ev := job["queue"].get()) is not None:
+                yield ev
+            if job["error"]:
+                raise RuntimeError(job["error"])
+        events = drain()
+    try:
+        for ev in events:
+            yield Event(Stage.ASSETS, "progress" if ev.kind == "done" else ev.kind,
+                        ev.message, ev.data, cost=ev.cost)
+    except Exception as e:  # noqa: BLE001 — the build stands; the look turn is told
+        yield Event(Stage.ASSETS, "blocked", f"images failed: {type(e).__name__}: {e}"[:400])
+
+
+SWAPPED = """The real images are now in place of the placeholders you built with — same paths, same sizes.{missing} Look at the page with them in and fix anything they made wrong: contrast with text over them, crops that cut the important part, framing."""
+
+
+def _still_stand_in(f: Path) -> bool:
+    """A stand-in is one flat colour; a made image never is."""
+    from PIL import Image
+
+    if not f.is_file():
+        return True
+    if f.suffix != ".png":
+        return False
+    try:
+        with Image.open(f) as im:
+            return all(lo == hi for lo, hi in im.convert("RGB").getextrema())
+    except OSError:
+        return True
+
+
+def swap_in(run: Run, stand_ins: list[str]) -> list[str]:
+    """Send the real files over the stand-ins. Returns the ids never made.
+
+    Judged by the file, not the record: a stage that failed half way has
+    checkpointed some records and left others as the stand-ins wrote them.
+    """
+    from sparrow import steps
+    from sparrow.workshop.client import Workshop
+
+    ws = Workshop()
+    bb = steps._bb(run)
+    public = run.workspace / "public"
+    missing: list[str] = []
+    for a in (a for a in bb.assets if a.id in stand_ins):
+        if _still_stand_in(public / a.path):
+            continue
+        for rel in [a.path, *a.variants.values()]:
+            f = public / rel
+            if f.is_file():
+                ws.put_asset(run.project_id, f.name, f.read_bytes(), replace=True)
+    got = {a.id for a in bb.assets if not _still_stand_in(public / a.path)}
+    missing = [aid for aid in stand_ins if aid not in got]
+    ws.put_dossier(run.project_id, dossier_for(run, bb))
+    return missing
 
 def step_build(run: Run) -> Iterator[Event]:
     from sparrow import steps
@@ -182,12 +411,16 @@ def step_build(run: Run) -> Iterator[Event]:
     ws.push(run.project_id, run.workspace)
     ws.put_dossier(run.project_id, dossier_for(run, bb))
     (run.dir / MARK).write_text(json.dumps({"started_at": time.time()}))
+    stand_ins = sorted(steps.pending_assets(run))
     yield Event(Stage.BUILD, "progress",
                 f"handed to the agent: {n} reference band(s), {len(bb.assets)} curated "
-                f"asset(s), {len(bb.active_constraints())} hard rule(s)")
+                f"asset(s), {len(bb.active_constraints())} hard rule(s)"
+                + (f" · {len(stand_ins)} still being made" if stand_ins else ""))
 
     end: dict = {}
-    for item in _turn(run, build_prompt(run, bb), Stage.BUILD):
+    # With stand-ins in place there is nothing worth looking at yet: the look
+    # comes after the swap, in the same conversation.
+    for item in _turn(run, build_prompt(run, bb), Stage.BUILD, look=not stand_ins):
         if isinstance(item, Event):
             yield item
         else:
@@ -195,6 +428,26 @@ def step_build(run: Run) -> Iterator[Event]:
     if end.get("kind") == "error" or end.get("reverted") or not end.get("checkpoint"):
         raise RuntimeError("the agent did not produce a site that builds: "
                            + str(end.get("text") or end.get("reply") or "no change")[:300])
+
+    if stand_ins:
+        yield Event(Stage.BUILD, "progress", "waiting for the images")
+        yield from collect_assets(run)
+        missing = swap_in(run, stand_ins)
+        note = (f" These could not be made and their files are blank placeholders — take "
+                f"them off the page: {', '.join(missing)}." if missing else "")
+        yield Event(Stage.BUILD, "progress",
+                    f"real images swapped in ({len(stand_ins) - len(missing)} of "
+                    f"{len(stand_ins)}) — the agent looks at the page")
+        looked: dict = {}
+        for item in _turn(run, SWAPPED.format(missing=note), Stage.BUILD, look_only=True):
+            if isinstance(item, Event):
+                yield item
+            else:
+                looked = item
+        if looked.get("kind") == "error":
+            # The site built and the images are in it; only the look failed.
+            yield Event(Stage.BUILD, "progress",
+                        f"the look after the images did not run: {looked.get('text', '')}"[:300])
     # From here the workshop's copy is the live one: the preview proxies to it
     # and the studio continues from it. Written only now, so a failed build can
     # be advanced again (`api._not_in_studio` refuses a project in the studio).

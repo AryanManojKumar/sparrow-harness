@@ -366,7 +366,7 @@ def _run_for(pid: str) -> Run:
         # nothing pending and steps over it.
         Stage.CONTENT: steps.step_content,
         Stage.GATE_ASSETS: steps.step_asset_gate,
-        Stage.ASSETS: steps.step_assets,
+        Stage.ASSETS: agent_build.step_assets if agent else steps.step_assets,
         # The agent designs the site (experiment dsh-builder-02, B+): no
         # composer, and BUILD/VERIFY run in the workshop. VERIFY follows how
         # the site was actually built, not the current setting, so a project

@@ -37,9 +37,11 @@ CALL_RETRIES = int(os.environ.get("SPARROW_CALL_RETRIES", "2"))
 # A flat shorter timeout would cut real work off: across 2,960 logged calls the
 # design director routinely takes 60-200 s. So a call that has not answered by
 # the time its kind normally would gets a duplicate, and the first answer wins.
-# Stalls are ~1% of calls, so the duplicate's cost is rare.
+# Stalls are ~1% of calls, so the duplicate's cost is rare. Design director, 153
+# logged calls: median 65 s, p90 106 s, p95 124 s — at 120 s about 7% are
+# duplicated (~$0.25 each, ~$0.05 a run) and a stall costs 2 minutes, not 5.
 HEDGE_AFTER = float(os.environ.get("SPARROW_HEDGE_AFTER", "75"))
-HEDGE_AFTER_BY_AGENT = {"design_director": 210.0, "builder": 120.0, "inspector": 120.0}
+HEDGE_AFTER_BY_AGENT = {"design_director": 120.0, "builder": 120.0, "inspector": 120.0}
 
 
 def hedged(call, after: float):

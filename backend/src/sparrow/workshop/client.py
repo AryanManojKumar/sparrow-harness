@@ -85,9 +85,10 @@ class Workshop:
         with self._client(400) as c:
             return self._check(c.post(f"/projects/{pid}/build")).json()
 
-    def put_asset(self, pid: str, name: str, data: bytes) -> dict:
+    def put_asset(self, pid: str, name: str, data: bytes, replace: bool = False) -> dict:
         with self._client(120) as c:
             return self._check(c.put(f"/projects/{pid}/assets/{name}", content=data,
+                                     params={"replace": "true"} if replace else None,
                                      headers={"content-type": "application/octet-stream"})).json()
 
     def pages(self, pid: str) -> list[str]:
@@ -115,12 +116,14 @@ class Workshop:
             return self._check(c.post(f"/projects/{pid}/restore/{cid}")).json()
 
     def turn(self, pid: str, message: str, llm_token: str,
-             look: bool = True, fresh: bool = False) -> Iterator[dict]:
+             look: bool = True, fresh: bool = False,
+             look_only: bool = False) -> Iterator[dict]:
         """Stream one studio turn's events."""
         with self._client(None) as c:
             with c.stream("POST", f"/projects/{pid}/turns",
                           json={"message": message, "llm_token": llm_token,
-                                "look": look, "fresh": fresh}) as r:
+                                "look": look, "fresh": fresh,
+                                "look_only": look_only}) as r:
                 if r.status_code >= 400:
                     r.read()
                     self._check(r)

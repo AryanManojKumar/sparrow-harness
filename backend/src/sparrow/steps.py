@@ -2363,13 +2363,20 @@ def _checkpoint_assets(run: Run, made: list) -> None:
     crash checkpoint, not a decision: the authoritative transition still happens
     once at the end of the stage, so the decision log keeps one entry for the
     stage instead of one per image.
+
+    Merged by id, and written whole: when the agent builds on placeholders the
+    build reads this file while the images are still being made, and must see
+    a stand-in for every image not made yet — not an empty list, not half a file.
     """
     f = run.dir / "blackboard.json"
     try:
         bb = json.loads(f.read_text())
-        bb["assets"] = [a.model_dump(mode="json") for a in made]
-        f.write_text(json.dumps(bb, indent=2))
-    except (OSError, ValueError):
+        done = {a.id: a.model_dump(mode="json") for a in made}
+        bb["assets"] = [done.pop(a["id"], a) for a in bb.get("assets") or []] + list(done.values())
+        tmp = f.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(bb, indent=2))
+        tmp.replace(f)
+    except (OSError, ValueError, KeyError):
         pass          # a checkpoint that cannot be written must not kill the run
 
 
@@ -2423,6 +2430,38 @@ def _retract_unanswered_claims(run: Run) -> Iterator[Event]:
     save_content(run, content)
 
 
+def resolved_plan(run: Run) -> list[dict]:
+    """The asset plan with every entry's decision settled, as ASSETS executes it."""
+    plan = merged_plan(run)
+    # A slot with a file and no answer is an upload. The gate is still the place
+    # the choice is made, but a project past that gate has no way to answer one
+    # — and refusing to execute a file the user went and found, because a field
+    # beside it says null, is the wrong reading of what they did.
+    for a in plan:
+        if a.get("upload") and not a.get("decision"):
+            a["decision"] = "upload"
+    if not plan:
+        # No gate ran: a project created before the asset gate existed, or a
+        # blueprint set that asks for no imagery. Generating is what this stage
+        # did before the gate, so an old project resumes with its old behaviour
+        # rather than stalling on a question nobody was asked.
+        plan = [dict(a, decision="generate") for a in asset_plan(run)]
+        save_plan(run, plan)
+    return plan
+
+
+# Written when the agent builds on placeholders while the images are made
+# (`agent_build.step_assets`): the ids whose file on disk is a stand-in.
+PENDING_ASSETS = "assets-pending.json"
+
+
+def pending_assets(run: Run) -> set[str]:
+    try:
+        return set(json.loads((run.dir / PENDING_ASSETS).read_text()))
+    except (OSError, ValueError):
+        return set()
+
+
 def step_assets(run: Run) -> Iterator[Event]:
     """Execute the plan the asset gate decided. One image, one provenance.
 
@@ -2444,21 +2483,7 @@ def step_assets(run: Run) -> Iterator[Event]:
     from PIL import Image
 
     bb = _bb(run)
-    plan = merged_plan(run)
-    # A slot with a file and no answer is an upload. The gate is still the place
-    # the choice is made, but a project past that gate has no way to answer one
-    # — and refusing to execute a file the user went and found, because a field
-    # beside it says null, is the wrong reading of what they did.
-    for a in plan:
-        if a.get("upload") and not a.get("decision"):
-            a["decision"] = "upload"
-    if not plan:
-        # No gate ran: a project created before the asset gate existed, or a
-        # blueprint set that asks for no imagery. Generating is what this stage
-        # did before the gate, so an old project resumes with its old behaviour
-        # rather than stalling on a question nobody was asked.
-        plan = [dict(a, decision="generate") for a in asset_plan(run)]
-        save_plan(run, plan)
+    plan = resolved_plan(run)
 
     public = run.workspace / "public" / "assets"
     public.mkdir(parents=True, exist_ok=True)
@@ -2481,7 +2506,10 @@ def step_assets(run: Run) -> Iterator[Event]:
     # and several vision passes, paid again to produce what is already there.
     # A deliberate re-make goes through `reset_assets`, which removes the record
     # and the file together.
-    prior = {a.id: a for a in bb.assets if (run.workspace / "public" / a.path).exists()}
+    # A placeholder is a file on disk too, and must not pass for the real one.
+    stand_ins = pending_assets(run)
+    prior = {a.id: a for a in bb.assets
+             if a.id not in stand_ins and (run.workspace / "public" / a.path).exists()}
 
     # ---- the generations, started together instead of one after another ------
     #
@@ -2823,6 +2851,7 @@ def step_assets(run: Run) -> Iterator[Event]:
     if rejected:
         yield Event(Stage.ASSETS, "blocked",
                     f"assets not recorded ({rejected.code}): {rejected.message}")
+    (run.dir / PENDING_ASSETS).unlink(missing_ok=True)
     tally = {}
     for m in made:
         tally[m.provenance.value] = tally.get(m.provenance.value, 0) + 1
