@@ -142,7 +142,7 @@ class FakeWorkshop:
         import tarfile
         buf = io.BytesIO()
         with tarfile.open(fileobj=buf, mode="w:gz") as tar:
-            data = b"<h1>Close the books</h1>"
+            data = b"<motion.h1 whileInView={{opacity: 1}}>Close the books</motion.h1>"
             info = tarfile.TarInfo("src/app/page.tsx")
             info.size = len(data)
             tar.addfile(info, io.BytesIO(data))
@@ -490,3 +490,30 @@ def test_the_owner_can_name_the_main_reference(project):
     assert steps.owner_primary(project, ["attio.com", "linear.app"]) is None
     (project.dir / steps.MAIN_REFERENCE).write_text("https://www.attio.com/")
     assert steps.owner_primary(project, ["linear.app", "attio.com"]) == "attio.com"
+
+
+def test_text_under_an_image_is_one_finding_per_image():
+    found = guard.check_covered([
+        {"tag": "h3", "text": "Custom data model", "by": "owner-4.png"},
+        {"tag": "p", "text": "Create the objects", "by": "owner-4.png"},
+        {"tag": "h3", "text": "Hosted or self-hosted", "by": "owner-3.png"}])
+    assert [(f.kind, f.where) for f in found] == [("covered", "owner-3.png"),
+                                                  ("covered", "owner-4.png")]
+    assert "h3 “Custom data model”, p “Create the objects”" in found[1].detail
+
+
+def test_a_still_page_against_a_moving_direction_is_a_motion_finding(tmp_path):
+    (tmp_path / "src/app").mkdir(parents=True)
+    page = tmp_path / "src/app/page.tsx"
+    page.write_text("export default function P(){return <h1>Still</h1>}")
+    (tmp_path / "src/app/globals.css").write_text('@import "tw-animate-css";\n.a{color:red}')
+    assert guard.check_motion(tmp_path, "200ms fades")[0].kind == "motion"
+    page.write_text('<motion.div whileInView={{opacity: 1}} />')
+    assert guard.check_motion(tmp_path, "200ms fades") == []
+
+
+def test_the_agent_is_told_the_directions_motion_and_treatments():
+    bb = _bb()
+    assert bb.design_system.motion
+    assert f"Its motion, to build, not to describe: {bb.design_system.motion}" in \
+        agent_build.direction_note(bb)

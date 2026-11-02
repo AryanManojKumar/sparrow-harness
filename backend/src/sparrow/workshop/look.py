@@ -105,6 +105,9 @@ def _walk(page) -> None:
 # the box's shape, and every ancestor that clips (overflow other than visible)
 # cuts the box down further. Per heading: its rendered size.
 _MEASURE = """() => {
+  // A site with `scroll-behavior: smooth` animates every scroll below, and
+  // elementFromPoint then reads the viewport before it has moved.
+  document.documentElement.style.scrollBehavior = 'auto';
   const images = [...document.images].map(i => {
     const r = i.getBoundingClientRect();
     let v = {l: r.left, t: r.top, r: r.right, b: r.bottom};
@@ -127,12 +130,29 @@ _MEASURE = """() => {
   const headings = [...document.querySelectorAll('h1, h2')].map(h => ({
     tag: h.tagName.toLowerCase(), size: parseFloat(getComputedStyle(h).fontSize),
     text: h.innerText.slice(0, 80)}));
-  return {images, headings};
+  // Text an image is painted over: the topmost element at the text's centre
+  // is a picture that does not contain it. Scrolled to, because
+  // elementFromPoint only sees the viewport.
+  const covered = [];
+  for (const t of document.querySelectorAll('h1, h2, h3, h4, p, li, button')) {
+    const text = (t.innerText || '').trim();
+    const r0 = t.getBoundingClientRect();
+    if (text.length < 3 || r0.width < 8 || r0.height < 8) continue;
+    t.scrollIntoView({block: 'center', behavior: 'instant'});
+    const r = t.getBoundingClientRect();
+    const top = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+    if (top && /^(IMG|VIDEO|CANVAS|PICTURE)$/.test(top.tagName) && !t.contains(top))
+      covered.push({tag: t.tagName.toLowerCase(), text: text.slice(0, 60),
+                    by: (top.currentSrc || top.src || top.tagName).split('?')[0].split('/').pop()});
+  }
+  window.scrollTo(0, 0);
+  return {images, headings, covered};
 }"""
 
 
 def measure(export: Path, base: str, route: str = "/") -> dict:
-    """{images: [{src, natural, box, visible}], headings: [{tag, size, text}]}."""
+    """{images: [{src, natural, box, visible}], headings: [{tag, size, text}],
+    covered: [{tag, text, by}]}."""
     from playwright.sync_api import sync_playwright
 
     with sync_playwright() as p:

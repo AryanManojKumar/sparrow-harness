@@ -9,6 +9,8 @@ What it does not settle is truth and ownership, and those are Sparrow's:
 - **brand** — the page does not wear a reference's signature colour (§5);
 - **links** — every link lands somewhere;
 - **crop** — an image shows enough of itself to be read;
+- **covered** — no image is painted over the page's text;
+- **motion** — the motion the chosen direction specifies is built;
 - **type** — the headline scale is the main reference's, not the stack's default.
 
 Each check is deterministic and each finding is phrased as something the agent
@@ -39,7 +41,7 @@ _ORDINAL = re.compile(r"^0\d$")
 
 @dataclass
 class Finding:
-    kind: str        # claim | missing-asset | unused-asset | brand | link | crop | type
+    kind: str        # claim | missing-asset | unused-asset | brand | link | crop | covered | motion | type
     where: str       # a file, a page, or "page"
     detail: str
 
@@ -167,6 +169,50 @@ def check_crops(images: list[dict], originals: dict[str, tuple[int, int]]) -> li
                                f"what it is. Use `{orig}` itself (not a `--` crop) in a box "
                                f"close to its own {w}:{h} shape, or let it show whole."))
     return out
+
+
+def check_covered(covered: list[dict]) -> list[Finding]:
+    """Text with an image painted over it, one finding per image.
+
+    The crop check alone was satisfied the wrong way on twenty-crm's second
+    build: the fixer let each image show whole and left it absolutely
+    positioned in its card, so every card's title and copy sat underneath.
+    """
+    by: dict[str, list[str]] = {}
+    for c in covered:
+        by.setdefault(c["by"], []).append(f"{c['tag']} “{c['text']}”")
+    return [Finding("covered", img,
+                    f"is painted over the text {', '.join(texts[:4])}"
+                    + (f" and {len(texts) - 4} more" if len(texts) > 4 else "")
+                    + " — the reader cannot read it. Put the image in the layout flow "
+                      "(below or beside the text), not over it.")
+            for img, texts in sorted(by.items())]
+
+
+_MOTION = re.compile(r"whileInView|<motion\.|\banimate=|@keyframes|\banimation\s*:|"
+                     r"transition(?:-property|-duration)?\s*:|requestAnimationFrame|"
+                     r"\btransition-(?:all|colors|opacity|transform)\b|\banimate-\w+")
+
+
+def motion_in(workspace: Path) -> int:
+    """How many places the site's source moves something."""
+    files = source_files(workspace) + sorted((workspace / "src").rglob("*.css")) \
+        if (workspace / "src").is_dir() else []
+    # Not the imports: every scaffold imports an animation library.
+    return sum(len(_MOTION.findall(re.sub(r"(?m)^\s*(@import|import)\b.*$", "",
+                                          f.read_text(errors="replace"))))
+               for f in files)
+
+
+def check_motion(workspace: Path, spec: str) -> list[Finding]:
+    """A page with no movement at all, against a direction that specifies some."""
+    if motion_in(workspace):
+        return []
+    return [Finding("motion", "page",
+                    "nothing on the page moves, and the direction the owner chose specifies: "
+                    f"{spec[:500]} Build it: entrances bound to `whileInView` from "
+                    "`motion/react` (never on mount), the transitions it names, and any "
+                    "always-running element it describes; respect `useReducedMotion`.")]
 
 
 # Below this share of the main reference's largest heading, the page's scale

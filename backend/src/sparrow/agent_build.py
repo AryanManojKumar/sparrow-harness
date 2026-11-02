@@ -104,10 +104,17 @@ def direction_note(bb: Blackboard) -> str:
     if ds is None:
         return ""
     cols = ", ".join(f"{c.name} `{c.value}`" for c in ds.colors[:9])
+    # Motion and treatments were dropped here at first, and twenty-crm shipped
+    # with no movement at all against a direction that specified a live canvas
+    # and 200ms transitions: the agent was never told.
+    treat = "".join(f"\n- **{t.name}**: where: {t.where}; how: {t.how}" for t in ds.treatments)
     return ("\n## The direction the owner chose\n\n"
             f"{ds.atmosphere}\n\nIts colours: {cols}. The curated imagery was made in this "
             "direction. Start from it; type, layout, composition and the final palette are "
-            "yours.\n")
+            "yours.\n"
+            + (f"\nIts motion, to build, not to describe: {ds.motion}\n" if ds.motion else "")
+            + (f"\nIts surface treatments (each in its place, not spread across the page):"
+               f"{treat}\n" if treat else ""))
 
 
 def scale_note(run: Run) -> str:
@@ -520,6 +527,10 @@ def findings(run: Run, bb: Blackboard) -> list:
     out += guard.check_crops(page.get("images", []),
                              {Path(a.path).name: (a.width, a.height) for a in bb.assets
                               if a.kind.value == "image" and a.width and a.height})
+    out += guard.check_covered(page.get("covered", []))
+    if bb.design_system and bb.design_system.motion:
+        with tempfile.TemporaryDirectory(prefix="sparrow-motion-") as tmp:
+            out += guard.check_motion(_pull(run, Path(tmp)), bb.design_system.motion)
     out += guard.check_type(page.get("headings", []), reference_scale(run))
     return out
 
@@ -576,7 +587,7 @@ def confirmed(run: Run, bb: Blackboard) -> set[str]:
 # that chased both cost $5.63 — more than the build — while the next round went
 # entirely on "Details", "Logs" and "Overview". A person decides those in
 # seconds; the gate shows them, and the studio can act on the answer.
-AUTO_FIX = {"link", "missing-asset", "unused-asset", "brand", "crop", "type"}
+AUTO_FIX = {"link", "missing-asset", "unused-asset", "brand", "crop", "covered", "motion", "type"}
 
 
 def step_verify(run: Run) -> Iterator[Event]:
