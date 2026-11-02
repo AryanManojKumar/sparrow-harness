@@ -297,6 +297,9 @@ class CreateProject(BaseModel):
     secondary_action: str | None = None
     constraints: list[str] = []
     urls: list[str] = []
+    # One of `urls`, when the owner already knows which site the page should
+    # follow. Otherwise the pipeline picks one from the brief.
+    main_reference: str | None = None
 
     model_config = {"json_schema_extra": {"examples": [{
         "project_id": "acme",
@@ -531,6 +534,8 @@ def create_project(body: CreateProject) -> dict[str, Any]:
     )
     (d / "blackboard.json").write_text(bb.model_dump_json(indent=2))
     (d / "urls.json").write_text(json.dumps(body.urls))
+    if body.main_reference:
+        (d / steps.MAIN_REFERENCE).write_text(body.main_reference.strip())
     steps.make_workspace(_run_for(body.project_id), SCAFFOLD)
     return {"project_id": body.project_id, "stage": Stage.BRIEF.value}
 

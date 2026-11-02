@@ -155,10 +155,14 @@ def render(bb: Blackboard, content: dict, preview_base: str,
                  "the owner's, restyled", Provenance.GENERATED: "generated"}
         if agent_designed:
             out += ["Curated for this product. Use every one the page can carry before "
-                    "generating anything new. Images also exist as `--hero` (wide), "
-                    "`--card` and `--mobile` crops beside the original.", ""]
+                    "generating anything new. Where crops are listed, they sit beside the "
+                    "original as `--hero` (wide), `--card` and `--mobile`. An image with no "
+                    "crops listed is the owner's composed image: show it whole, in a box "
+                    "of its own shape.", ""]
             out += [_lines(f"`{preview_base}/{a.path}` — {a.kind.value}, "
-                           f"{label.get(a.provenance, a.provenance)}, "
+                           + (f"{a.width}x{a.height}, " if a.width and a.height else "")
+                           + (f"crops: {', '.join(sorted(a.variants))}, " if a.variants else "")
+                           + f"{label.get(a.provenance, a.provenance)}, "
                            + ("place it where it fits" if a.section_id == "any"
                               else f"planned for {a.section_id}")
                            + f": {a.brief[:200]}" for a in bb.assets), ""]

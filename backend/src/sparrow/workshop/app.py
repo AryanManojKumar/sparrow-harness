@@ -163,6 +163,12 @@ def create_app(cfg: WorkshopConfig | None = None, studio: Any = None) -> FastAPI
             raise HTTPException(404, f"no built page {route!r}")
         return look.shoot(p.export, look.base_path(p.workspace), [route])
 
+    @app.get("/projects/{pid}/measure", dependencies=guarded)
+    def measure(pid: str, route: str = "/") -> dict:
+        from sparrow.workshop import look
+        p = held(pid)
+        return look.measure(p.export, look.base_path(p.workspace), route)
+
     @app.get("/projects/{pid}/checkpoints", dependencies=guarded)
     def checkpoints(pid: str) -> list[dict]:
         return store.checkpoints(held(pid))

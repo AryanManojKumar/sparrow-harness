@@ -7,7 +7,9 @@ What it does not settle is truth and ownership, and those are Sparrow's:
 - **assets** — the curated material the run paid for reaches the page, and
   nothing points at a file that does not exist;
 - **brand** — the page does not wear a reference's signature colour (§5);
-- **links** — every link lands somewhere.
+- **links** — every link lands somewhere;
+- **crop** — an image shows enough of itself to be read;
+- **type** — the headline scale is the main reference's, not the stack's default.
 
 Each check is deterministic and each finding is phrased as something the agent
 can act on, because the findings ARE the next prompt — the same "an audit that
@@ -37,7 +39,7 @@ _ORDINAL = re.compile(r"^0\d$")
 
 @dataclass
 class Finding:
-    kind: str        # claim | missing-asset | unused-asset | brand | link
+    kind: str        # claim | missing-asset | unused-asset | brand | link | crop | type
     where: str       # a file, a page, or "page"
     detail: str
 
@@ -120,6 +122,71 @@ def check_links(broken: list[dict]) -> list[Finding]:
     return [Finding("link", b.get("page", "/"),
                     f'"{b.get("text", "")}" → {b.get("href")}: {b.get("problem")}')
             for b in broken[:30]]
+
+
+# How much of an image must show. Measured on twenty-crm: the agent framed the
+# owner's 1600x1000 images in 590x179 strips of an 800x800 centre crop, 19% of
+# each file — the reader saw each image's title and none of the product.
+# Emergent, same files, showed 67-71%.
+MIN_SHOWN = 0.6
+
+
+def _original(name: str) -> str:
+    """`hero-1--card.png` → `hero-1.png`: a derived crop names its original."""
+    stem, _, ext = name.rpartition(".")
+    return f"{stem.split('--')[0]}.{ext}"
+
+
+def check_crops(images: list[dict], originals: dict[str, tuple[int, int]]) -> list[Finding]:
+    """Curated images that show less than `MIN_SHOWN` of the original file.
+
+    `images` is the workshop's measurement of the page; `originals` maps each
+    curated file name to its size. A `--card` crop already lost part of the
+    file before the page cropped it again, and both count.
+    """
+    worst: dict[str, tuple[float, dict]] = {}
+    for im in images:
+        name = im["src"].split("?")[0].rsplit("/", 1)[-1]
+        orig = _original(name)
+        if orig not in originals:
+            continue
+        (ow, oh), (nw, nh) = originals[orig], im.get("natural") or (0, 0)
+        if not (ow and oh and nw and nh):
+            continue
+        ro, rv = ow / oh, nw / nh
+        shown = im["visible"] * min(ro, rv) / max(ro, rv)
+        if shown < worst.get(orig, (1.0, {}))[0]:
+            worst[orig] = (shown, im)
+    out = []
+    for orig, (shown, im) in sorted(worst.items()):
+        if shown < MIN_SHOWN:
+            w, h = originals[orig]
+            out.append(Finding("crop", orig,
+                               f"shows {round(shown * 100)}% of the image in a "
+                               f"{im['box'][0]}x{im['box'][1]} box — the reader cannot see "
+                               f"what it is. Use `{orig}` itself (not a `--` crop) in a box "
+                               f"close to its own {w}:{h} shape, or let it show whole."))
+    return out
+
+
+# Below this share of the main reference's largest heading, the page's scale
+# is the stack's default rather than the reference's.
+TYPE_SHARE = 0.85
+
+
+def check_type(headings: list[dict], reference: tuple[str, float] | None) -> list[Finding]:
+    """The page's largest heading against the main reference's largest."""
+    if not reference or not headings:
+        return []
+    site, ref = reference
+    top = max(h["size"] for h in headings)
+    if top >= ref * TYPE_SHARE:
+        return []
+    return [Finding("type", "page",
+                    f"the largest heading is {round(top)}px; {site}, the main reference, "
+                    f"sets its largest at {round(ref)}px. Bring the headline scale up to "
+                    f"at least {round(ref * TYPE_SHARE)}px for the biggest heading and "
+                    f"scale the others with it, keeping the hierarchy.")]
 
 
 def fix_prompt(findings: list[Finding]) -> str:

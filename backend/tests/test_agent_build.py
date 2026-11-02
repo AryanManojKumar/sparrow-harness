@@ -151,6 +151,11 @@ class FakeWorkshop:
     def links(self, pid):
         return FakeWorkshop.links_found.pop(0) if FakeWorkshop.links_found else []
 
+    page: dict = {}
+
+    def measure(self, pid, route="/"):
+        return FakeWorkshop.page
+
     def shots(self, pid, route="/"):
         return [{"data": base64.b64encode(_png((240, 240, 240))).decode()}]
 
@@ -163,6 +168,7 @@ def project(tmp_path, monkeypatch):
     monkeypatch.setattr(client, "Workshop", FakeWorkshop)
     FakeWorkshop.turns, FakeWorkshop.endings, FakeWorkshop.links_found = [], [], []
     FakeWorkshop.looks, FakeWorkshop.fresh, FakeWorkshop.assets_put = [], [], []
+    FakeWorkshop.page = {}
     run = Run("ledger", tmp_path, {})
     run.dir.mkdir(parents=True)
     run.blackboard_path.write_text(_bb().model_dump_json())
@@ -435,3 +441,52 @@ def test_the_owners_extra_images_survive_replanning_and_reach_the_agent(project,
     assert not agent_build._still_stand_in(project.workspace / "public/assets/owner-1.png")
     text = agent_build.dossier_for(project)
     assert "place it where it fits: AI agents and chats" in text
+
+
+# ── crop and type ───────────────────────────────────────────────────────────
+
+def test_a_strip_of_a_card_crop_is_a_crop_finding_and_a_whole_image_is_not():
+    originals = {"owner-4.png": (1600, 1000), "owner-2.png": (1600, 1000)}
+    images = [
+        # twenty-crm as measured: a 590x179 cover box over the 800x800 card crop
+        {"src": "/p/assets/owner-4--card.png", "natural": [800, 800], "box": [590, 179],
+         "visible": 0.30},
+        {"src": "/p/assets/owner-2.png?v=1", "natural": [1600, 1000], "box": [583, 484],
+         "visible": 0.67},
+        {"src": "/p/assets/nav-logo.svg", "natural": [136, 136], "box": [34, 34], "visible": 1},
+    ]
+    found = guard.check_crops(images, originals)
+    assert [(f.kind, f.where) for f in found] == [("crop", "owner-4.png")]
+    assert "shows 19%" in found[0].detail and "1600:1000" in found[0].detail
+
+
+def test_headline_scale_is_held_to_the_main_reference():
+    heads = [{"tag": "h1", "size": 74, "text": "Build"}, {"tag": "h2", "size": 53, "text": "x"}]
+    assert guard.check_type(heads, ("attio.com", 96))[0].kind == "type"
+    assert guard.check_type(heads, ("supabase.com", 46)) == []
+    assert guard.check_type(heads, None) == []
+
+
+def test_reference_scale_reads_the_primarys_largest_measured_size(project):
+    (project.dir / "typography.json").write_text(json.dumps({
+        "a.com": {"display": {"size": 64}, "heading": {"size": 96}, "mono": "X"},
+        "b.com": {"display": {"size": 120}}}))
+    assert agent_build.reference_scale(project) == ("a.com", 96.0)
+    assert "a.com, sets its largest heading at 96px" in agent_build.dossier_for(project)
+
+
+def test_verify_sends_crops_and_scale_back_as_fixes(project):
+    (project.dir / "typography.json").write_text(json.dumps({"a.com": {"heading": {"size": 96}}}))
+    FakeWorkshop.page = {"images": [], "headings": [{"tag": "h1", "size": 60, "text": "x"}]}
+    FakeWorkshop.endings = [{"kind": "done", "checkpoint": "f1", "reverted": False}] * 2
+    with pytest.raises(Halt):
+        list(agent_build.step_verify(project))
+    assert "[type] page: the largest heading is 60px" in FakeWorkshop.turns[0]
+
+
+def test_the_owner_can_name_the_main_reference(project):
+    from sparrow import steps
+
+    assert steps.owner_primary(project, ["attio.com", "linear.app"]) is None
+    (project.dir / steps.MAIN_REFERENCE).write_text("https://www.attio.com/")
+    assert steps.owner_primary(project, ["linear.app", "attio.com"]) == "attio.com"

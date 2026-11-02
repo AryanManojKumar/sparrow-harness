@@ -305,6 +305,17 @@ def record_product_name(run: Run, name: str) -> str:
 
 # ------------------------------------------------------------------ sources
 
+MAIN_REFERENCE = "main-reference.txt"
+
+
+def owner_primary(run: Run, sites: list[str]) -> str | None:
+    """The site the owner named as the main reference, if they named one we read."""
+    f = run.dir / MAIN_REFERENCE
+    named = f.read_text().strip().lower() if f.is_file() else ""
+    host = re.sub(r"^(https?://)?(www\.)?", "", named).split("/")[0]
+    return next((s for s in sites if host and (s == host or s in host or host in s)), None)
+
+
 def step_sources(run: Run, urls: list[str]) -> Iterator[Event]:
     from sparrow.agents.blueprinter import Blueprinter, to_markdown
     from sparrow.providers import Tier, get_provider
@@ -458,9 +469,14 @@ def step_sources(run: Run, urls: list[str]) -> Iterator[Event]:
         (run.dir / DENSITY).write_text(json.dumps(dens, indent=2))
 
     comm = commonality(labelled)
-    primary, why, usage = pick_primary(provider, bb.brief, labelled)
-    yield Event(Stage.SOURCES, "progress", f"primary reference: {primary}",
-                cost=usage.cost(provider.name, Tier.CHEAP))
+    named = owner_primary(run, list(labelled))
+    if named:
+        primary, why = named, "the owner named it as the main reference"
+        yield Event(Stage.SOURCES, "progress", f"primary reference: {primary} (the owner's)")
+    else:
+        primary, why, usage = pick_primary(provider, bb.brief, labelled)
+        yield Event(Stage.SOURCES, "progress", f"primary reference: {primary}",
+                    cost=usage.cost(provider.name, Tier.CHEAP))
 
     rankings: dict[str, dict] = {}
     # Every type in the PRIMARY's own sequence, then the checklist. Ranking only

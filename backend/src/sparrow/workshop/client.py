@@ -103,6 +103,11 @@ class Workshop:
         with self._client(120) as c:
             return self._check(c.get(f"/projects/{pid}/shots", params={"route": route})).json()
 
+    def measure(self, pid: str, route: str = "/") -> dict:
+        with self._client(180) as c:
+            return self._check(c.get(f"/projects/{pid}/measure",
+                                     params={"route": route})).json()
+
     def checkpoints(self, pid: str) -> list[dict]:
         with self._client() as c:
             return self._check(c.get(f"/projects/{pid}/checkpoints")).json()

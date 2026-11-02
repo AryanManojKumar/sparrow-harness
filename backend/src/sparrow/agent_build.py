@@ -110,13 +110,21 @@ def direction_note(bb: Blackboard) -> str:
             "yours.\n")
 
 
+def scale_note(run: Run) -> str:
+    ref = reference_scale(run)
+    if not ref:
+        return ""
+    return (f"\nThe main reference, {ref[0]}, sets its largest heading at {round(ref[1])}px "
+            "(measured).\n")
+
+
 def dossier_for(run: Run, bb: Blackboard | None = None) -> str:
     from sparrow import dossier, steps
 
     bb = bb or steps._bb(run)
     text = dossier.render(bb, steps.load_content(run), steps.preview_base(run),
                           references=references(run.dir))
-    note = direction_note(bb)
+    note = direction_note(bb) + scale_note(run)
     if note and "## Build rules" in text:
         i = text.index("## Build rules")
         text = text[:i] + note.lstrip("\n") + "\n" + text[i:]
@@ -258,10 +266,12 @@ def placeholders(run: Run, bb: Blackboard) -> list[str]:
             steps._write_png(upload.read_bytes(), dest, Image)
             with Image.open(dest) as im:
                 w, h = im.size
+            # No `--` crops: an owner's published image is composed — on
+            # twenty-crm each carried its own title, and a centre crop kept
+            # the title and cut the product.
             records.append(Asset(
                 **base, kind=AssetKind.IMAGE, provenance=Provenance.USER_SUPPLIED,
-                path=f"assets/{dest.name}", width=w, height=h,
-                variants={k: f"assets/{v}" for k, v in derive_variants(dest).items()}))
+                path=f"assets/{dest.name}", width=w, height=h))
             continue
         size = wide
         if upload is not None and upload.is_file():
@@ -506,7 +516,25 @@ def findings(run: Run, bb: Blackboard) -> list:
     out += guard.check_links(ws.links(run.project_id))
     shots = [base64.b64decode(s["data"]) for s in ws.shots(run.project_id, "/")]
     out += guard.check_brand(brand.too_close(shots, _palettes(run)))
+    page = ws.measure(run.project_id, "/")
+    out += guard.check_crops(page.get("images", []),
+                             {Path(a.path).name: (a.width, a.height) for a in bb.assets
+                              if a.kind.value == "image" and a.width and a.height})
+    out += guard.check_type(page.get("headings", []), reference_scale(run))
     return out
+
+
+def reference_scale(run: Run) -> tuple[str, float] | None:
+    """The main reference's largest measured heading: (site, px)."""
+    try:
+        typo = json.loads((run.dir / "typography.json").read_text())
+    except (OSError, ValueError):
+        return None
+    p = run.dir / "sources" / "primary.txt"
+    site = p.read_text().strip() if p.is_file() else ""
+    roles = typo.get(site) or {}
+    sizes = [float(r["size"]) for r in roles.values() if isinstance(r, dict) and r.get("size")]
+    return (site, max(sizes)) if sizes else None
 
 
 def confirmed(run: Run, bb: Blackboard) -> set[str]:
@@ -548,7 +576,7 @@ def confirmed(run: Run, bb: Blackboard) -> set[str]:
 # that chased both cost $5.63 — more than the build — while the next round went
 # entirely on "Details", "Logs" and "Overview". A person decides those in
 # seconds; the gate shows them, and the studio can act on the answer.
-AUTO_FIX = {"link", "missing-asset", "unused-asset", "brand"}
+AUTO_FIX = {"link", "missing-asset", "unused-asset", "brand", "crop", "type"}
 
 
 def step_verify(run: Run) -> Iterator[Event]:
