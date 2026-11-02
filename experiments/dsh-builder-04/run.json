@@ -1,0 +1,21 @@
+{
+  "seconds": 1179,
+  "pipeline_spent_usd": 4.7,
+  "agent_usage": {
+    "calls": 15,
+    "input": 523502,
+    "cached": 0,
+    "output": 6793,
+    "cost": 2.8213
+  },
+  "stage_started_at": {
+    "sources": 1793623038.4442346,
+    "design": 1793623179.3133996,
+    "content": 1793623627.5151823,
+    "gate:assets": 1793623717.3394558,
+    "assets": 1793623717.3714445,
+    "build": 1793623906.8266196,
+    "verify": 1793624206.3611677
+  },
+  "preview": "http://localhost:3000/projects/sparrow-ide-v4/preview/"
+}

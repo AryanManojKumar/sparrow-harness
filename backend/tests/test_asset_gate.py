@@ -117,7 +117,7 @@ def test_the_logo_gate_offers_exactly_upload_or_wordmark(tmp_path):
     assert logo["choices"][0]["post_file_to"] == "/projects/t/assets/nav-logo"
 
     image = next(o for o in gate.options if o["kind"] == "image")
-    assert {c["choice"] for c in image["choices"]} == {"upload", "generate", "skip"}
+    assert {c["choice"] for c in image["choices"]} == {"upload", "as_is", "generate", "skip"}
 
 
 def test_a_logo_may_not_be_generated_or_skipped(tmp_path):
@@ -151,14 +151,14 @@ def test_a_run_whose_blueprints_ask_for_no_imagery_does_not_stop(tmp_path):
 # ------------------------------------------------------------------ the gate
 
 
-def test_the_gate_offers_three_choices_per_image(tmp_path):
+def test_the_gate_offers_four_choices_per_image(tmp_path):
     run = project(tmp_path, {"hero": ["a product shot"], "cta": ["a texture"]})
     _events, gate = drain(steps.step_asset_gate(run))
 
     assert gate.gate is Stage.GATE_ASSETS
     assert [o["asset_id"] for o in gate.options] == ["hero-1", "cta-1"]
     for option in gate.options:
-        assert {c["choice"] for c in option["choices"]} == {"upload", "generate", "skip"}
+        assert {c["choice"] for c in option["choices"]} == {"upload", "as_is", "generate", "skip"}
         assert option["brief"] and option["section_id"] and option["prominence"]
     upload = gate.options[0]["choices"][0]
     assert upload["post_file_to"] == "/projects/t/assets/hero-1"

@@ -85,9 +85,10 @@ class Workshop:
         with self._client(400) as c:
             return self._check(c.post(f"/projects/{pid}/build")).json()
 
-    def put_asset(self, pid: str, name: str, data: bytes) -> dict:
+    def put_asset(self, pid: str, name: str, data: bytes, replace: bool = False) -> dict:
         with self._client(120) as c:
             return self._check(c.put(f"/projects/{pid}/assets/{name}", content=data,
+                                     params={"replace": "true"} if replace else None,
                                      headers={"content-type": "application/octet-stream"})).json()
 
     def pages(self, pid: str) -> list[str]:
@@ -97,6 +98,15 @@ class Workshop:
     def links(self, pid: str) -> list[dict]:
         with self._client() as c:
             return self._check(c.get(f"/projects/{pid}/links")).json()
+
+    def shots(self, pid: str, route: str = "/") -> list[dict]:
+        with self._client(120) as c:
+            return self._check(c.get(f"/projects/{pid}/shots", params={"route": route})).json()
+
+    def measure(self, pid: str, route: str = "/") -> dict:
+        with self._client(180) as c:
+            return self._check(c.get(f"/projects/{pid}/measure",
+                                     params={"route": route})).json()
 
     def checkpoints(self, pid: str) -> list[dict]:
         with self._client() as c:
@@ -110,11 +120,15 @@ class Workshop:
         with self._client() as c:
             return self._check(c.post(f"/projects/{pid}/restore/{cid}")).json()
 
-    def turn(self, pid: str, message: str, llm_token: str) -> Iterator[dict]:
+    def turn(self, pid: str, message: str, llm_token: str,
+             look: bool = True, fresh: bool = False,
+             look_only: bool = False) -> Iterator[dict]:
         """Stream one studio turn's events."""
         with self._client(None) as c:
             with c.stream("POST", f"/projects/{pid}/turns",
-                          json={"message": message, "llm_token": llm_token}) as r:
+                          json={"message": message, "llm_token": llm_token,
+                                "look": look, "fresh": fresh,
+                                "look_only": look_only}) as r:
                 if r.status_code >= 400:
                     r.read()
                     self._check(r)

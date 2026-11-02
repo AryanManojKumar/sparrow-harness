@@ -108,13 +108,15 @@ _ASSET = re.compile(r"^[a-z0-9][a-z0-9-]{0,60}\.(png|jpg|jpeg|webp|gif|mp4|webm)
 MAX_ASSET = 80_000_000
 
 
-def save_asset(proj: Project, name: str, data: bytes) -> str:
+def save_asset(proj: Project, name: str, data: bytes, replace: bool = False) -> str:
     """Write a generated file into public/assets/. Returns its workspace path.
 
     The name is a whole filename checked against a strict pattern — it comes
     from the agent through the gateway, and it is about to become a path.
     An existing file is never overwritten: the agent may be wrong about which
     image it is replacing, and the owner's own photos live in this folder too.
+    `replace` is the office swapping a placeholder for the real image; the
+    gateway never passes it.
     """
     if not _ASSET.match(name):
         raise StoreError(f"invalid asset name {name!r}")
@@ -124,7 +126,7 @@ def save_asset(proj: Project, name: str, data: bytes) -> str:
     folder.mkdir(parents=True, exist_ok=True)
     stem, ext = name.rsplit(".", 1)
     target, n = folder / name, 2
-    while target.exists():
+    while target.exists() and not replace:
         target, n = folder / f"{stem}-{n}.{ext}", n + 1
     target.write_bytes(data)
     return target.relative_to(proj.workspace).as_posix()
@@ -242,7 +244,7 @@ def _write_exclude(proj: Project) -> None:
     # must not roll back what the agent is told about the site.
     exclude = proj.git_dir / "info" / "exclude"
     exclude.parent.mkdir(parents=True, exist_ok=True)
-    exclude.write_text("".join(f"/{x}\n" for x in (*EXCLUDE, "AGENTS.md")))
+    exclude.write_text("".join(f"/{x}\n" for x in (*EXCLUDE, "AGENTS.md", "refs")))
 
 
 def write_dossier(proj: Project, text: str) -> None:

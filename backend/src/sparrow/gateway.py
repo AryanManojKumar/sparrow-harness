@@ -50,7 +50,7 @@ from dotenv import load_dotenv
 from fastapi import APIRouter, FastAPI, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
 
-from sparrow.providers import AZURE_APIM_DEFAULT_BASE, MODELS, Tier
+from sparrow.providers import AZURE_APIM_DEFAULT_BASE, CACHE_READ_RATE, MODELS, PRICES, Tier
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
@@ -176,6 +176,67 @@ def normalize(body: dict, model: str) -> dict:
     return body
 
 
+# ── usage ──────────────────────────────────────────────────────────────────
+# The studio's spend was invisible: the B+ build ran fourteen calls and the only
+# cost figure anyone could give was an estimate. The gateway is the one place
+# every agent call passes, so it records what each one used, per project.
+
+USAGE_LOG = Path(__file__).resolve().parents[3] / "logs" / "gateway-usage.jsonl"
+_usage_lock = threading.Lock()
+
+
+def _provider() -> str:
+    return (os.environ.get("SPARROW_PROVIDER") or "openai").lower()
+
+
+def record_usage(pid: str, model: str, usage: dict) -> dict:
+    prompt = int(usage.get("prompt_tokens") or 0)
+    cached = int((usage.get("prompt_tokens_details") or {}).get("cached_tokens") or 0)
+    output = int(usage.get("completion_tokens") or 0)
+    pin, pout = PRICES.get(_provider(), PRICES["openai"])[Tier.TOP]
+    cost = ((prompt - cached) * pin + cached * pin * CACHE_READ_RATE + output * pout) / 1e6
+    row = {"ts": time.time(), "pid": pid, "model": model, "input": prompt,
+           "cached": cached, "output": output, "cost": round(cost, 6)}
+    with _usage_lock:
+        USAGE_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with USAGE_LOG.open("a") as f:
+            f.write(json.dumps(row) + "\n")
+    return row
+
+
+def usage_since(pid: str, since: float) -> dict:
+    """What a project's agent used from `since` on: calls, tokens, cost."""
+    tot = {"calls": 0, "input": 0, "cached": 0, "output": 0, "cost": 0.0}
+    if not USAGE_LOG.is_file():
+        return tot
+    for line in USAGE_LOG.read_text().splitlines():
+        try:
+            r = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if r.get("pid") == pid and r.get("ts", 0) >= since:
+            tot["calls"] += 1
+            for k in ("input", "cached", "output", "cost"):
+                tot[k] += r.get(k, 0)
+    tot["cost"] = round(tot["cost"], 4)
+    return tot
+
+
+def usage_in_stream(tail: bytes) -> dict | None:
+    """The last `usage` object in the tail of an SSE response, if any."""
+    found = None
+    for line in tail.decode(errors="ignore").splitlines():
+        if not line.startswith("data: ") or line == "data: [DONE]":
+            continue
+        try:
+            u = json.loads(line[6:]).get("usage")
+        except (json.JSONDecodeError, AttributeError):
+            continue
+        if u:
+            found = u
+    return found
+
+
 router = APIRouter(prefix="/llm/v1", tags=["gateway"], include_in_schema=False)
 _client: httpx.AsyncClient | None = None
 
@@ -202,6 +263,8 @@ async def chat_completions(request: Request) -> Response:
         raise HTTPException(400, f"only the {STUDIO_MODEL!r} model is served here")
     up = upstream()
     payload = normalize(body, up.model)
+    if payload.get("stream"):
+        payload.setdefault("stream_options", {"include_usage": True})
     req = _http().build_request(
         "POST", f"{up.base}/chat/completions", json=payload,
         headers={**up.headers, "content-type": "application/json"})
@@ -213,11 +276,22 @@ async def chat_completions(request: Request) -> Response:
                         media_type=r.headers.get("content-type", "application/json"))
 
     async def relay():
+        tail = b""
         try:
             async for chunk in r.aiter_raw():
+                # The tail is enough for a stream (usage is its last event); a
+                # plain response is one JSON body and must be read whole.
+                tail = (tail + chunk)[-32768:] if payload.get("stream") else tail + chunk
                 yield chunk
         finally:
             await r.aclose()
+            try:
+                usage = (usage_in_stream(tail) if payload.get("stream")
+                         else json.loads(tail).get("usage"))
+                if usage:
+                    record_usage(pid, up.model, usage)
+            except (ValueError, AttributeError, OSError):
+                pass        # accounting never fails a request
 
     return StreamingResponse(relay(), status_code=r.status_code,
                              media_type=r.headers.get("content-type"))

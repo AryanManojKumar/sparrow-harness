@@ -52,6 +52,25 @@ def _bb(run: Run) -> Blackboard:
     return Blackboard.model_validate_json(run.blackboard_path.read_text())
 
 
+def parallel(fn, items: list, workers: int = 6) -> list:
+    """`[fn(x) for x in items]`, run concurrently, results in input order.
+
+    For calls that do not read each other's output. The sources stage made
+    every one of its model calls in a line — per site, per section type, per
+    blueprint — though none of them depended on another. Each task runs in a
+    copy of the caller's context so telemetry still labels its calls with the
+    project and stage.
+    """
+    import contextvars
+    from concurrent.futures import ThreadPoolExecutor
+
+    if len(items) <= 1:
+        return [fn(x) for x in items]
+    with ThreadPoolExecutor(max_workers=min(workers, len(items))) as pool:
+        futures = [pool.submit(contextvars.copy_context().run, fn, x) for x in items]
+        return [f.result() for f in futures]
+
+
 # --------------------------------------------------------------- one write path
 #
 # CLAUDE.md §3: agents propose diffs, an orchestrator applies or rejects them,
@@ -286,6 +305,17 @@ def record_product_name(run: Run, name: str) -> str:
 
 # ------------------------------------------------------------------ sources
 
+MAIN_REFERENCE = "main-reference.txt"
+
+
+def owner_primary(run: Run, sites: list[str]) -> str | None:
+    """The site the owner named as the main reference, if they named one we read."""
+    f = run.dir / MAIN_REFERENCE
+    named = f.read_text().strip().lower() if f.is_file() else ""
+    host = re.sub(r"^(https?://)?(www\.)?", "", named).split("/")[0]
+    return next((s for s in sites if host and (s == host or s in host or host in s)), None)
+
+
 def step_sources(run: Run, urls: list[str]) -> Iterator[Event]:
     from sparrow.agents.blueprinter import Blueprinter, to_markdown
     from sparrow.providers import Tier, get_provider
@@ -304,13 +334,19 @@ def step_sources(run: Run, urls: list[str]) -> Iterator[Event]:
     vocabulary: dict[str, object] = {}   # counted components, per source
     out_dir = run.dir / "sources"
 
-    for url in urls:
-        site = url.split("//")[-1].split("/")[0]
+    def _read_site(url: str):
         # shots=True. This defaulted to True and the sources stage turned it
         # off, so no agent in the pipeline had ever seen a source site — the
         # design agent designed from a word count and the builder built from
         # prose. A section screenshot is ~1,700 tokens against a $3.50 run.
         r = extract(url, out_dir, shots=True)
+        types = classify(provider, r.bands) if r.ok and len(r.bands) >= 4 else []
+        return r, types
+
+    # The sites are independent: read all of them at once, then take the
+    # results in the order the user gave them.
+    for url, (r, types) in zip(urls, parallel(_read_site, urls, workers=3)):
+        site = url.split("//")[-1].split("/")[0]
         if not r.ok or len(r.bands) < 4:
             yield Event(Stage.SOURCES, "blocked",
                         f"{site}: unreadable or too thin — skipped")
@@ -327,7 +363,6 @@ def step_sources(run: Run, urls: list[str]) -> Iterator[Event]:
         # directly and never exercised this seam.
         if r.register is not None and r.register.components is not None:
             vocabulary[site] = r.register.components
-        types = classify(provider, r.bands)
         labelled[site] = [(t, b.index + 1) for t, b in zip(types, r.bands)]
         for t, b in zip(types, r.bands):
             cand = Candidate(site, t, b.index + 1, b.height, b.words, b.images,
@@ -434,9 +469,14 @@ def step_sources(run: Run, urls: list[str]) -> Iterator[Event]:
         (run.dir / DENSITY).write_text(json.dumps(dens, indent=2))
 
     comm = commonality(labelled)
-    primary, why, usage = pick_primary(provider, bb.brief, labelled)
-    yield Event(Stage.SOURCES, "progress", f"primary reference: {primary}",
-                cost=usage.cost(provider.name, Tier.CHEAP))
+    named = owner_primary(run, list(labelled))
+    if named:
+        primary, why = named, "the owner named it as the main reference"
+        yield Event(Stage.SOURCES, "progress", f"primary reference: {primary} (the owner's)")
+    else:
+        primary, why, usage = pick_primary(provider, bb.brief, labelled)
+        yield Event(Stage.SOURCES, "progress", f"primary reference: {primary}",
+                    cost=usage.cost(provider.name, Tier.CHEAP))
 
     rankings: dict[str, dict] = {}
     # Every type in the PRIMARY's own sequence, then the checklist. Ranking only
@@ -447,11 +487,10 @@ def step_sources(run: Run, urls: list[str]) -> Iterator[Event]:
     # -> feature-grid -> cta; rockstargames.com had neither of the first two,
     # and the page shipped with no hero at all — the mean deciding the skeleton
     # again, one step past `primary_order`.
-    for t in dict.fromkeys([*primary_order(labelled, primary, comm),
-                            *comm.typical_order]):
-        if not by_type.get(t):
-            continue
-        r, u = rank_section(provider, bb.brief, t, by_type[t])
+    to_rank = [t for t in dict.fromkeys([*primary_order(labelled, primary, comm),
+                                         *comm.typical_order]) if by_type.get(t)]
+    for t, (r, u) in zip(to_rank, parallel(
+            lambda t: rank_section(provider, bb.brief, t, by_type[t]), to_rank)):
         rankings[t] = r
         if u is not None:
             run.spent += u.cost(provider.name, Tier.CHEAP)
@@ -599,30 +638,37 @@ def step_sources(run: Run, urls: list[str]) -> Iterator[Event]:
 
     # Chrome gets blueprints too, written from whatever the sources showed even
     # though it was never ranked.
-    for name in CHROME_ORDER:
+    # Every blueprint reads the rankings and the order, never another
+    # blueprint, so all of them are written at once.
+    def _chrome(name: str):
         cands = by_type_all.get(name, [])
         stub = {"winner": cands[0].site if cands else None,
                 "why": "page chrome — required on every page, not ranked",
                 "adopt": [], "unopposed": True}
-        bp, u = bper.write(bb.brief, name, stub, cands,
-                           [x for x in order if x in rankings],
-                           vocabulary=vocabulary,
-                           shot=_b64(winners.get(name, {}).get("shot")),
-                           imagery=imagery, motion=motion_line)
+        return bper.write(bb.brief, name, stub, cands,
+                          [x for x in order if x in rankings],
+                          vocabulary=vocabulary,
+                          shot=_b64(winners.get(name, {}).get("shot")),
+                          imagery=imagery, motion=motion_line)
+
+    def _content(t: str):
+        return bper.write(bb.brief, t, rankings[t], by_type.get(t, []),
+                          [x for x in order if x != t],
+                          vocabulary=vocabulary,
+                          shot=_b64(winners.get(t, {}).get("shot")),
+                          imagery=imagery, motion=motion_line)
+
+    chrome = list(CHROME_ORDER)
+    body = [(i, t) for i, t in enumerate(order) if t in rankings]
+    written = parallel(lambda job: _chrome(job[1]) if job[0] == "chrome" else _content(job[1]),
+                       [("chrome", n) for n in chrome] + [("body", t) for _, t in body])
+    for name, (bp, u) in zip(chrome, written[:len(chrome)]):
         comp = "".join(w.capitalize() for w in name.replace("-", " ").split())
         (bp_dir / f"{'00' if name == 'nav' else '99'}-{name}.md").write_text(
             to_markdown(bp, comp))
         run.spent += u.cost(provider.name, bper.tier)
         yield Event(Stage.SOURCES, "progress", f"chrome blueprint: {name}")
-
-    for i, t in enumerate(order):
-        if t not in rankings:
-            continue
-        bp, u = bper.write(bb.brief, t, rankings[t], by_type.get(t, []),
-                           [x for x in order if x != t],
-                           vocabulary=vocabulary,
-                           shot=_b64(winners.get(t, {}).get("shot")),
-                           imagery=imagery, motion=motion_line)
+    for (i, t), (bp, u) in zip(body, written[len(chrome):]):
         comp = "".join(w.capitalize() for w in t.replace("-", " ").split())
         (bp_dir / f"{i + 1:02d}-{t}.md").write_text(to_markdown(bp, comp))
         run.spent += u.cost(provider.name, bper.tier)
@@ -1582,7 +1628,37 @@ def merged_plan(run: Run) -> list[dict]:
             # the top of it and the page never saw the video.
             if prior.get("kind") == "video":
                 a["kind"] = "video"
+    # The owner's extra images are not from any blueprint, so re-enumeration
+    # never produces them; they are carried over as they were added.
+    planned = {a["id"] for a in plan}
+    plan += [a for a in existing.values() if a.get("extra") and a["id"] not in planned]
     return plan
+
+
+def add_owner_image(run: Run, filename: str, data: bytes, caption: str) -> dict:
+    """One more of the owner's own images, beyond the slots the plan asked for.
+
+    The section plans ask for what their blueprint has room for — one picture
+    on twenty-crm, whose owner had seven. When the agent designs the page the
+    slots no longer decide the layout, so the rest of the owner's material
+    goes in too, with their caption as the brief, and the agent places it.
+    """
+    caption = " ".join(caption.split())[:300]
+    if not caption:
+        raise ValueError("say in a line what the image shows — it is how the page "
+                         "decides where it goes")
+    plan = merged_plan(run)
+    n = 1 + max((int(a["id"].rsplit("-", 1)[1]) for a in plan
+                 if a.get("extra") and a["id"].rsplit("-", 1)[1].isdigit()), default=0)
+    entry = {"id": f"owner-{n}", "section_id": "any", "kind": "image", "brief": caption,
+             "prominence": "supporting", "extra": True, "decision": "upload"}
+    plan.append(entry)
+    save_plan(run, plan)
+    try:
+        return record_upload(run, entry["id"], filename, data)
+    except ValueError:
+        save_plan(run, [a for a in plan if a["id"] != entry["id"]])
+        raise
 
 
 def load_reading(run: Run) -> dict:
@@ -2333,13 +2409,20 @@ def _checkpoint_assets(run: Run, made: list) -> None:
     crash checkpoint, not a decision: the authoritative transition still happens
     once at the end of the stage, so the decision log keeps one entry for the
     stage instead of one per image.
+
+    Merged by id, and written whole: when the agent builds on placeholders the
+    build reads this file while the images are still being made, and must see
+    a stand-in for every image not made yet — not an empty list, not half a file.
     """
     f = run.dir / "blackboard.json"
     try:
         bb = json.loads(f.read_text())
-        bb["assets"] = [a.model_dump(mode="json") for a in made]
-        f.write_text(json.dumps(bb, indent=2))
-    except (OSError, ValueError):
+        done = {a.id: a.model_dump(mode="json") for a in made}
+        bb["assets"] = [done.pop(a["id"], a) for a in bb.get("assets") or []] + list(done.values())
+        tmp = f.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(bb, indent=2))
+        tmp.replace(f)
+    except (OSError, ValueError, KeyError):
         pass          # a checkpoint that cannot be written must not kill the run
 
 
@@ -2393,6 +2476,38 @@ def _retract_unanswered_claims(run: Run) -> Iterator[Event]:
     save_content(run, content)
 
 
+def resolved_plan(run: Run) -> list[dict]:
+    """The asset plan with every entry's decision settled, as ASSETS executes it."""
+    plan = merged_plan(run)
+    # A slot with a file and no answer is an upload. The gate is still the place
+    # the choice is made, but a project past that gate has no way to answer one
+    # — and refusing to execute a file the user went and found, because a field
+    # beside it says null, is the wrong reading of what they did.
+    for a in plan:
+        if a.get("upload") and not a.get("decision"):
+            a["decision"] = "upload"
+    if not plan:
+        # No gate ran: a project created before the asset gate existed, or a
+        # blueprint set that asks for no imagery. Generating is what this stage
+        # did before the gate, so an old project resumes with its old behaviour
+        # rather than stalling on a question nobody was asked.
+        plan = [dict(a, decision="generate") for a in asset_plan(run)]
+        save_plan(run, plan)
+    return plan
+
+
+# Written when the agent builds on placeholders while the images are made
+# (`agent_build.step_assets`): the ids whose file on disk is a stand-in.
+PENDING_ASSETS = "assets-pending.json"
+
+
+def pending_assets(run: Run) -> set[str]:
+    try:
+        return set(json.loads((run.dir / PENDING_ASSETS).read_text()))
+    except (OSError, ValueError):
+        return set()
+
+
 def step_assets(run: Run) -> Iterator[Event]:
     """Execute the plan the asset gate decided. One image, one provenance.
 
@@ -2414,21 +2529,7 @@ def step_assets(run: Run) -> Iterator[Event]:
     from PIL import Image
 
     bb = _bb(run)
-    plan = merged_plan(run)
-    # A slot with a file and no answer is an upload. The gate is still the place
-    # the choice is made, but a project past that gate has no way to answer one
-    # — and refusing to execute a file the user went and found, because a field
-    # beside it says null, is the wrong reading of what they did.
-    for a in plan:
-        if a.get("upload") and not a.get("decision"):
-            a["decision"] = "upload"
-    if not plan:
-        # No gate ran: a project created before the asset gate existed, or a
-        # blueprint set that asks for no imagery. Generating is what this stage
-        # did before the gate, so an old project resumes with its old behaviour
-        # rather than stalling on a question nobody was asked.
-        plan = [dict(a, decision="generate") for a in asset_plan(run)]
-        save_plan(run, plan)
+    plan = resolved_plan(run)
 
     public = run.workspace / "public" / "assets"
     public.mkdir(parents=True, exist_ok=True)
@@ -2451,7 +2552,10 @@ def step_assets(run: Run) -> Iterator[Event]:
     # and several vision passes, paid again to produce what is already there.
     # A deliberate re-make goes through `reset_assets`, which removes the record
     # and the file together.
-    prior = {a.id: a for a in bb.assets if (run.workspace / "public" / a.path).exists()}
+    # A placeholder is a file on disk too, and must not pass for the real one.
+    stand_ins = pending_assets(run)
+    prior = {a.id: a for a in bb.assets
+             if a.id not in stand_ins and (run.workspace / "public" / a.path).exists()}
 
     # ---- the generations, started together instead of one after another ------
     #
@@ -2793,6 +2897,7 @@ def step_assets(run: Run) -> Iterator[Event]:
     if rejected:
         yield Event(Stage.ASSETS, "blocked",
                     f"assets not recorded ({rejected.code}): {rejected.message}")
+    (run.dir / PENDING_ASSETS).unlink(missing_ok=True)
     tally = {}
     for m in made:
         tally[m.provenance.value] = tally.get(m.provenance.value, 0) + 1

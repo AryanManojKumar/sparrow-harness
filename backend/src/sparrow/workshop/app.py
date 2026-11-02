@@ -10,6 +10,7 @@
     POST   /projects/{pid}/turns                one studio request (SSE stream)
     GET    /projects/{pid}/pages                the built site's pages
     GET    /projects/{pid}/links                links on the built site that go nowhere
+    GET    /projects/{pid}/shots?route=/        screenshots of a built page (base64 JPEG tiles)
     GET    /projects/{pid}/checkpoints          history, newest first
     POST   /projects/{pid}/undo                 restore the previous checkpoint
     POST   /projects/{pid}/restore/{cid}        restore a named checkpoint
@@ -39,6 +40,9 @@ from sparrow.workshop.config import WorkshopConfig
 class TurnBody(BaseModel):
     message: str
     llm_token: str
+    look: bool = True          # screenshot and polish after the change
+    fresh: bool = False        # run in a new session, not the studio conversation
+    look_only: bool = False    # no edit first: build, then look and polish
 
 
 def create_app(cfg: WorkshopConfig | None = None, studio: Any = None) -> FastAPI:
@@ -106,11 +110,11 @@ def create_app(cfg: WorkshopConfig | None = None, studio: Any = None) -> FastAPI
         return {"ok": True, "bytes": len(text)}
 
     @app.put("/projects/{pid}/assets/{name}", dependencies=guarded)
-    async def put_asset(pid: str, name: str, request: Request) -> dict:
+    async def put_asset(pid: str, name: str, request: Request, replace: bool = False) -> dict:
         from sparrow.workshop.look import base_path
         p = held(pid)
         try:
-            rel = store.save_asset(p, name, await request.body())
+            rel = store.save_asset(p, name, await request.body(), replace=replace)
         except store.StoreError as e:
             raise HTTPException(400, str(e))
         # public/ is served at the site root, under the preview's base path.
@@ -130,7 +134,8 @@ def create_app(cfg: WorkshopConfig | None = None, studio: Any = None) -> FastAPI
         if not body.message.strip():
             raise HTTPException(400, "empty message")
         try:
-            events = studio.turn(p, body.message, body.llm_token)
+            events = studio.turn(p, body.message, body.llm_token, body.look, body.fresh,
+                                 **({"look_only": True} if body.look_only else {}))
         except studio_mod.Busy:
             raise HTTPException(409, "a studio turn is already running")
 
@@ -149,6 +154,20 @@ def create_app(cfg: WorkshopConfig | None = None, studio: Any = None) -> FastAPI
         from sparrow.workshop.look import base_path
         p = held(pid)
         return store.broken_links(p.export, base_path(p.workspace))
+
+    @app.get("/projects/{pid}/shots", dependencies=guarded)
+    def shots(pid: str, route: str = "/") -> list[dict]:
+        from sparrow.workshop import look
+        p = held(pid)
+        if route not in store.routes(p.export):
+            raise HTTPException(404, f"no built page {route!r}")
+        return look.shoot(p.export, look.base_path(p.workspace), [route])
+
+    @app.get("/projects/{pid}/measure", dependencies=guarded)
+    def measure(pid: str, route: str = "/") -> dict:
+        from sparrow.workshop import look
+        p = held(pid)
+        return look.measure(p.export, look.base_path(p.workspace), route)
 
     @app.get("/projects/{pid}/checkpoints", dependencies=guarded)
     def checkpoints(pid: str) -> list[dict]:

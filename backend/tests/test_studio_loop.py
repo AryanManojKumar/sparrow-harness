@@ -195,3 +195,23 @@ def test_a_model_that_never_answers_is_an_error_not_a_silent_done(shop, tmp_path
 
     with pytest.raises(studio.ModelUnavailable):
         _turn(s, proj, Silent())
+
+
+def test_a_look_only_turn_builds_and_shows_the_page_without_an_edit_first(shop, tmp_path,
+                                                                        monkeypatch):
+    s, _ = shop
+    routes_seen: list = []
+    monkeypatch.setattr(look, "shoot", lambda export, base, routes: routes_seen.append(routes)
+                        or [{"route": "/", "part": 1, "of": 1, "data": "AAAA"}])
+    proj = _project(tmp_path)
+    store.save_asset(proj, "hero-1.png", b"stand-in")
+    store.checkpoint(proj, "built on stand-ins")
+    store.save_asset(proj, "hero-1.png", b"the real image", replace=True)
+    session = _Session(proj, [({}, studio.LOOKS_RIGHT)])
+    done = s._loop(_Live(session), proj, "The real images are in.", lambda e: None,
+                   look_only=True)
+    assert len(session.prompts) == 1, "the first prompt is the look, not an edit"
+    assert session.prompts[0][0] == {"type": "text", "text": "The real images are in."}
+    assert routes_seen == [["/"]]
+    assert done["checkpoint"] and done["changed"] == ["public/assets/hero-1.png"]
+    assert (proj.workspace / "public/assets/hero-1.png").read_bytes() == b"the real image"

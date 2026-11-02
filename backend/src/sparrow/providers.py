@@ -30,6 +30,48 @@ from typing import Protocol
 CALL_TIMEOUT = float(os.environ.get("SPARROW_CALL_TIMEOUT", "300"))
 CALL_RETRIES = int(os.environ.get("SPARROW_CALL_RETRIES", "2"))
 
+# A stalled request is not a slow one. Measured on b2b-tracewell: of 34 model
+# calls before BUILD, five sat for 137-377 s and the other 29 took 3-15 s.
+# Each stall ran to CALL_TIMEOUT and its retry answered in seconds — 24 of the
+# 34 minutes of groundwork were spent waiting on requests that had stopped.
+# A flat shorter timeout would cut real work off: across 2,960 logged calls the
+# design director routinely takes 60-200 s. So a call that has not answered by
+# the time its kind normally would gets a duplicate, and the first answer wins.
+# Stalls are ~1% of calls, so the duplicate's cost is rare. Design director, 153
+# logged calls: median 65 s, p90 106 s, p95 124 s — at 120 s about 7% are
+# duplicated (~$0.25 each, ~$0.05 a run) and a stall costs 2 minutes, not 5.
+HEDGE_AFTER = float(os.environ.get("SPARROW_HEDGE_AFTER", "75"))
+HEDGE_AFTER_BY_AGENT = {"design_director": 120.0, "builder": 120.0, "inspector": 120.0}
+
+
+def hedged(call, after: float):
+    """Run `call()`; if it has not returned after `after` seconds, run it again
+    beside the first and return whichever finishes first. An error from one
+    copy is only raised if the other fails too."""
+    from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+
+    pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="hedge")
+    try:
+        first = pool.submit(call)
+        done, _ = wait([first], timeout=after)
+        if done:
+            return first.result()
+        second = pool.submit(call)
+        pending = {first, second}
+        error: BaseException | None = None
+        while pending:
+            done, pending = wait(pending, return_when=FIRST_COMPLETED)
+            for f in done:
+                if f.exception() is None:
+                    return f.result()
+                error = f.exception()
+        raise error  # type: ignore[misc]
+    finally:
+        # The losing copy is left to finish on its own thread; waiting for it
+        # would give back exactly the time the hedge saved.
+        pool.shutdown(wait=False)
+
+
 # Vision models downscale every image to ~1568px on the long edge before they
 # read it, so anything larger is bytes the model never sees. Measured on
 # mananshooter: two dayz.com video frames were 12-13 MB PNGs each, compose sent
@@ -284,14 +326,15 @@ class OpenAIProvider:
             })
 
         # The gpt-5.x line takes max_completion_tokens and rejects temperature.
-        r = self.client.chat.completions.create(
+        after = HEDGE_AFTER_BY_AGENT.get(getattr(self, "_agent_name", ""), HEDGE_AFTER)
+        r = hedged(lambda: self.client.chat.completions.create(
             model=model,
             max_completion_tokens=max_tokens,
             messages=[
                 {"role": "system", "content": system},
                 {"role": "user", "content": content},
             ],
-        )
+        ), after)
         u = r.usage
         cached = 0
         if u and getattr(u, "prompt_tokens_details", None):

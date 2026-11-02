@@ -45,3 +45,4 @@ backend/startgide.md
 logs/*.out
 logs/old-*/
 logs/sparrow.jsonl
+logs/gateway-usage.jsonl

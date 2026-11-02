@@ -1,0 +1,17 @@
+{
+  "seconds": 517,
+  "pipeline_spent_usd": 5.63,
+  "agent_usage": {
+    "calls": 32,
+    "input": 794988,
+    "cached": 0,
+    "output": 11924,
+    "cost": 4.3327
+  },
+  "stage_started_at": {
+    "assets": 1793643415.0949292,
+    "build": 1793643447.1043673,
+    "verify": 1793643723.9734635
+  },
+  "preview": "http://localhost:3000/projects/twenty-crm/preview/"
+}

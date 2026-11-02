@@ -68,10 +68,8 @@ def _jpeg(png: bytes) -> str:
     return base64.b64encode(buf.getvalue()).decode()
 
 
-def shoot(export: Path, base: str, routes: list[str]) -> list[dict]:
-    """[{route, part, of, data}] — base64 JPEGs, top to bottom per route."""
-    from playwright.sync_api import sync_playwright
-
+def _server(export: Path, base: str):
+    """The request handler that serves the export from disk and nothing else."""
     root = export.resolve()
 
     def serve(route) -> None:
@@ -90,6 +88,91 @@ def shoot(export: Path, base: str, routes: list[str]) -> list[dict]:
             return route.fulfill(status=404, body="not found")
         return route.fulfill(path=str(target))
 
+    return serve
+
+
+def _walk(page) -> None:
+    """Scroll the page through once so whileInView entrances settle."""
+    height = page.evaluate("document.documentElement.scrollHeight")
+    for y in range(0, height, 900):
+        page.evaluate(f"window.scrollTo(0, {y})")
+        page.wait_for_timeout(80)
+    page.evaluate("window.scrollTo(0, 0)")
+    page.wait_for_timeout(400)
+
+
+# Per image: how much of the FILE the reader sees. object-fit: cover crops to
+# the box's shape, and every ancestor that clips (overflow other than visible)
+# cuts the box down further. Per heading: its rendered size.
+_MEASURE = """() => {
+  // A site with `scroll-behavior: smooth` animates every scroll below, and
+  // elementFromPoint then reads the viewport before it has moved.
+  document.documentElement.style.scrollBehavior = 'auto';
+  const images = [...document.images].map(i => {
+    const r = i.getBoundingClientRect();
+    let v = {l: r.left, t: r.top, r: r.right, b: r.bottom};
+    for (let e = i.parentElement; e && e !== document.body; e = e.parentElement) {
+      const cs = getComputedStyle(e);
+      if (cs.overflowX !== 'visible' || cs.overflowY !== 'visible') {
+        const p = e.getBoundingClientRect();
+        v = {l: Math.max(v.l, p.left), t: Math.max(v.t, p.top),
+             r: Math.min(v.r, p.right), b: Math.min(v.b, p.bottom)};
+      }
+    }
+    const area = r.width * r.height;
+    const clipped = area ? Math.max(0, v.r - v.l) * Math.max(0, v.b - v.t) / area : 0;
+    const rn = i.naturalWidth / (i.naturalHeight || 1), rd = r.width / (r.height || 1);
+    const fit = getComputedStyle(i).objectFit === 'cover' ? Math.min(rn, rd) / Math.max(rn, rd) : 1;
+    return {src: i.currentSrc || i.src, natural: [i.naturalWidth, i.naturalHeight],
+            box: [Math.round(r.width), Math.round(r.height)],
+            visible: Math.round(clipped * fit * 100) / 100};
+  }).filter(x => x.box[0] > 40 && x.box[1] > 40);
+  const headings = [...document.querySelectorAll('h1, h2')].map(h => ({
+    tag: h.tagName.toLowerCase(), size: parseFloat(getComputedStyle(h).fontSize),
+    text: h.innerText.slice(0, 80)}));
+  // Text an image is painted over: the topmost element at the text's centre
+  // is a picture that does not contain it. Scrolled to, because
+  // elementFromPoint only sees the viewport.
+  const covered = [];
+  for (const t of document.querySelectorAll('h1, h2, h3, h4, p, li, button')) {
+    const text = (t.innerText || '').trim();
+    const r0 = t.getBoundingClientRect();
+    if (text.length < 3 || r0.width < 8 || r0.height < 8) continue;
+    t.scrollIntoView({block: 'center', behavior: 'instant'});
+    const r = t.getBoundingClientRect();
+    const top = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+    if (top && /^(IMG|VIDEO|CANVAS|PICTURE)$/.test(top.tagName) && !t.contains(top))
+      covered.push({tag: t.tagName.toLowerCase(), text: text.slice(0, 60),
+                    by: (top.currentSrc || top.src || top.tagName).split('?')[0].split('/').pop()});
+  }
+  window.scrollTo(0, 0);
+  return {images, headings, covered};
+}"""
+
+
+def measure(export: Path, base: str, route: str = "/") -> dict:
+    """{images: [{src, natural, box, visible}], headings: [{tag, size, text}],
+    covered: [{tag, text, by}]}."""
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch()
+        try:
+            page = browser.new_page(viewport={"width": WIDTH, "height": 900},
+                                    reduced_motion="reduce")
+            page.route("**/*", _server(export, base))
+            page.goto(HOST + base + route, wait_until="load")
+            _walk(page)
+            return page.evaluate(_MEASURE)
+        finally:
+            browser.close()
+
+
+def shoot(export: Path, base: str, routes: list[str]) -> list[dict]:
+    """[{route, part, of, data}] — base64 JPEGs, top to bottom per route."""
+    from playwright.sync_api import sync_playwright
+
+    serve = _server(export, base)
     shots: list[dict] = []
     with sync_playwright() as p:
         browser = p.chromium.launch()
@@ -99,13 +182,7 @@ def shoot(export: Path, base: str, routes: list[str]) -> list[dict]:
             page.route("**/*", serve)
             for r in routes:
                 page.goto(HOST + base + r, wait_until="load")
-                # Let whileInView entrances settle as the page is walked.
-                height = page.evaluate("document.documentElement.scrollHeight")
-                for y in range(0, height, 900):
-                    page.evaluate(f"window.scrollTo(0, {y})")
-                    page.wait_for_timeout(80)
-                page.evaluate("window.scrollTo(0, 0)")
-                page.wait_for_timeout(400)
+                _walk(page)
                 height = page.evaluate("document.documentElement.scrollHeight")
                 # Taller tiles on a long page, so four always reach the footer.
                 tile = max(TILE, -(-height // MAX_TILES))

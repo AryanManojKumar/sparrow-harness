@@ -56,6 +56,10 @@ PATCH = """\
             input: [text, image]
             contextWindow: 400000
             maxTokens: 64000
+        # Normal calls finish inside 40 s. At the 300 s default a stalled
+        # upstream stream cost the first agent build ten idle minutes (two
+        # timeouts, then a retry that answered at once).
+        streamIdleTimeoutMs: 120000
 
 # The workspace has no .git (checkpoints live outside it), so the project root
 # is marked by package.json: AGENTS.md at the workspace root is always found.
@@ -285,6 +289,10 @@ class Translator:
         return None
 
 
+class _Skip(Exception):
+    pass
+
+
 class Studio:
     def __init__(self, cfg: WorkshopConfig) -> None:
         self.cfg = cfg
@@ -393,17 +401,22 @@ class Studio:
             result = build(self.cfg, proj)
         return result
 
-    def _loop(self, live: _Live, proj: store.Project, message: str, emit) -> dict:
+    def _loop(self, live: _Live, proj: store.Project, message: str, emit,
+              look_after: bool = True, look_only: bool = False) -> dict:
         """edit → build (→ repair) → look (→ polish → build) → one checkpoint.
 
         Whatever the user is shown has built. A change that never builds is
         thrown away without a trace — it was never on the page, so there is
         nothing to undo — and the user is told that plainly.
+
+        `look_only` skips the edit: the files changed outside the agent (real
+        images over the placeholders it built with), so the site is built and
+        the agent looks, with `message` saying what changed.
         """
         t0 = time.time()
         base = store.head(proj)
-        reply = self._run(live, proj, message, emit)
-        if not store.files_since(proj, base):
+        reply = "" if look_only else self._run(live, proj, message, emit)
+        if not look_only and not store.files_since(proj, base):
             return {"kind": "done", "reply": reply, "changed": [], "checkpoint": None,
                     "reverted": False, "seconds": round(time.time() - t0, 1)}
 
@@ -417,16 +430,28 @@ class Studio:
                     "seconds": round(time.time() - t0, 1)}
         good = store.checkpoint(proj, "studio: built") or base
 
+        # A guardrail fix ("remove this name", "place that image") is checked
+        # by the guardrails again, not by eye: the look-and-polish pass doubled
+        # the cost of each fix round and changed nothing the checks asked for.
+        shots: list[dict] = []
         try:
+            if not look_after:
+                raise _Skip
+
             emit({"kind": "status", "text": "looking at the result"})
             shots = look.shoot(proj.export, look.base_path(proj.workspace),
+                               ["/"] if look_only else
                                look.routes_for(store.files_since(proj, base)))
+        except _Skip:
+            pass
         except Exception as e:  # a missing browser must not cost the user their change
             emit({"kind": "status", "text": f"could not take screenshots ({type(e).__name__})"})
             shots = []
         if shots:
             blocks: list[dict] = [{"type": "text", "text": LOOK.format(
                 pages=", ".join(sorted({s["route"] for s in shots})))}]
+            if look_only:
+                blocks.insert(0, {"type": "text", "text": message})
             for s in shots:
                 blocks.append({"type": "text", "text": f"{s['route']} — part {s['part']} of {s['of']}"})
                 blocks.append({"type": "image", "data": s["data"], "mimeType": "image/jpeg"})
@@ -448,7 +473,9 @@ class Studio:
                 "reverted": False, "screenshots": len(shots),
                 "seconds": round(time.time() - t0, 1)}
 
-    def turn(self, proj: store.Project, message: str, token: str) -> Iterator[dict]:
+    def turn(self, proj: store.Project, message: str, token: str,
+             look_after: bool = True, fresh: bool = False,
+             look_only: bool = False) -> Iterator[dict]:
         """Run one user request. Yields events; the last is `done` or `error`.
 
         The turn runs on its own thread and finishes even if the caller stops
@@ -471,7 +498,16 @@ class Studio:
                 if live is None:
                     q.put({"kind": "status", "text": "starting"})
                     live = self._live[proj.pid] = self._launch(proj, token)
-                q.put(self._loop(live, proj, message, q.put))
+                if fresh:
+                    # A self-contained task (a guardrail fix list) in its own
+                    # session: the agent reads AGENTS.md and the files it needs
+                    # instead of resending the whole build conversation with
+                    # every call — ~50k tokens a call on the first B2B run,
+                    # with no prompt caching upstream. The studio session the
+                    # owner talks to is untouched.
+                    live = replace(live, session=live.harness.start_session(
+                        f"task-{int(time.time() * 1000)}"))
+                q.put(self._loop(live, proj, message, q.put, look_after, look_only))
             except ModelUnavailable as e:
                 # The runtime is fine; only the model was not reachable. Keep it warm.
                 q.put({"kind": "error", "text": str(e)})

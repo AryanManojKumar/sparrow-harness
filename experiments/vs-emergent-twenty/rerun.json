@@ -1,0 +1,12 @@
+{
+  "seconds": 515,
+  "spent_usd": 5.0,
+  "agent_usage": {
+    "calls": 36,
+    "input": 939734,
+    "cached": 0,
+    "output": 9974,
+    "cost": 4.9979
+  },
+  "preview": "http://localhost:3000/projects/twenty-crm/preview/"
+}

@@ -594,7 +594,30 @@ _PALETTE = r"""
     .filter(c => c.s > 0.25 && c.l > 0.06 && c.l < 0.94)
     .sort((a,b)=>b.weight-a.weight)[0] || null;
 
+  // Brand colours, wherever they are painted. `accent` reads backgrounds only
+  // and lets a dark navy count as saturated, so playvalorant.com recorded
+  // #1a242e and its red — on clipped buttons, text and SVG — was never seen.
+  // Chroma (max − min), not HSV saturation, so near-blacks with a tint drop out.
+  const brand = {};
+  const chroma = ([r,g,b]) => (Math.max(r,g,b) - Math.min(r,g,b)) / 255;
+  const add = (c, w) => {
+    if (!c || /rgba\(0, 0, 0, 0\)|^none$|^transparent$/.test(c) || c.startsWith('url')) return;
+    const p = px(c); if (chroma(p) < 0.3) return;
+    const k = hex(p); brand[k] = (brand[k] || 0) + w;
+  };
+  for (const el of document.querySelectorAll('body *')) {
+    const r = el.getBoundingClientRect();
+    if (r.width < 2 || r.height < 2) continue;
+    const cs = getComputedStyle(el), a = r.width * r.height;
+    add(cs.backgroundColor, a);
+    if (el.children.length === 0 && (el.textContent || '').trim()) add(cs.color, a);
+    if (parseFloat(cs.borderTopWidth) > 0) add(cs.borderTopColor, (r.width + r.height) * 2);
+    if (el instanceof SVGElement) { add(cs.fill, a); add(cs.stroke, a / 4); }
+  }
+  const brandTop = Object.entries(brand).sort((a,b)=>b[1]-a[1]).slice(0, 4).map(([k]) => k);
+
   return {
+    brand: brandTop,
     surfaces: surfaces.map(c => ({...c, share: +(c.weight/total).toFixed(3),
                                   lum: +lum(px(c.hex)).toFixed(3)})),
     ink: top(ink, 3),
@@ -631,6 +654,7 @@ class Palette:
     ink: list[dict]                   # the most-used text colours
     accent: str | None                # the most-used saturated colour
     dark: bool
+    brand: list[str] = field(default_factory=list)   # saturated colours on any paint: bg, text, border, svg
     ground_changes: int = 0           # times the ground changes down the page
     distinct_grounds: int = 1         # how many grounds the page uses at all
 
@@ -1207,6 +1231,7 @@ def _extract_once(
                 ink=list(pal["ink"]),
                 accent=(pal["accent"] or {}).get("hex"),
                 dark=bool(reg["dark"]),
+                brand=list(pal.get("brand") or []),
                 ground_changes=int(pal.get("groundChanges", 0)),
                 distinct_grounds=int(pal.get("distinctGrounds", 1)),
             ),

@@ -27,17 +27,29 @@ def _lines(items) -> str:
     return "\n".join(f"- {x}" for x in items)
 
 
-def render(bb: Blackboard, content: dict, preview_base: str) -> str:
-    b, ds = bb.brief, bb.design_system
+def render(bb: Blackboard, content: dict, preview_base: str,
+           references: list[str] | None = None) -> str:
+    """`references` marks a site the agent designs itself (experiment
+    dsh-builder-02's B+): the reference sites it learns from, main one first.
+    Such a site has no recorded design system to hold to — its look lives in
+    its own code — and Sparrow's planned section map is not what it built."""
+    b = bb.brief
+    agent_designed = references is not None
+    ds = None if agent_designed else bb.design_system
     out: list[str] = []
     name = (b.product_name if b else "") or bb.project_id
 
-    out += [f"# {name} — website dossier",
-            "",
-            "This is a finished marketing website, generated from a brief and real "
-            "material supplied by its owner. You are editing it on the owner's behalf. "
-            "The owner is not an engineer: they see the rendered page, not the code.",
-            ""]
+    out += [f"# {name} — website dossier", ""]
+    if agent_designed:
+        out += ["This is the owner's marketing website, designed and built by you from "
+                "this dossier, the reference sites and real material supplied by the "
+                "owner. The owner is not an engineer: they see the rendered page, not "
+                "the code.", ""]
+    else:
+        out += ["This is a finished marketing website, generated from a brief and real "
+                "material supplied by its owner. You are editing it on the owner's behalf. "
+                "The owner is not an engineer: they see the rendered page, not the code.",
+                ""]
 
     if b:
         out += ["## What the site is for", "",
@@ -110,7 +122,21 @@ def render(bb: Blackboard, content: dict, preview_base: str) -> str:
                     _lines(f"**{t.name}** — where: {t.where}; how: `{t.how}`" for t in ds.treatments)]
         out += ["", f"Imagery: {ds.imagery_treatment}", f"Motion: {ds.motion}", ""]
 
-    if bb.sections:
+    if agent_designed:
+        out += ["## Look and references", "",
+                "The design is the site's own. Once it exists, read `src/app/globals.css` "
+                "and the sections before changing anything, and keep to the palette, type "
+                "and spacing they already use.", "",
+                "`refs/` holds screenshots of the reference sites, cut into bands top to "
+                "bottom (`<site>-b00.png` is the top) plus a `<site>-sheet.png` overview. "
+                "View them with read_image. Learn layout, pacing and craft from them, and "
+                "give the product its own look: never reproduce a reference's brand — its "
+                "signature colours, logo treatment or distinctive type.", ""]
+        if references:
+            out += ["References: " + ", ".join(
+                r + (" (the main one)" if i == 0 else "") for i, r in enumerate(references)), ""]
+
+    if bb.sections and not agent_designed:
         out += ["## The home page, top to bottom", "",
                 "| section | file | sits on | shape |", "|---|---|---|---|"]
         for s in sorted(bb.sections, key=lambda s: s.order):
@@ -127,8 +153,22 @@ def render(bb: Blackboard, content: dict, preview_base: str) -> str:
                 f"`{preview_base}/assets/<file>` (see Build rules).", ""]
         label = {Provenance.USER_SUPPLIED: "the owner's own", Provenance.RESTYLED:
                  "the owner's, restyled", Provenance.GENERATED: "generated"}
-        out += [_lines(f"`{a.path}` — {label.get(a.provenance, a.provenance)}, "
-                       f"used in `{a.section_id}`: {a.brief[:120]}" for a in bb.assets), ""]
+        if agent_designed:
+            out += ["Curated for this product. Use every one the page can carry before "
+                    "generating anything new. Where crops are listed, they sit beside the "
+                    "original as `--hero` (wide), `--card` and `--mobile`. An image with no "
+                    "crops listed is the owner's composed image: show it whole, in a box "
+                    "of its own shape.", ""]
+            out += [_lines(f"`{preview_base}/{a.path}` — {a.kind.value}, "
+                           + (f"{a.width}x{a.height}, " if a.width and a.height else "")
+                           + (f"crops: {', '.join(sorted(a.variants))}, " if a.variants else "")
+                           + f"{label.get(a.provenance, a.provenance)}, "
+                           + ("place it where it fits" if a.section_id == "any"
+                              else f"planned for {a.section_id}")
+                           + f": {a.brief[:200]}" for a in bb.assets), ""]
+        else:
+            out += [_lines(f"`{a.path}` — {label.get(a.provenance, a.provenance)}, "
+                           f"used in `{a.section_id}`: {a.brief[:120]}" for a in bb.assets), ""]
 
     out += ["## Build rules (break one and the page breaks)", "",
             f"- The site is a Next.js static export served under the base path "
@@ -147,7 +187,7 @@ def render(bb: Blackboard, content: dict, preview_base: str) -> str:
             "- Dependencies are fixed; adding a package fails the build. Available: "
             "React, `motion`, `lucide-react`, `radix-ui`, and the shadcn components "
             "in `src/components/ui/`.",
-            "- A new page reuses the site's `Nav` and `Footer` sections so it looks like "
+            "- A new page reuses the site's own nav and footer so it looks like "
             "the same site, and is added to the nav where an owner would expect it.",
             "- Entrance animation uses `whileInView`, never mount-time animation; "
             "respect `useReducedMotion`.",
