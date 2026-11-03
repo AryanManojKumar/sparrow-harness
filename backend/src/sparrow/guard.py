@@ -226,7 +226,9 @@ def check_arrival(built: dict, sources: dict | None) -> list[Finding]:
     """Entrances on the built page against the sources', by the same probe."""
     if not sources or sources.get("share", 0) < 0.1:
         return []
-    got, want = built.get("share", 0.0), sources["share"]
+    # `reach` counts an element staged through a parent: an agent animates a
+    # block as one wrapper where a source animates each element (see look._REACH).
+    got, want = built.get("reach", built.get("share", 0.0)), sources["share"]
     if got >= want * ARRIVAL_SHARE:
         return []
     how = (f"from opacity {sources.get('from', 0):.0f}"

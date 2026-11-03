@@ -150,6 +150,29 @@ _MEASURE = """() => {
 }"""
 
 
+# The share of elements that are hidden or offset at load THROUGH any ancestor.
+# The scout's probe counts an element only if it is staged itself: supabase
+# stages every element (77%), while an agent staging each block as one
+# `motion.div` reached 10% on twenty-crm-2 with every section below the fold
+# entering on arrival. Same page behaviour, a fifth of the score.
+_REACH = """() => {
+  const all = [...document.querySelectorAll('body *')];
+  const staged = new Set();
+  for (const el of all) {
+    const cs = getComputedStyle(el);
+    const m = (cs.transform || '').match(/matrix(3d)?\\(([^)]*)\\)/);
+    const v = m ? m[2].split(',').map(Number) : [];
+    const dy = m ? (m[1] ? v[13] : v[5]) || 0 : 0;
+    if (+cs.opacity < 0.99 || Math.abs(dy) > 1.5) staged.add(el);
+  }
+  const reached = all.filter(el => {
+    for (let x = el; x && x !== document.body; x = x.parentElement) if (staged.has(x)) return true;
+    return false;
+  }).length;
+  return all.length ? Math.round(reached / all.length * 100) / 100 : 0;
+}"""
+
+
 def measure(export: Path, base: str, route: str = "/") -> dict:
     """{images: [{src, natural, box, visible}], headings: [{tag, size, text}],
     covered: [{tag, text, by}], arrival: {share, from, travel, ms}}.
@@ -169,7 +192,7 @@ def measure(export: Path, base: str, route: str = "/") -> dict:
             page.route("**/*", _server(export, base))
             page.goto(HOST + base + route, wait_until="load")
             page.wait_for_timeout(600)
-            arrival = _probe_arrival(page)
+            arrival = {**_probe_arrival(page), "reach": page.evaluate(_REACH)}
             _walk(page)
             return {**page.evaluate(_MEASURE), "arrival": arrival}
         finally:

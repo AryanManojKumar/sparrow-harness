@@ -552,6 +552,8 @@ def test_a_page_that_stages_far_fewer_entrances_than_the_sources_is_a_finding():
     assert guard.check_arrival({"share": 0.3}, src) == []
     assert guard.check_arrival({"share": 0.0}, {"share": 0.04}) == [], "sources barely move"
     assert guard.check_arrival({"share": 0.0}, None) == []
+    # staged as one wrapper per block: few elements themselves, most through a parent
+    assert guard.check_arrival({"share": 0.10, "reach": 0.55}, src) == []
 
 
 def test_the_agent_is_told_how_sections_arrive():
