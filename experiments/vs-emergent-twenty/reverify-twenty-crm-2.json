@@ -1,0 +1,11 @@
+{
+  "seconds": 462,
+  "spent_usd": 3.72,
+  "agent_usage": {
+    "calls": 38,
+    "input": 675451,
+    "cached": 0,
+    "output": 11422,
+    "cost": 3.7199
+  }
+}

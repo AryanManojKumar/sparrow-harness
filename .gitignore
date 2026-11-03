@@ -46,3 +46,7 @@ logs/*.out
 logs/old-*/
 logs/sparrow.jsonl
 logs/gateway-usage.jsonl
+
+# Other businesses' images and copy used as owner material in experiments
+experiments/*/assets/
+experiments/pet-cafe/site-text.txt

@@ -1,0 +1,12 @@
+{
+  "seconds": 472,
+  "spent_usd": 5.183,
+  "stage_started_at": {
+    "gate:assets": 1793697331.521462,
+    "null": 1793697331.521566,
+    "assets": 1793697331.602939,
+    "build": 1793697334.448042,
+    "verify": 1793697661.4734461
+  },
+  "preview": "http://localhost:3000/projects/crumbs-whiskers/preview/"
+}
