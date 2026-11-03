@@ -517,3 +517,45 @@ def test_the_agent_is_told_the_directions_motion_and_treatments():
     assert bb.design_system.motion
     assert f"Its motion, to build, not to describe: {bb.design_system.motion}" in \
         agent_build.direction_note(bb)
+
+
+# ── arrival ─────────────────────────────────────────────────────────────────
+
+BRIEF_MOTION = """  OTHER
+    something
+  MOTION
+    always-running motion: 2/2  — e.g. cursorBlink, marquee
+    interaction tempo: 400ms typical (range 100-400ms)
+    ARRIVAL — read off the page, not guessed.
+      46% of all elements are staged this way
+      they start at opacity 0.00  — from nothing, not a partial fade
+      and rise 60px into place
+      over 400ms
+  ENCLOSURE
+    boxed 12%
+"""
+
+
+def test_the_sources_motion_is_read_from_the_design_brief_and_handed_over(project):
+    (project.dir / "sources/design-brief.md").write_text(BRIEF_MOTION)
+    block, nums = agent_build.source_motion(project)
+    assert nums == {"share": 0.46, "from": 0.0, "travel": 60, "ms": 400}
+    assert "cursorBlink" in block and "ENCLOSURE" not in block
+    assert "How the reference sites move" in agent_build.dossier_for(project)
+
+
+def test_a_page_that_stages_far_fewer_entrances_than_the_sources_is_a_finding():
+    src = {"share": 0.46, "from": 0.0, "travel": 60, "ms": 400}
+    found = guard.check_arrival({"share": 0.0}, src)
+    assert found[0].kind == "arrival" and "stage 46%" in found[0].detail
+    assert "rising 60px, over 400ms" in found[0].detail
+    assert guard.check_arrival({"share": 0.3}, src) == []
+    assert guard.check_arrival({"share": 0.0}, {"share": 0.04}) == [], "sources barely move"
+    assert guard.check_arrival({"share": 0.0}, None) == []
+
+
+def test_the_agent_is_told_how_sections_arrive():
+    bb = _bb()
+    bb.design_system.arrival = "headings rise 15px from opacity 0 over 400ms"
+    assert "How each section arrives as the reader reaches it, to build: headings rise" \
+        in agent_build.direction_note(bb)

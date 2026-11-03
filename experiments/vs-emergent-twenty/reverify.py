@@ -19,7 +19,7 @@ sys.path.insert(0, str(HERE))
 from sparrow import api, gateway  # noqa: E402
 from sparrow.orchestrator import Stage  # noqa: E402
 
-from run import PID, log  # noqa: E402
+from run import OUT, PID, log  # noqa: E402
 
 
 def main() -> None:
@@ -34,7 +34,7 @@ def main() -> None:
                 + (f" · ${ev.cost:.3f}" if ev.cost else ""))
     out = {"seconds": round(time.time() - t0), "spent_usd": round(run.spent - spent0, 2),
            "agent_usage": gateway.usage_since(PID, t0)}
-    (HERE / "reverify.json").write_text(json.dumps(out, indent=2))
+    (HERE / f"reverify{OUT}.json").write_text(json.dumps(out, indent=2))
     log(json.dumps(out))
 
 

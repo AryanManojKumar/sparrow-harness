@@ -17,6 +17,7 @@ retracted). twenty.com is deliberately not a reference.
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -28,7 +29,9 @@ sys.path.insert(0, str(ROOT / "backend" / "src"))
 from sparrow import api, gateway, steps  # noqa: E402  (loads backend/.env)
 from sparrow.orchestrator import Stage  # noqa: E402
 
-PID = "twenty-crm"
+# A fresh run gets its own id: TWENTY_PID=twenty-crm-2 uv run ... run.py
+PID = os.environ.get("TWENTY_PID", "twenty-crm")
+OUT = "" if PID == "twenty-crm" else f"-{PID}"
 ASSETS = HERE / "assets"
 BRIEF = dict(
     project_id=PID,
@@ -117,7 +120,7 @@ def add_the_rest(run) -> None:
     if any(a.get("extra") for a in plan):
         return
     # Which files went into the planned slots, written at the gate.
-    taken = set(json.loads((HERE / "slotted.json").read_text()))
+    taken = set(json.loads((HERE / f"slotted{OUT}.json").read_text()))
     for f, _ in IMAGES:
         if f in taken:
             continue
@@ -159,7 +162,7 @@ def answer(run) -> None:
                 + f" · {a['brief'][:90]}")
         steps.record_content_answers(run, {})
         steps.record_asset_decisions(run, decisions)
-        (HERE / "slotted.json").write_text(json.dumps(sorted(files.values())))
+        (HERE / f"slotted{OUT}.json").write_text(json.dumps(sorted(files.values())))
         add_the_rest(run)
         run.resolve({"assets": decisions})
         log(f"gate:assets → {decisions}")
@@ -195,7 +198,7 @@ def main() -> None:
     out = {"seconds": round(time.time() - t0), "pipeline_spent_usd": round(run.spent, 2),
            "agent_usage": agent, "stage_started_at": stages,
            "preview": f"http://localhost:3000/projects/{PID}/preview/"}
-    (HERE / "run.json").write_text(json.dumps(out, indent=2))
+    (HERE / f"run{OUT}.json").write_text(json.dumps(out, indent=2))
     log(json.dumps({k: v for k, v in out.items() if k != "stage_started_at"}))
 
 

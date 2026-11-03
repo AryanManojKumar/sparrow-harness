@@ -152,18 +152,26 @@ _MEASURE = """() => {
 
 def measure(export: Path, base: str, route: str = "/") -> dict:
     """{images: [{src, natural, box, visible}], headings: [{tag, size, text}],
-    covered: [{tag, text, by}]}."""
+    covered: [{tag, text, by}], arrival: {share, from, travel, ms}}.
+
+    `arrival` is the scout's own probe (`scout._probe_arrival`), so the built
+    page and the sources are measured the same way: read at load, before any
+    scrolling, for a reader who has not asked for reduced motion.
+    """
     from playwright.sync_api import sync_playwright
+
+    from sparrow.scout import _probe_arrival
 
     with sync_playwright() as p:
         browser = p.chromium.launch()
         try:
-            page = browser.new_page(viewport={"width": WIDTH, "height": 900},
-                                    reduced_motion="reduce")
+            page = browser.new_page(viewport={"width": WIDTH, "height": 900})
             page.route("**/*", _server(export, base))
             page.goto(HOST + base + route, wait_until="load")
+            page.wait_for_timeout(600)
+            arrival = _probe_arrival(page)
             _walk(page)
-            return page.evaluate(_MEASURE)
+            return {**page.evaluate(_MEASURE), "arrival": arrival}
         finally:
             browser.close()
 

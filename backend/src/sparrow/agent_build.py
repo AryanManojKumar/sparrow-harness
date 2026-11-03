@@ -113,8 +113,38 @@ def direction_note(bb: Blackboard) -> str:
             "direction. Start from it; type, layout, composition and the final palette are "
             "yours.\n"
             + (f"\nIts motion, to build, not to describe: {ds.motion}\n" if ds.motion else "")
+            + (f"\nHow each section arrives as the reader reaches it, to build: "
+               f"{ds.arrival}\n" if ds.arrival else "")
             + (f"\nIts surface treatments (each in its place, not spread across the page):"
                f"{treat}\n" if treat else ""))
+
+
+def source_motion(run: Run) -> tuple[str, dict | None]:
+    """The scout's MOTION block from the design brief, and its arrival numbers.
+
+    The block is the scout's measurement of the reference sites, already
+    written for an agent to read; the numbers are parsed back out of it so the
+    check holds the page to the same figures the agent was shown.
+    """
+    f = run.dir / "sources" / "design-brief.md"
+    text = f.read_text() if f.is_file() else ""
+    m = re.search(r"^ *MOTION\n(.*?)(?=^ *[A-Z][A-Z /&-]{3,}\n|\Z)", text, re.M | re.S)
+    if not m:
+        return "", None
+    block = m.group(1).rstrip()
+    share = re.search(r"(\d+)% of all elements are staged", block)
+    if not share:
+        return block, None
+    num = lambda pat, d: (lambda x: float(x.group(1)) if x else d)(re.search(pat, block))
+    return block, {"share": int(share.group(1)) / 100,
+                   "from": num(r"start at opacity ([\d.]+)", 1.0),
+                   "travel": int(num(r"rise (\d+)px", 0)), "ms": int(num(r"over (\d+)ms", 0))}
+
+
+def motion_note(run: Run) -> str:
+    block, _ = source_motion(run)
+    return (f"\nHow the reference sites move (measured on the live pages):\n\n{block}\n"
+            if block else "")
 
 
 def scale_note(run: Run) -> str:
@@ -131,7 +161,7 @@ def dossier_for(run: Run, bb: Blackboard | None = None) -> str:
     bb = bb or steps._bb(run)
     text = dossier.render(bb, steps.load_content(run), steps.preview_base(run),
                           references=references(run.dir))
-    note = direction_note(bb) + scale_note(run)
+    note = direction_note(bb) + motion_note(run) + scale_note(run)
     if note and "## Build rules" in text:
         i = text.index("## Build rules")
         text = text[:i] + note.lstrip("\n") + "\n" + text[i:]
@@ -528,6 +558,7 @@ def findings(run: Run, bb: Blackboard) -> list:
                              {Path(a.path).name: (a.width, a.height) for a in bb.assets
                               if a.kind.value == "image" and a.width and a.height})
     out += guard.check_covered(page.get("covered", []))
+    out += guard.check_arrival(page.get("arrival") or {}, source_motion(run)[1])
     if bb.design_system and bb.design_system.motion:
         with tempfile.TemporaryDirectory(prefix="sparrow-motion-") as tmp:
             out += guard.check_motion(_pull(run, Path(tmp)), bb.design_system.motion)
@@ -587,7 +618,7 @@ def confirmed(run: Run, bb: Blackboard) -> set[str]:
 # that chased both cost $5.63 — more than the build — while the next round went
 # entirely on "Details", "Logs" and "Overview". A person decides those in
 # seconds; the gate shows them, and the studio can act on the answer.
-AUTO_FIX = {"link", "missing-asset", "unused-asset", "brand", "crop", "covered", "motion", "type"}
+AUTO_FIX = {"link", "missing-asset", "unused-asset", "brand", "crop", "covered", "motion", "arrival", "type"}
 
 
 def step_verify(run: Run) -> Iterator[Event]:

@@ -11,6 +11,7 @@ What it does not settle is truth and ownership, and those are Sparrow's:
 - **crop** — an image shows enough of itself to be read;
 - **covered** — no image is painted over the page's text;
 - **motion** — the motion the chosen direction specifies is built;
+- **arrival** — the page stages entrances at the sources' measured rate;
 - **type** — the headline scale is the main reference's, not the stack's default.
 
 Each check is deterministic and each finding is phrased as something the agent
@@ -41,7 +42,7 @@ _ORDINAL = re.compile(r"^0\d$")
 
 @dataclass
 class Finding:
-    kind: str        # claim | missing-asset | unused-asset | brand | link | crop | covered | motion | type
+    kind: str        # claim | missing-asset | unused-asset | brand | link | crop | covered | motion | arrival | type
     where: str       # a file, a page, or "page"
     detail: str
 
@@ -213,6 +214,30 @@ def check_motion(workspace: Path, spec: str) -> list[Finding]:
                     f"{spec[:500]} Build it: entrances bound to `whileInView` from "
                     "`motion/react` (never on mount), the transitions it names, and any "
                     "always-running element it describes; respect `useReducedMotion`.")]
+
+
+# A page staging under this share of the sources' entrances moves less than
+# they do. Measured on twenty-crm-2: sources 46%, the build 0% — three CSS
+# loops passed `check_motion`, which only asked whether anything moved.
+ARRIVAL_SHARE = 0.5
+
+
+def check_arrival(built: dict, sources: dict | None) -> list[Finding]:
+    """Entrances on the built page against the sources', by the same probe."""
+    if not sources or sources.get("share", 0) < 0.1:
+        return []
+    got, want = built.get("share", 0.0), sources["share"]
+    if got >= want * ARRIVAL_SHARE:
+        return []
+    how = (f"from opacity {sources.get('from', 0):.0f}"
+           + (f", rising {sources['travel']}px" if sources.get("travel") else "")
+           + (f", over {sources['ms']}ms" if sources.get("ms") else ""))
+    return [Finding("arrival", "page",
+                    f"{round(got * 100)}% of the page's elements animate in as the reader "
+                    f"reaches them; the reference sites stage {round(want * 100)}% ({how}). "
+                    "Stage the section contents — headings, copy, cards, images — to enter "
+                    "on arrival with `motion/react` `whileInView` (initial hidden, "
+                    "viewport once), keeping `useReducedMotion`.")]
 
 
 # Below this share of the main reference's largest heading, the page's scale
