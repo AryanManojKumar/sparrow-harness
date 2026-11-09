@@ -561,3 +561,15 @@ def test_the_agent_is_told_how_sections_arrive():
     bb.design_system.arrival = "headings rise 15px from opacity 0 over 400ms"
     assert "How each section arrives as the reader reaches it, to build: headings rise" \
         in agent_build.direction_note(bb)
+
+
+def test_a_lost_main_reference_is_told_at_the_design_gate(project):
+    from sparrow import steps
+
+    assert steps.main_reference_note(project) == ""
+    (project.dir / steps.MAIN_REFERENCE_LOST).write_text(json.dumps(
+        {"named": "attio.com", "reason": "only 2 section(s) on the page",
+         "followed": "supabase.com"}))
+    note = steps.main_reference_note(project)
+    assert "Your main reference, attio.com, could not be read" in note
+    assert "follow supabase.com instead" in note

@@ -306,6 +306,18 @@ def record_product_name(run: Run, name: str) -> str:
 # ------------------------------------------------------------------ sources
 
 MAIN_REFERENCE = "main-reference.txt"
+MAIN_REFERENCE_LOST = "main-reference-lost.json"
+
+
+def main_reference_note(run: Run) -> str:
+    """For the design gate: the owner's main reference was not read, and why."""
+    try:
+        lost = json.loads((run.dir / MAIN_REFERENCE_LOST).read_text())
+    except (OSError, ValueError):
+        return ""
+    return (f"  Your main reference, {lost['named']}, could not be read "
+            f"({lost['reason'][:140]}), so these directions follow {lost['followed']} "
+            "instead.")
 
 
 def owner_primary(run: Run, sites: list[str]) -> str | None:
@@ -340,16 +352,24 @@ def step_sources(run: Run, urls: list[str]) -> Iterator[Event]:
         # design agent designed from a word count and the builder built from
         # prose. A section screenshot is ~1,700 tokens against a $3.50 run.
         r = extract(url, out_dir, shots=True)
+        # One more attempt for a read that failed for a reason that can pass: a
+        # timeout, a page that had not finished rendering. attio.com read on
+        # one day and failed on the next. A wall `extract` already retried in a
+        # headed browser is not tried a third time.
+        if (not r.ok or len(r.bands) < 4) and not r.error.startswith("blocked before"):
+            r = extract(url, out_dir, shots=True)
         types = classify(provider, r.bands) if r.ok and len(r.bands) >= 4 else []
         return r, types
 
+    unread: dict[str, str] = {}
     # The sites are independent: read all of them at once, then take the
     # results in the order the user gave them.
     for url, (r, types) in zip(urls, parallel(_read_site, urls, workers=3)):
         site = url.split("//")[-1].split("/")[0]
         if not r.ok or len(r.bands) < 4:
+            unread[site] = r.error or f"only {len(r.bands)} section(s) on the page"
             yield Event(Stage.SOURCES, "blocked",
-                        f"{site}: unreadable or too thin — skipped")
+                        f"{site}: unreadable or too thin — skipped ({unread[site][:160]})")
             continue
         if r.register is not None:
             registers[site] = r.register
@@ -470,6 +490,7 @@ def step_sources(run: Run, urls: list[str]) -> Iterator[Event]:
 
     comm = commonality(labelled)
     named = owner_primary(run, list(labelled))
+    lost = owner_primary(run, list(unread)) if not named else None
     if named:
         primary, why = named, "the owner named it as the main reference"
         yield Event(Stage.SOURCES, "progress", f"primary reference: {primary} (the owner's)")
@@ -477,6 +498,17 @@ def step_sources(run: Run, urls: list[str]) -> Iterator[Event]:
         primary, why, usage = pick_primary(provider, bb.brief, labelled)
         yield Event(Stage.SOURCES, "progress", f"primary reference: {primary}",
                     cost=usage.cost(provider.name, Tier.CHEAP))
+    # The owner's main reference could not be read: say so, never swap quietly.
+    # twenty-crm-2 followed supabase.com's 46px type for attio.com's 96px and
+    # nobody was told. The design gate repeats it, where the owner can act.
+    if lost:
+        (run.dir / MAIN_REFERENCE_LOST).write_text(json.dumps(
+            {"named": lost, "reason": unread[lost], "followed": primary}))
+        yield Event(Stage.SOURCES, "blocked",
+                    f"your main reference {lost} could not be read — the page follows "
+                    f"{primary} instead")
+    else:
+        (run.dir / MAIN_REFERENCE_LOST).unlink(missing_ok=True)
 
     rankings: dict[str, dict] = {}
     # Every type in the PRIMARY's own sequence, then the checklist. Ranking only
@@ -786,7 +818,8 @@ def step_design(run: Run, alternatives: int = 3) -> Iterator[Event]:
         Stage.GATE_DESIGN,
         "Which direction should the site take?"
         + (f"  ({dark_count} of {len(pals)} of your reference sites use a dark ground.)"
-           if pals else ""),
+           if pals else "")
+        + main_reference_note(run),
         options=[
             *[{**{k: p[k] for k in ("index", "signature", "atmosphere", "type")},
                "specimen": f"{prefix}/direction-{p['index']}.png"}
