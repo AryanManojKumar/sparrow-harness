@@ -1,0 +1,7 @@
+.next
+out
+node_modules
+pnpm-lock.yaml
+next-env.d.ts
+# managed by `next dev` (generate-agent-files.js)
+AGENTS.md

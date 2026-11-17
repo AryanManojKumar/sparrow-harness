@@ -28,9 +28,7 @@ export function ProjectList() {
     <section className="mx-auto mt-24 w-full max-w-5xl">
       <div className="mb-4 flex items-baseline justify-between">
         <h2 className="text-sm font-medium text-foreground">Your projects</h2>
-        {projects && (
-          <span className="text-xs text-muted-foreground">{projects.length}</span>
-        )}
+        {projects && <span className="text-xs text-muted-foreground">{projects.length}</span>}
       </div>
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
@@ -38,10 +36,7 @@ export function ProjectList() {
           ? // The API already sorts newest-first; keep its order.
             projects.map((p) => <ProjectCard key={p.project_id} project={p} />)
           : Array.from({ length: 3 }).map((_, i) => (
-              <div
-                key={i}
-                className="overflow-hidden rounded-xl border border-border bg-card/20"
-              >
+              <div key={i} className="overflow-hidden rounded-xl border border-border bg-card/20">
                 <div className="aspect-[16/10] animate-pulse border-b border-border bg-muted/40" />
                 <div className="space-y-2 p-3.5">
                   <div className="h-3 w-1/2 animate-pulse rounded bg-muted/40" />

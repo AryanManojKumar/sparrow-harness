@@ -57,7 +57,14 @@ export function SourceCard({
         href={source.url}
         target="_blank"
         rel="noreferrer"
-        onClick={onClickOverride ? (e) => { e.preventDefault(); onClickOverride(); } : undefined}
+        onClick={
+          onClickOverride
+            ? (e) => {
+                e.preventDefault();
+                onClickOverride();
+              }
+            : undefined
+        }
         className={shell}
       >
         {body}

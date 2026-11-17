@@ -3,6 +3,17 @@
 > This document is **context, not a task list**. It exists so a new session understands the
 > architecture and the decisions behind it without re-explaining. Nothing here is an
 > instruction to start building.
+>
+> **Setup, running and deployment live in `RUNNING.md`.** In short: four processes
+> (frontend :3000, office :8000, gateway :8001, workshop :8100); the workshop needs Linux
+> (`bwrap`), so on a Mac the three backend processes run in an OrbStack Ubuntu VM.
+>
+> **Frontend work follows `frontend/AGENTS.md`** (the rulebook every AI tool reads; Claude
+> gets it via `frontend/CLAUDE.md`). It is enforced at commit time: the git hook in
+> `.githooks/` runs `pnpm check:changed` on the staged frontend files (never `--no-verify`),
+> and `pnpm perf` holds Lighthouse ≥ 98 mobile and desktop with layout shift 0 (`/build`
+> mobile is temporarily 97 — see Known gaps there). **Checks run only when committing, only
+> if `frontend/` changed, and only on the changed files** — never after each edit.
 
 **Status:** built and running. Backend, frontend, and a full pipeline that takes a
 sentence to an exported site. Several projects built end to end.

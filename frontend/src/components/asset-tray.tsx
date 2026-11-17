@@ -132,9 +132,7 @@ export function AssetTray({
 
       <div
         className={cn(
-          compact
-            ? "flex flex-col gap-1.5"
-            : "grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-4"
+          compact ? "flex flex-col gap-1.5" : "grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-4"
         )}
       >
         {rows.map((r) => (

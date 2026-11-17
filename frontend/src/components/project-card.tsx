@@ -157,7 +157,13 @@ export function ProjectCard({ project }: { project: ProjectSummary }) {
               ) : (
                 <CircleDashed className="size-5" />
               )}
-              <p className={cn("text-xs", needsYou && "text-amber-300/90", isRunning && "text-indigo-200/90")}>
+              <p
+                className={cn(
+                  "text-xs",
+                  needsYou && "text-amber-300/90",
+                  isRunning && "text-indigo-200/90"
+                )}
+              >
                 {isRunning
                   ? `Running · ${stageLabel(stage).toLowerCase()}`
                   : needsYou
@@ -191,9 +197,7 @@ export function ProjectCard({ project }: { project: ProjectSummary }) {
           >
             {title}
           </a>
-          <p className="mt-0.5 truncate text-xs text-muted-foreground">
-            {category || "—"}
-          </p>
+          <p className="mt-0.5 truncate text-xs text-muted-foreground">{category || "—"}</p>
           <div className="mt-2 flex items-center gap-2 text-xs">
             <span
               className={cn(
@@ -211,11 +215,15 @@ export function ProjectCard({ project }: { project: ProjectSummary }) {
                 <span className="inline-flex items-center gap-1">
                   <Loader2 className="size-3 animate-spin" /> Running
                 </span>
-              ) : needsYou ? "Needs you" : isDone ? (
+              ) : needsYou ? (
+                "Needs you"
+              ) : isDone ? (
                 <span className="inline-flex items-center gap-1">
                   <Check className="size-3" /> Done
                 </span>
-              ) : stageLabel(stage)}
+              ) : (
+                stageLabel(stage)
+              )}
             </span>
             {sections > 0 && (
               <span className="text-muted-foreground">

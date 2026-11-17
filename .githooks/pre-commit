@@ -1,0 +1,15 @@
+#!/bin/sh
+# Frontend gate. Applies to every commit, whoever or whatever wrote it — a
+# person, Claude, Codex, Cursor. Enabled by `pnpm install` in frontend/
+# (the `prepare` script sets core.hooksPath to .githooks).
+#
+# Backend-only commit: nothing runs. Otherwise it checks only the staged
+# frontend files (scripts/check-changed.mjs). Rules: frontend/AGENTS.md.
+
+if git diff --cached --name-only | grep -q '^frontend/'; then
+  if ! (cd frontend && pnpm -s check:changed --staged); then
+    echo ""
+    echo "pre-commit: frontend check FAILED — fix it, do not bypass with --no-verify."
+    exit 1
+  fi
+fi

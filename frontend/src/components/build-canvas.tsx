@@ -217,12 +217,7 @@ export function BuildCanvas({
             {/* The imagery, from the moment it is decided. During the assets
                 stage this is the thing actually happening, and it is what
                 the user was asked about one gate ago. */}
-            <AssetTray
-              plan={assetPlan}
-              made={madeAssets}
-              events={events}
-              projectId={projectId}
-            />
+            <AssetTray plan={assetPlan} made={madeAssets} events={events} projectId={projectId} />
           </div>
         )}
       </div>

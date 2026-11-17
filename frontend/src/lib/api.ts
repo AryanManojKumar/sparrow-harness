@@ -70,7 +70,8 @@ export function createProject(input: {
   }).then((r) => asJson(r, "create project"));
 }
 
-export type RunEventKind = "started" | "progress" | "blocked" | "awaiting" | "done" | "failed" | "stopped";
+export type RunEventKind =
+  "started" | "progress" | "blocked" | "awaiting" | "done" | "failed" | "stopped";
 
 export type RunEvent = {
   stage: string;
@@ -346,8 +347,11 @@ export function thumbUrl(projectId: string): string {
 }
 
 /** One section's capture from the last verify pass. */
-export function sectionShotUrl(projectId: string, index: number,
-                               device: "desktop" | "mobile" = "desktop"): string {
+export function sectionShotUrl(
+  projectId: string,
+  index: number,
+  device: "desktop" | "mobile" = "desktop"
+): string {
   const n = String(index).padStart(2, "0");
   return `${API_URL}/projects/${projectId}/shots/sections/${device}-s${n}.png`;
 }
@@ -517,7 +521,9 @@ export async function studioTurn(
     let detail = body;
     try {
       detail = JSON.parse(body).detail ?? body;
-    } catch {}
+    } catch {
+      // not JSON (a proxy's HTML error page): the raw body is the detail
+    }
     throw new Error(String(detail).slice(0, 300) || `studio failed (${res.status})`);
   }
   return readEvents<StudioEvent>(res, "studio", onEvent);

@@ -2,16 +2,10 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { AnimatePresence, motion } from "motion/react";
 import { ArrowUp, Loader2, Mic } from "lucide-react";
 
 import { cn } from "@/lib/utils";
-import {
-  hasPlaceholder,
-  nextPlaceholder,
-  suggest,
-  type Suggestion,
-} from "@/lib/suggest";
+import { hasPlaceholder, nextPlaceholder, suggest, type Suggestion } from "@/lib/suggest";
 import { slugify } from "@/lib/api";
 import { extractUrls, isHttpUrl } from "@/lib/urls";
 import { SparrowMark } from "@/components/sparrow-mark";
@@ -78,6 +72,7 @@ export function PromptConsole() {
     }
 
     if (value.trim().length < MIN_CHARS) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- known debt, AGENTS.md › Known gaps
       setSuggestions([]);
       setHint(null);
       setActiveIndex(-1);
@@ -128,9 +123,7 @@ export function PromptConsole() {
 
   /** Pull any URL in the prompt into the reference list, minus dismissed ones. */
   function absorbUrls(text: string) {
-    const found = extractUrls(text).filter(
-      (u) => !dismissedRef.current.has(u.toLowerCase())
-    );
+    const found = extractUrls(text).filter((u) => !dismissedRef.current.has(u.toLowerCase()));
     if (found.length === 0) return;
     setUrls((prev) => {
       const existing = new Set(prev.map((u) => u.trim().toLowerCase()));
@@ -244,19 +237,19 @@ export function PromptConsole() {
       {/* Reserved zone above the box — fixed height so nothing below jumps
           when the sparrow leaves. */}
       <div className="mb-6 flex h-16 items-end justify-center">
-        <AnimatePresence>
-          {!hasTyped && (
-            <motion.div
-              key="sparrow"
-              initial={{ opacity: 0, y: 6 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -8 }}
-              transition={{ duration: 0.18, ease: "easeOut" }}
-            >
-              <SparrowMark className="size-11" />
-            </motion.div>
+        {/* CSS, not `motion`: this fade was the only use of the library in
+            the console, and shipping it cost the home page its mobile LCP
+            (Lighthouse charges every script downloaded before the headline
+            paints). Same 180 ms in, same lift on the way out. */}
+        <div
+          aria-hidden={hasTyped}
+          className={cn(
+            "mark-in transition-[opacity,transform] duration-200 ease-out motion-reduce:transition-none",
+            hasTyped && "pointer-events-none -translate-y-2 opacity-0"
           )}
-        </AnimatePresence>
+        >
+          <SparrowMark className="size-11" />
+        </div>
       </div>
 
       <h1 className="mb-8 text-center text-3xl font-medium tracking-tight text-foreground sm:text-4xl">
@@ -324,11 +317,7 @@ export function PromptConsole() {
             {/* What the brief is still missing — the backend picks the gap
                 (offering / audience / specifics / purpose) these completions
                 were aimed at, so the user can see why it is asking. */}
-            {hint && (
-              <p className="mt-3 px-3 text-xs font-medium text-muted-foreground">
-                {hint}
-              </p>
-            )}
+            {hint && <p className="mt-3 px-3 text-xs font-medium text-muted-foreground">{hint}</p>}
             <ul className="mt-2 flex flex-col gap-1">
               {suggestions.map((s, i) => (
                 <li key={s.id}>
@@ -339,7 +328,9 @@ export function PromptConsole() {
                     onMouseEnter={() => setActiveIndex(i)}
                     className={cn(
                       "group/row flex w-full items-baseline gap-2 rounded-lg px-3 py-2 text-left text-sm transition-colors",
-                      i === activeIndex ? "bg-muted text-foreground" : "text-muted-foreground hover:bg-muted/60"
+                      i === activeIndex
+                        ? "bg-muted text-foreground"
+                        : "text-muted-foreground hover:bg-muted/60"
                     )}
                   >
                     {/* Truncated by default; hovering the row reveals the

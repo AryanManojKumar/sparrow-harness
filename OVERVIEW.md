@@ -1,6 +1,7 @@
 # Sparrow — an agent harness that builds business websites from a sentence
 
-> One-page overview. For architecture rationale see `CLAUDE.md`; for the API see `backend/API.md`.
+> One-page overview. For architecture rationale see `CLAUDE.md`; for the API see `backend/API.md`;
+> to set it up, run it (including on a Mac) and deploy a demo, see `RUNNING.md`.
 > Numbers below are measured from `logs/sparrow.jsonl` across ~20 real runs, not estimated.
 
 ## What it does
