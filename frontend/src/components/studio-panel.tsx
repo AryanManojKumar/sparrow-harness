@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { startTransition, useEffect, useRef, useState } from "react";
 import {
   AlertTriangle,
   ArrowUp,
@@ -36,7 +36,6 @@ import {
   type StudioEvent,
   type StudioSuggestion,
 } from "@/lib/api";
-import { SparrowMark } from "@/components/sparrow-mark";
 import { pageName, type PickedElement } from "@/components/preview-pane";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -111,13 +110,18 @@ function apply(t: Turn, e: StudioEvent): Turn {
     case "tool":
       return {
         ...t,
-        log: [...t.log, { type: "tool", id: e.id, tool: e.tool, target: e.target, detail: e.detail }],
+        log: [
+          ...t.log,
+          { type: "tool", id: e.id, tool: e.tool, target: e.target, detail: e.detail },
+        ],
       };
     case "tool_result":
       return {
         ...t,
         log: t.log.map((x) =>
-          x.type === "tool" && x.id === e.id ? { ...x, result: { ok: e.ok, summary: e.summary } } : x
+          x.type === "tool" && x.id === e.id
+            ? { ...x, result: { ok: e.ok, summary: e.summary } }
+            : x
         ),
       };
     case "todos":
@@ -132,6 +136,7 @@ function ActivityLog({ turn, now }: { turn: Turn; now: number }) {
   const [open, setOpen] = useState(true);
   // Fold away once the change has landed; the reply is what matters then.
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- known debt, AGENTS.md › Known gaps
     if (!running) setOpen(false);
   }, [running]);
   const steps = turn.log.filter((x) => x.type === "tool").length;
@@ -170,7 +175,9 @@ function ActivityLog({ turn, now }: { turn: Turn; now: number }) {
                     td.status === "pending" && "text-muted-foreground"
                   )}
                 >
-                  <span>{td.status === "completed" ? "☒" : td.status === "in_progress" ? "◐" : "☐"}</span>
+                  <span>
+                    {td.status === "completed" ? "☒" : td.status === "in_progress" ? "◐" : "☐"}
+                  </span>
                   <span className="whitespace-normal">{td.content}</span>
                 </div>
               ))}
@@ -252,11 +259,36 @@ const KIND_ICON: Record<StudioSuggestion["kind"], LucideIcon> = {
 // What the studio can do, as starting points. Each one begins a sentence in
 // the composer for the owner to finish — the request stays theirs.
 const CAPABILITIES: { icon: LucideIcon; label: string; hint: string; starter: string }[] = [
-  { icon: FilePlus2, label: "Add a page", hint: "Pricing, about, careers…", starter: "Add a new page for " },
-  { icon: Type, label: "Edit text", hint: "Headlines, sections, buttons", starter: "Change the text " },
-  { icon: Palette, label: "Change the look", hint: "Colours, spacing, layout", starter: "Change the look of " },
-  { icon: LayoutTemplate, label: "Add a section", hint: "FAQ, comparison, steps", starter: "Add a section to the home page that " },
-  { icon: Wand2, label: "Add motion", hint: "Animation, interaction", starter: "Add an animation to " },
+  {
+    icon: FilePlus2,
+    label: "Add a page",
+    hint: "Pricing, about, careers…",
+    starter: "Add a new page for ",
+  },
+  {
+    icon: Type,
+    label: "Edit text",
+    hint: "Headlines, sections, buttons",
+    starter: "Change the text ",
+  },
+  {
+    icon: Palette,
+    label: "Change the look",
+    hint: "Colours, spacing, layout",
+    starter: "Change the look of ",
+  },
+  {
+    icon: LayoutTemplate,
+    label: "Add a section",
+    hint: "FAQ, comparison, steps",
+    starter: "Add a section to the home page that ",
+  },
+  {
+    icon: Wand2,
+    label: "Add motion",
+    hint: "Animation, interaction",
+    starter: "Add an animation to ",
+  },
   { icon: Wrench, label: "Fix something", hint: "Anything that looks off", starter: "Fix " },
 ];
 
@@ -264,7 +296,10 @@ const CAPABILITIES: { icon: LucideIcon; label: string; hint: string; starter: st
 function pageOf(file: string): { path: string; label: string } {
   const page = file.match(/^src\/app\/(?:(.+)\/)?page\.\w+$/);
   if (page) {
-    const seg = (page[1] ?? "").split("/").filter((p) => !p.startsWith("(")).join("/");
+    const seg = (page[1] ?? "")
+      .split("/")
+      .filter((p) => !p.startsWith("("))
+      .join("/");
     const path = seg ? `/${seg}/` : "/";
     return { path, label: `${pageName(path)} page` };
   }
@@ -293,7 +328,7 @@ function attachmentContext(items: PickedElement[]): string {
     return `${i + 1}. On the ${pageName(el.page)} page (${el.page}), ${what} — in ${el.block}.\n   Markup: ${el.html}`;
   });
   return (
-    "\n\n---\nThe owner selected these elements in the preview. \"This\", \"here\" and \"it\" " +
+    '\n\n---\nThe owner selected these elements in the preview. "This", "here" and "it" ' +
     "refer to them. Find each in the source by its text or markup before changing it.\n" +
     rows.join("\n")
   );
@@ -369,7 +404,9 @@ function HistoryView({
       <div className="mb-3 flex items-center justify-between">
         <div>
           <p className="text-sm font-medium text-foreground">Version history</p>
-          <p className="text-xs text-muted-foreground">Every change is kept. Going back is a change too.</p>
+          <p className="text-xs text-muted-foreground">
+            Every change is kept. Going back is a change too.
+          </p>
         </div>
         <Button variant="ghost" size="icon" onClick={onClose} aria-label="Close history">
           <X className="size-4" />
@@ -384,7 +421,9 @@ function HistoryView({
         </div>
       )}
       {rows && rows.length === 0 && (
-        <p className="text-sm text-muted-foreground">No changes yet — the first one will appear here.</p>
+        <p className="text-sm text-muted-foreground">
+          No changes yet — the first one will appear here.
+        </p>
       )}
       <ol className="relative flex flex-col gap-2 border-l border-border pl-4">
         {rows?.map((c, i) => {
@@ -417,7 +456,11 @@ function HistoryView({
                       onClick={() => restore(c.id)}
                       className="flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground disabled:opacity-50"
                     >
-                      {busy === c.id ? <Loader2 className="size-3 animate-spin" /> : <RotateCcw className="size-3" />}
+                      {busy === c.id ? (
+                        <Loader2 className="size-3 animate-spin" />
+                      ) : (
+                        <RotateCcw className="size-3" />
+                      )}
                       Go back to this
                     </button>
                   )}
@@ -474,11 +517,15 @@ export function StudioPanel({
   function loadSuggestions() {
     setSuggestError(false);
     getStudioSuggestions(projectId)
-      .then((ideas) => {
-        setSuggestions(ideas.suggestions);
-        setComplete(ideas.complete);
-        setBrokenLinks(ideas.broken_links ?? 0);
-      })
+      // A transition: background data, and as an urgent update it rendered
+      // the panel's whole idea list in one block while the page was opening.
+      .then((ideas) =>
+        startTransition(() => {
+          setSuggestions(ideas.suggestions);
+          setComplete(ideas.complete);
+          setBrokenLinks(ideas.broken_links ?? 0);
+        })
+      )
       .catch(() => setSuggestError(true));
   }
 
@@ -568,7 +615,8 @@ export function StudioPanel({
         patchLast((t) => ({
           ...t,
           state: "error",
-          reply: "The connection closed before the change finished. It may still land — check the history.",
+          reply:
+            "The connection closed before the change finished. It may still land — check the history.",
         }));
       }
     } catch (err) {
@@ -640,7 +688,10 @@ export function StudioPanel({
         </div>
         <p className="mb-2 text-xs text-muted-foreground">
           Every page this site should have, built in its design, linked from the nav and footer
-          {brokenLinks > 0 ? ` — and the ${brokenLinks} link${brokenLinks === 1 ? "" : "s"} that go nowhere today fixed` : ""}.
+          {brokenLinks > 0
+            ? ` — and the ${brokenLinks} link${brokenLinks === 1 ? "" : "s"} that go nowhere today fixed`
+            : ""}
+          .
         </p>
         <p className="line-clamp-2 text-[11.5px] text-foreground/70">{complete.prompt}</p>
       </div>
@@ -650,9 +701,8 @@ export function StudioPanel({
   return (
     <div className="flex h-full flex-col">
       <div className="flex items-center justify-between border-b border-border px-4 py-2.5">
+        {/* The site's name is on the workspace tab directly above. */}
         <div className="flex min-w-0 items-center gap-2">
-          <SparrowMark className="size-4 shrink-0" />
-          <span className="truncate text-sm font-medium text-foreground">{title}</span>
           <span className="flex shrink-0 items-center gap-1 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[10.5px] font-medium text-emerald-400">
             <span className="size-1.5 rounded-full bg-emerald-400" /> Studio
           </span>
@@ -693,8 +743,7 @@ export function StudioPanel({
                 Ask for anything on the site. Each change is built, checked on the page, and can be
                 undone.
               </p>
-              {completeCard}
-              <div className="grid grid-cols-2 gap-2">
+              <div className="mb-3 grid grid-cols-2 gap-2">
                 {CAPABILITIES.map(({ icon: Icon, label, hint, starter }) => (
                   <button
                     key={label}
@@ -742,7 +791,9 @@ export function StudioPanel({
                           <Check className="size-3.5 text-emerald-400" />
                           <span className="text-emerald-400">Changed</span>
                           {t.seconds !== undefined && (
-                            <span className="font-normal text-muted-foreground">· {t.seconds}s</span>
+                            <span className="font-normal text-muted-foreground">
+                              · {t.seconds}s
+                            </span>
                           )}
                         </>
                       ) : t.state === "done" ? (
@@ -759,7 +810,9 @@ export function StudioPanel({
                         </>
                       )}
                     </div>
-                    <p className="whitespace-pre-line text-foreground">{t.reply.replace(/`/g, "")}</p>
+                    <p className="whitespace-pre-line text-foreground">
+                      {t.reply.replace(/`/g, "")}
+                    </p>
                     {(places.length > 0 || isLastKept) && (
                       <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
                         {places.map((p) => (
@@ -792,7 +845,8 @@ export function StudioPanel({
           {planned && (
             <div className="mb-4 rounded-xl border border-primary/40 bg-primary/5 p-3.5">
               <p className="mb-1.5 flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-                <Lightbulb className="size-3.5 text-primary" /> {planned.label} · here is what I&apos;ll do
+                <Lightbulb className="size-3.5 text-primary" /> {planned.label} · here is what
+                I&apos;ll do
               </p>
               <Textarea
                 value={draft}
@@ -820,7 +874,6 @@ export function StudioPanel({
 
           {!planned && (
             <div>
-              {!fresh && completeCard}
               <p className="mb-2 flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
                 <Lightbulb className="size-3.5" /> Ideas for {title}
               </p>
@@ -832,7 +885,11 @@ export function StudioPanel({
                 </div>
               )}
               {suggestError && (
-                <button type="button" onClick={loadSuggestions} className="text-xs text-muted-foreground underline">
+                <button
+                  type="button"
+                  onClick={loadSuggestions}
+                  className="text-xs text-muted-foreground underline"
+                >
                   Couldn&apos;t load ideas — retry
                 </button>
               )}
@@ -855,14 +912,22 @@ export function StudioPanel({
                           <Icon className="size-3.5" />
                         </span>
                         <span className="min-w-0">
-                          <span className="block text-[13px] font-medium text-foreground">{s.label}</span>
-                          <span className="line-clamp-2 text-[11.5px] text-muted-foreground">{s.prompt}</span>
+                          <span className="block text-[13px] font-medium text-foreground">
+                            {s.label}
+                          </span>
+                          <span className="line-clamp-2 text-[11.5px] text-muted-foreground">
+                            {s.prompt}
+                          </span>
                         </span>
                       </button>
                     );
                   })}
                 </div>
               )}
+              {/* Last: it arrives with the ideas fetch, after first paint, and
+                  anywhere above the ideas it pushed them down — a measured
+                  layout shift. Down here nothing follows it. */}
+              {completeCard && <div className="mt-3">{completeCard}</div>}
             </div>
           )}
         </div>
@@ -921,12 +986,22 @@ export function StudioPanel({
             disabled={busy || Boolean(planned)}
             className="text-sm"
           />
-          <Button type="submit" size="icon" disabled={busy || !draft.trim() || Boolean(planned)} aria-label="Send">
-            {busy ? <Loader2 className="size-3.5 animate-spin" /> : <ArrowUp className="size-3.5" />}
+          <Button
+            type="submit"
+            size="icon"
+            disabled={busy || !draft.trim() || Boolean(planned)}
+            aria-label="Send"
+          >
+            {busy ? (
+              <Loader2 className="size-3.5 animate-spin" />
+            ) : (
+              <ArrowUp className="size-3.5" />
+            )}
           </Button>
         </div>
         <p className="mt-1.5 flex items-center gap-1 text-[11px] text-muted-foreground">
-          <Clock className="size-3" /> Usually 1–3 minutes · Enter to send · every change can be undone
+          <Clock className="size-3" /> Usually 1–3 minutes · Enter to send · every change can be
+          undone
         </p>
       </form>
     </div>

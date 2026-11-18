@@ -26,9 +26,9 @@ export function Favicon({ url, className }: { url: string; className?: string })
   }
 
   return (
-    // eslint-disable-next-line @next/next/no-img-element -- one small icon
-    // per source from an external favicon service; not worth next/image's
-    // remote-pattern config for a fallback-prone, per-value icon.
+    // One small icon per source from an external favicon service; not worth
+    // next/image's remote-pattern config for a fallback-prone, per-value icon.
+    // eslint-disable-next-line @next/next/no-img-element -- see above
     <img
       src={`https://www.google.com/s2/favicons?sz=64&domain=${encodeURIComponent(host)}`}
       alt=""

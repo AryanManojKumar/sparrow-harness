@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { startTransition, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 
 import {
@@ -26,26 +26,30 @@ import {
   type Section,
   type GateAnswer,
 } from "@/lib/api";
-import { BuildCanvas } from "@/components/build-canvas";
 import { BuildFeed } from "@/components/build-feed";
-import { PreviewPane, type PickedElement } from "@/components/preview-pane";
-import { GatePanel } from "@/components/gate-panel";
-import { StudioPanel } from "@/components/studio-panel";
+import type { PickedElement } from "@/components/preview-pane";
+// Lazy: each project needs at most two of these, and loading all four up
+// front cost /build its mobile score (see lazy-panels.tsx).
+import { BuildCanvas, GatePanel, PreviewPane, StudioPanel } from "@/components/lazy-panels";
+import { WorkspaceFrame, WorkspaceShell } from "@/components/workspace-frame";
+import { WorkspaceTabs, type TabStatus } from "@/components/workspace-tabs";
 
 type StoredPayload = { prompt: string; urls: string[] };
+
+/**
+ * Wraps a state setter for data that arrives in the background (a plan, an
+ * asset list, the site's pages). As urgent updates each re-rendered the whole
+ * workspace in one block — measured at 84 ms on Lighthouse's mobile CPU when
+ * a project opens; as transitions React renders them in slices.
+ */
+function inTransition<T>(set: (v: T) => void): (v: T) => void {
+  return (v) => startTransition(() => set(v));
+}
 
 // "paused" is a resumed project that is NOT blocked on a human: the run
 // simply stopped part-way. It must never advance on its own — advancing is
 // billable, so it takes an explicit click.
-type Phase =
-  | "loading"
-  | "interview"
-  | "create"
-  | "run"
-  | "gate"
-  | "paused"
-  | "done"
-  | "error";
+type Phase = "loading" | "interview" | "create" | "run" | "gate" | "paused" | "done" | "error";
 
 const CHAT_MIN = 340;
 const CHAT_MAX = 760;
@@ -94,9 +98,27 @@ export function BuildWorkspace() {
   const [sitePages, setSitePages] = useState<string[]>([]);
   // Elements the owner clicked in the preview, attached to the next message.
   const [picked, setPicked] = useState<PickedElement[]>([]);
-  // The studio column's width, dragged by the owner and remembered.
-  const [chatWidth, setChatWidth] = useState(420);
-  const dragging = useRef(false);
+  // The chat column. Its width lives in the CSS variable `--chat-w` (see
+  // workspace-frame.tsx), so dragging never re-renders; only whether it is
+  // open, and whether a drag is in progress, are state.
+  const [chatOpen, setChatOpen] = useState(true);
+  const [resizing, setResizing] = useState(false);
+  const chatRef = useRef<HTMLElement>(null);
+  const dragLeft = useRef(0);
+  // Phones show one pane at a time. Read once on mount (this component only
+  // renders in the browser), kept current by a listener below.
+  const [narrow, setNarrow] = useState(
+    () => typeof window !== "undefined" && window.matchMedia("(max-width: 767px)").matches
+  );
+  const [mobileView, setMobileView] = useState<"chat" | "preview">("chat");
+  // False for the first commit, which draws only the shell (the same boxes
+  // the server sent). The full workspace then renders as a transition, which
+  // React slices; rendered in that first commit it was one 172 ms block on
+  // Lighthouse's mobile CPU, the main thing holding /build under 98.
+  const [hydrated, setHydrated] = useState(false);
+  useEffect(() => {
+    startTransition(() => setHydrated(true));
+  }, []);
 
   // One leg of the run: from wherever it's paused to the next gate, the end,
   // or a failure. Re-entered after every gate answer, so the same function
@@ -121,7 +143,7 @@ export function BuildWorkspace() {
         // there is a page plan to draw. Fetched once, here, rather than
         // polled — the canvas needs it for the rest of the run.
         if (evt.stage === "compose" && evt.kind === "done") {
-          getSections(projectId).then(setSections);
+          getSections(projectId).then(inTransition(setSections));
         }
         // The plan is fixed the moment the assets stage starts (the gate
         // before it is what wrote the decisions), and the blackboard's
@@ -129,7 +151,7 @@ export function BuildWorkspace() {
         // moment it becomes true; `AssetTray` animates the gap between them
         // off the events themselves.
         if (evt.stage === "assets" && evt.kind === "started") {
-          getAssetPlan(projectId).then(setAssetPlan);
+          getAssetPlan(projectId).then(inTransition(setAssetPlan));
         }
         // Every assets-stage event, not only the last one: the stage
         // checkpoints the blackboard after each asset, so each "{id}
@@ -137,7 +159,7 @@ export function BuildWorkspace() {
         // small GET per asset is what lets the picture appear in the tray
         // the moment it exists, rather than when the whole batch is done.
         if (evt.stage === "assets") {
-          getMadeAssets(projectId).then(setMadeAssets);
+          getMadeAssets(projectId).then(inTransition(setMadeAssets));
         }
         // The static export exists as soon as BUILD finishes — well before
         // the VERIFY/GATE_PREVIEW that follows it.
@@ -217,12 +239,13 @@ export function BuildWorkspace() {
     setDirections(null);
     // Answering the asset gate is what writes the decisions, so this is the
     // first moment the plan is worth drawing — before the stage even starts.
-    if (gate?.gate === "gate:assets") getAssetPlan(id).then(setAssetPlan);
+    if (gate?.gate === "gate:assets") getAssetPlan(id).then(inTransition(setAssetPlan));
     await runLeg(id);
   }
 
   useEffect(() => {
     if (!id) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- known debt, AGENTS.md › Known gaps
       setPhase("error");
       setErrorMessage("No project to run — start from the home screen.");
       return;
@@ -245,25 +268,31 @@ export function BuildWorkspace() {
       (async () => {
         try {
           const detail = await getProject(id);
-          setSpent(detail.spent ?? 0);
-          // A resumed project is usually past compose, so the plan is
-          // already on the blackboard — draw it immediately rather than
-          // waiting for an event that will not come again.
-          setSections(
-            (detail.blackboard?.sections ?? []).slice().sort((a, b) => a.order - b.order)
-          );
-          setMadeAssets(detail.blackboard?.assets ?? []);
-          getAssetPlan(id).then(setAssetPlan);
-          if (resumeHasPreview) setPreviewReady(true);
-          setStoppedStage(detail.stage ?? null);
-          setInStudio(Boolean(detail.in_studio));
-          if (!payload) {
-            const b = detail.blackboard?.brief;
-            setStored({
-              prompt: b?.product_name?.trim() || b?.offering || id,
-              urls: [],
-            });
-          }
+          // A transition: this one update mounts most of the workspace (the
+          // studio, the preview, the plan), and as a plain update React did
+          // it in a single 240 ms block on a mid-range phone. As a transition
+          // it renders in slices and the page stays responsive throughout.
+          startTransition(() => {
+            setSpent(detail.spent ?? 0);
+            // A resumed project is usually past compose, so the plan is
+            // already on the blackboard — draw it immediately rather than
+            // waiting for an event that will not come again.
+            setSections(
+              (detail.blackboard?.sections ?? []).slice().sort((a, b) => a.order - b.order)
+            );
+            setMadeAssets(detail.blackboard?.assets ?? []);
+            if (resumeHasPreview) setPreviewReady(true);
+            setStoppedStage(detail.stage ?? null);
+            setInStudio(Boolean(detail.in_studio));
+            if (!payload) {
+              const b = detail.blackboard?.brief;
+              setStored({
+                prompt: b?.product_name?.trim() || b?.offering || id,
+                urls: [],
+              });
+            }
+          });
+          getAssetPlan(id).then(inTransition(setAssetPlan));
           // Executing right now, on the server. Follow it — this costs
           // nothing and is the whole difference between a live console and
           // one that says "Stopped at sources" over a run extracting
@@ -279,13 +308,15 @@ export function BuildWorkspace() {
             if (g.gate === "gate:design") {
               setDirections(await getDirections(id).catch(() => null));
             }
-            setPhase("gate");
+            startTransition(() => setPhase("gate"));
             return;
           }
           // Not blocked on anyone — the run just stopped. Opening a project
           // must not restart it: /advance costs real model calls, and doing
           // that as a side effect of a click is how spend happens unasked.
-          setPhase("paused");
+          // A transition for the same reason as above: this is the update
+          // that mounts the studio panel.
+          startTransition(() => setPhase("paused"));
         } catch (e) {
           setPhase("error");
           setErrorMessage(e instanceof Error ? e.message : String(e));
@@ -368,31 +399,58 @@ export function BuildWorkspace() {
         previewReady &&
         ["verify", "gate:preview", "done"].includes(stoppedStage ?? "")));
 
-  useEffect(() => {
-    const saved = Number(localStorage.getItem("sparrow:chat-width"));
-    if (saved >= CHAT_MIN && saved <= CHAT_MAX) setChatWidth(saved);
+  // The saved width, applied in a layout effect: after the DOM exists but
+  // before the workspace paints, so the column never visibly jumps to it.
+  useLayoutEffect(() => {
+    try {
+      const saved = Number(localStorage.getItem("sparrow:chat-width"));
+      if (saved >= CHAT_MIN && saved <= CHAT_MAX) setChatWidthVar(saved);
+    } catch {
+      // storage blocked (private mode): the default width is fine
+    }
   }, []);
 
+  useEffect(() => {
+    const mq = window.matchMedia("(max-width: 767px)");
+    const on = () => setNarrow(mq.matches);
+    mq.addEventListener("change", on);
+    return () => mq.removeEventListener("change", on);
+  }, []);
+
+  function setChatWidthVar(w: number) {
+    document.documentElement.style.setProperty("--chat-w", `${Math.round(w)}px`);
+  }
+  function currentChatWidth(): number {
+    return chatRef.current?.getBoundingClientRect().width ?? 420;
+  }
+
   function startResize(e: React.PointerEvent<HTMLDivElement>) {
-    dragging.current = true;
+    dragLeft.current = chatRef.current?.getBoundingClientRect().left ?? 0;
+    setResizing(true);
     // Captured, so the drag keeps working while the pointer is over the
     // preview iframe, which would otherwise swallow every move event.
     e.currentTarget.setPointerCapture(e.pointerId);
   }
   function onResize(e: React.PointerEvent<HTMLDivElement>) {
-    if (!dragging.current) return;
-    const w = Math.min(CHAT_MAX, Math.max(CHAT_MIN, window.innerWidth - e.clientX));
-    setChatWidth(w);
+    if (!resizing) return;
+    setChatWidthVar(Math.min(CHAT_MAX, Math.max(CHAT_MIN, e.clientX - dragLeft.current)));
   }
   function endResize(e: React.PointerEvent<HTMLDivElement>) {
-    if (!dragging.current) return;
-    dragging.current = false;
+    if (!resizing) return;
+    setResizing(false);
     e.currentTarget.releasePointerCapture(e.pointerId);
-    localStorage.setItem("sparrow:chat-width", String(Math.round(chatWidth)));
+    try {
+      localStorage.setItem("sparrow:chat-width", String(Math.round(currentChatWidth())));
+    } catch {
+      // storage blocked: the width just isn't remembered
+    }
   }
 
   function refreshPages() {
-    if (id) getSitePages(id).then(setSitePages).catch(() => {});
+    if (id)
+      getSitePages(id)
+        .then(inTransition(setSitePages))
+        .catch(() => {});
   }
 
   useEffect(() => {
@@ -416,63 +474,38 @@ export function BuildWorkspace() {
     verify: "Checking the built page",
   };
 
-  return (
-    // In the studio the conversation sits on the right, beside the site it is
-    // changing; while a run is building, the feed keeps the left column.
-    <div
-      className={`relative grid h-screen grid-cols-1 overflow-hidden ${studioActive ? "" : "md:grid-cols-[380px_1fr]"}`}
-      style={studioActive ? { gridTemplateColumns: `minmax(0, 1fr) ${chatWidth}px` } : undefined}
-    >
-      {phase === "run" && id ? (
-        <button
-          type="button"
-          onClick={() => stopRun(id).catch(() => {})}
-          className="absolute bottom-4 right-4 z-20 rounded-md border border-border bg-card px-3 py-1.5 text-sm text-foreground shadow-sm hover:bg-muted"
-          title="Stops at the run's next step; Resume continues from the same stage"
-        >
-          Stop run
-        </button>
-      ) : null}
-      <div
-        className={`relative min-h-0 overflow-hidden bg-card/30 ${
-          studioActive ? "border-l border-border md:order-2" : "border-r border-border"
-        }`}
-      >
-        {studioActive && (
-          <div
-            role="separator"
-            aria-orientation="vertical"
-            aria-label="Resize chat"
-            onPointerDown={startResize}
-            onPointerMove={onResize}
-            onPointerUp={endResize}
-            onDoubleClick={() => {
-              setChatWidth(420);
-              localStorage.setItem("sparrow:chat-width", "420");
-            }}
-            title="Drag to resize · double-click to reset"
-            className="group absolute inset-y-0 left-0 z-30 w-2 cursor-col-resize"
-          >
-            <div className="h-full w-0.5 bg-transparent transition-colors group-hover:bg-primary/60 group-active:bg-primary" />
-          </div>
-        )}
-        {studioActive && !showBuildLog ? (
-          <StudioPanel
-            attachments={picked}
-            onRemoveAttachment={(pid) => setPicked((p) => p.filter((x) => x.id !== pid))}
-            onClearAttachments={() => setPicked([])}
-            projectId={id || ""}
-            title={stored?.prompt ?? "Your site"}
-            onSiteChanged={(path) => {
-              setPreviewReady(true);
-              refreshPages();
-              if (path) openPage(path);
-              else setSiteVersion((v) => v + 1);
-            }}
-            onOpenPage={openPage}
-            onShowBuildLog={() => setShowBuildLog(true)}
-          />
-        ) : (
+  const tabStatus: TabStatus =
+    phase === "error"
+      ? "error"
+      : phase === "gate"
+        ? "waiting"
+        : phase === "run" || phase === "interview" || phase === "create"
+          ? "running"
+          : studioActive || phase === "done"
+            ? "live"
+            : phase === "paused"
+              ? "paused"
+              : "loading";
+
+  const chat =
+    studioActive && !showBuildLog ? (
+      <StudioPanel
+        attachments={picked}
+        onRemoveAttachment={(pid) => setPicked((p) => p.filter((x) => x.id !== pid))}
+        onClearAttachments={() => setPicked([])}
+        projectId={id || ""}
+        title={stored?.prompt ?? "Your site"}
+        onSiteChanged={(path) => {
+          setPreviewReady(true);
+          refreshPages();
+          if (path) openPage(path);
+          else setSiteVersion((v) => v + 1);
+        }}
+        onOpenPage={openPage}
+        onShowBuildLog={() => setShowBuildLog(true)}
+      />
+    ) : (
+      <>
         <BuildFeed
           prompt={stored?.prompt ?? "…"}
           urls={stored?.urls ?? []}
@@ -489,10 +522,11 @@ export function BuildWorkspace() {
           assetPlan={assetPlan}
           madeAssets={madeAssets}
           previewReady={previewReady}
+          liveMessage={liveMessage}
+          onStop={id ? () => stopRun(id).catch(() => {}) : undefined}
           onResume={() => id && runLeg(id)}
           onAnswerGate={answerAndContinue}
         />
-        )}
         {studioActive && showBuildLog && (
           <button
             type="button"
@@ -502,50 +536,105 @@ export function BuildWorkspace() {
             Back to editing
           </button>
         )}
-      </div>
+      </>
+    );
 
-      {gateInMainPane && gate ? (
-        <div className="overflow-y-auto px-6 py-8">
-          <GatePanel
-            gate={gate}
-            directions={directions}
-            layout="wide"
-            projectId={id || ""}
-            serverError={gateError}
-            onAnswerGate={answerAndContinue}
+  // On a phone the page pane is hidden until asked for, and is not mounted
+  // either: a hidden iframe still loads the whole built site and runs its
+  // scripts on this page's main thread.
+  const showMain = !narrow || mobileView === "preview";
+
+  const main = !showMain ? null : gateInMainPane && gate ? (
+    <div className="h-full overflow-y-auto px-6 py-8">
+      <GatePanel
+        gate={gate}
+        directions={directions}
+        layout="wide"
+        projectId={id || ""}
+        serverError={gateError}
+        onAnswerGate={answerAndContinue}
+      />
+    </div>
+  ) : showCanvas ? (
+    <BuildCanvas
+      sections={sections}
+      events={events}
+      stage={liveStage}
+      headline={STAGE_HEADLINE[liveStage] ?? "Building your site"}
+      detail={liveMessage}
+      assetPlan={assetPlan}
+      madeAssets={madeAssets}
+      projectId={id || ""}
+    />
+  ) : (
+    <PreviewPane
+      version={siteVersion}
+      pages={sitePages}
+      path={previewPath}
+      navNonce={navNonce}
+      onPick={studioActive ? (el) => setPicked((p) => [...p, el].slice(-5)) : undefined}
+      ready={previewReady}
+      src={id && previewReady ? sitePreviewUrl(id) : undefined}
+      waitingLabel={
+        phase === "interview"
+          ? "Drafting the brief…"
+          : phase === "create"
+            ? "Creating the project…"
+            : phase === "error"
+              ? "Run stopped — see the chat"
+              : "Building preview…"
+      }
+    />
+  );
+
+  if (!hydrated) return <WorkspaceShell />;
+
+  return (
+    <WorkspaceFrame
+      chatRef={chatRef}
+      chatOpen={chatOpen}
+      mobileView={mobileView}
+      resizing={resizing}
+      tabs={
+        <WorkspaceTabs
+          title={stored?.prompt ?? "Opening project…"}
+          status={tabStatus}
+          spent={spent}
+          chatOpen={chatOpen}
+          onToggleChat={() => setChatOpen((o) => !o)}
+          mobileView={mobileView}
+          onMobileView={setMobileView}
+        />
+      }
+      chat={chat}
+      divider={
+        <div
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize chat"
+          onPointerDown={startResize}
+          onPointerMove={onResize}
+          onPointerUp={endResize}
+          onPointerCancel={endResize}
+          onDoubleClick={() => {
+            setChatWidthVar(420);
+            try {
+              localStorage.setItem("sparrow:chat-width", "420");
+            } catch {
+              // storage blocked: the width just isn't remembered
+            }
+          }}
+          title="Drag to resize · double-click to reset"
+          className="group flex w-2 shrink-0 cursor-col-resize touch-none justify-center max-md:hidden"
+        >
+          <div
+            className={`my-3 w-0.5 rounded-full transition-colors ${
+              resizing ? "bg-primary" : "bg-transparent group-hover:bg-primary/50"
+            }`}
           />
         </div>
-      ) : showCanvas ? (
-        <BuildCanvas
-          sections={sections}
-          events={events}
-          stage={liveStage}
-          headline={STAGE_HEADLINE[liveStage] ?? "Building your site"}
-          detail={liveMessage}
-          assetPlan={assetPlan}
-          madeAssets={madeAssets}
-          projectId={id || ""}
-        />
-      ) : (
-        <PreviewPane
-          version={siteVersion}
-          pages={sitePages}
-          path={previewPath}
-          navNonce={navNonce}
-          onPick={studioActive ? (el) => setPicked((p) => [...p, el].slice(-5)) : undefined}
-          ready={previewReady}
-          src={id && previewReady ? sitePreviewUrl(id) : undefined}
-          waitingLabel={
-            phase === "interview"
-              ? "Drafting the brief…"
-              : phase === "create"
-                ? "Creating the project…"
-                : phase === "error"
-                  ? "Run stopped — see the feed"
-                  : "Building preview…"
-          }
-        />
-      )}
-    </div>
+      }
+      main={main}
+    />
   );
 }

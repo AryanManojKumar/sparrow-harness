@@ -101,7 +101,7 @@ export function GatePanel({
   const handleMaterialGateSubmit = async () => {
     setUploadError(null);
     setUploading(true);
-    
+
     try {
       // Upload any files for assets marked as "upload"
       for (const [assetId, decision] of Object.entries(assetDecisions)) {
@@ -113,7 +113,7 @@ export function GatePanel({
           await uploadAsset(projectId, assetId, file);
         }
       }
-      
+
       // All uploads succeeded, now answer the gate
       onAnswerGate({
         assets: assetDecisions,
@@ -139,8 +139,7 @@ export function GatePanel({
         specimen: null,
       }));
 
-  const sourcesSpecimen =
-    gate.artifacts?.find((a) => a.includes("sources.png")) ?? null;
+  const sourcesSpecimen = gate.artifacts?.find((a) => a.includes("sources.png")) ?? null;
   const isBriefGate = gate.gate === "gate:brief";
   const isDesignGate = gate.gate === "gate:design";
   const isMaterialGate = gate.gate === "gate:assets";
@@ -183,9 +182,7 @@ export function GatePanel({
   return (
     <div
       className={cn(
-        wide
-          ? "mx-auto w-full max-w-5xl"
-          : "rounded-xl border border-border bg-secondary/40 p-3.5"
+        wide ? "mx-auto w-full max-w-5xl" : "rounded-xl border border-border bg-secondary/40 p-3.5"
       )}
     >
       <p
@@ -201,13 +198,11 @@ export function GatePanel({
           choice, not one of the choices. */}
       {sourcesSpecimen && (
         <div className={wide ? "mb-6" : "mb-3"}>
-          <p className="mb-1.5 text-xs font-medium text-muted-foreground">
-            Your reference sites
-          </p>
-          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <p className="mb-1.5 text-xs font-medium text-muted-foreground">Your reference sites</p>
           {/* The specimen is rendered 1800x1400 with the swatch rows in
               the top third; shown whole it buries the actual choices below
               the fold. Cap the height and crop from the top. */}
+          {/* eslint-disable-next-line @next/next/no-img-element -- an API-served specimen, not a page asset */}
           <img
             src={assetUrl(sourcesSpecimen)}
             alt="Colours measured from the reference sites"
@@ -227,13 +222,8 @@ export function GatePanel({
           </p>
           <div className="flex flex-col gap-3">
             {factOptions.map((f) => (
-              <div
-                key={f.ask_id}
-                className="rounded-lg border border-border bg-card/40 p-3"
-              >
-                <p className="mb-1.5 text-xs text-muted-foreground">
-                  {f.question}
-                </p>
+              <div key={f.ask_id} className="rounded-lg border border-border bg-card/40 p-3">
+                <p className="mb-1.5 text-xs text-muted-foreground">{f.question}</p>
                 <p className="mb-1.5 text-[11px] text-muted-foreground/70">
                   Invented: <span className="italic">{f.invented}</span>
                 </p>
@@ -289,12 +279,10 @@ export function GatePanel({
             </Button>
           </div>
           <p className="text-[11px] text-muted-foreground/80">
-            Exactly as you write it — it goes into the nav, the footer, the browser tab and
-            every screenshot, and nothing downstream may invent one.
+            Exactly as you write it — it goes into the nav, the footer, the browser tab and every
+            screenshot, and nothing downstream may invent one.
           </p>
-          {serverError && (
-            <p className="text-xs text-destructive">{serverError}</p>
-          )}
+          {serverError && <p className="text-xs text-destructive">{serverError}</p>}
         </form>
       ) : isDesignGate ? (
         <div
@@ -366,9 +354,7 @@ export function GatePanel({
                   <p className="mt-1.5 text-xs leading-relaxed text-muted-foreground">
                     {o.atmosphere}
                   </p>
-                  {o.type && (
-                    <p className="mt-auto pt-2 text-xs text-muted-foreground">{o.type}</p>
-                  )}
+                  {o.type && <p className="mt-auto pt-2 text-xs text-muted-foreground">{o.type}</p>}
                 </div>
               </button>
             );
@@ -422,7 +408,9 @@ export function GatePanel({
                         )}
                       </div>
                       {brief && (
-                        <p className="mb-2.5 text-xs leading-relaxed text-muted-foreground">{brief}</p>
+                        <p className="mb-2.5 text-xs leading-relaxed text-muted-foreground">
+                          {brief}
+                        </p>
                       )}
 
                       <div className="flex flex-col gap-2">
@@ -449,34 +437,36 @@ export function GatePanel({
                               </span>
                             </label>
 
-                            {(c.choice === "upload" || c.choice === "as_is") && current === c.choice && (
-                              <div className="ml-5 mt-2">
-                                <Input
-                                  type="file"
-                                  accept={ACCEPT[kind]}
-                                  onChange={(e) => {
-                                    const file = e.target.files?.[0];
-                                    if (file) {
-                                      setUploadedFiles({ ...uploadedFiles, [assetId]: file });
-                                    }
-                                  }}
-                                  className="text-xs"
-                                />
-                                {uploadedFiles[assetId] && (
-                                  <p className="mt-1 text-[10px] text-muted-foreground">
-                                    {uploadedFiles[assetId].name} (
-                                    {(uploadedFiles[assetId].size / 1024).toFixed(1)}KB)
+                            {(c.choice === "upload" || c.choice === "as_is") &&
+                              current === c.choice && (
+                                <div className="ml-5 mt-2">
+                                  <Input
+                                    type="file"
+                                    accept={ACCEPT[kind]}
+                                    onChange={(e) => {
+                                      const file = e.target.files?.[0];
+                                      if (file) {
+                                        setUploadedFiles({ ...uploadedFiles, [assetId]: file });
+                                      }
+                                    }}
+                                    className="text-xs"
+                                  />
+                                  {uploadedFiles[assetId] && (
+                                    <p className="mt-1 text-[10px] text-muted-foreground">
+                                      {uploadedFiles[assetId].name} (
+                                      {(uploadedFiles[assetId].size / 1024).toFixed(1)}KB)
+                                    </p>
+                                  )}
+                                  <p className="mt-1 text-[10px] text-muted-foreground/70">
+                                    {c.accepts ?? "PNG, JPEG or WebP"}
+                                    {kind === "image" && " · restyled to match your design"}
+                                    {kind === "video" && " · used as it is, up to 25MB"}
+                                    {kind === "logo" && " · used as it is, never redrawn"}
+                                    {kind === "portrait" &&
+                                      " · used as it is, never redrawn or generated"}
                                   </p>
-                                )}
-                                <p className="mt-1 text-[10px] text-muted-foreground/70">
-                                  {c.accepts ?? "PNG, JPEG or WebP"}
-                                  {kind === "image" && " · restyled to match your design"}
-                                  {kind === "video" && " · used as it is, up to 25MB"}
-                                  {kind === "logo" && " · used as it is, never redrawn"}
-                                  {kind === "portrait" && " · used as it is, never redrawn or generated"}
-                                </p>
-                              </div>
-                            )}
+                                </div>
+                              )}
                           </div>
                         ))}
                       </div>
@@ -507,7 +497,8 @@ export function GatePanel({
                 const parts = [
                   genImage > 0 && `${genImage} image${genImage === 1 ? "" : "s"} will be generated`,
                   genVideo > 0 && `${genVideo} video will be generated`,
-                  n("upload").length + n("as_is").length > 0 && `${n("upload").length + n("as_is").length} of your own file${n("upload").length + n("as_is").length === 1 ? "" : "s"} used`,
+                  n("upload").length + n("as_is").length > 0 &&
+                    `${n("upload").length + n("as_is").length} of your own file${n("upload").length + n("as_is").length === 1 ? "" : "s"} used`,
                   n("wordmark").length > 0 && "the name set as a wordmark",
                   n("skip").length > 0 && `${n("skip").length} left out`,
                 ].filter(Boolean);
@@ -533,19 +524,17 @@ export function GatePanel({
         </div>
       ) : (
         <div className="flex flex-wrap gap-2">
-          {(options.length ? options : [{ choice: "approve", label: "Approve" }]).map(
-            (o, i) => (
-              <Button
-                key={i}
-                type="button"
-                variant={i === 0 ? "default" : "outline"}
-                size="sm"
-                onClick={() => onAnswerGate({ choice: o.choice ?? "approve" })}
-              >
-                {String(o.label ?? o.choice ?? "Approve")}
-              </Button>
-            )
-          )}
+          {(options.length ? options : [{ choice: "approve", label: "Approve" }]).map((o, i) => (
+            <Button
+              key={i}
+              type="button"
+              variant={i === 0 ? "default" : "outline"}
+              size="sm"
+              onClick={() => onAnswerGate({ choice: o.choice ?? "approve" })}
+            >
+              {String(o.label ?? o.choice ?? "Approve")}
+            </Button>
+          ))}
         </div>
       )}
     </div>

@@ -26,6 +26,10 @@
   --input: oklch(1 0 0 / 8%);
   --ring: oklch(0.6 0.01 260);
   --radius: 0.75rem;
+  /* Workspace chat column. Set on <html> from the saved width before the
+   * workspace paints, and live while the divider is dragged — a CSS
+   * variable, so resizing never re-renders React. */
+  --chat-w: 420px;
 }
 
 @theme inline {
@@ -51,7 +55,10 @@
   --radius-md: calc(var(--radius) * 0.8);
   --radius-lg: var(--radius);
   --radius-xl: calc(var(--radius) * 1.4);
-  --font-sans: var(--font-sans);
+  /* Was `var(--font-sans)` — itself — so no font ever applied and every
+   * browser fell back to its default serif (Times New Roman). */
+  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, SFMono-Regular, monospace;
 }
 
 @layer base {
@@ -73,7 +80,7 @@
   position: relative;
   background-color: var(--background);
   background-image:
-    radial-gradient(ellipse 70% 45% at 22% 0%, oklch(0.30 0.045 275 / 55%), transparent 62%),
+    radial-gradient(ellipse 70% 45% at 22% 0%, oklch(0.3 0.045 275 / 55%), transparent 62%),
     radial-gradient(ellipse 60% 40% at 80% 2%, oklch(0.26 0.05 255 / 48%), transparent 62%),
     radial-gradient(ellipse 100% 55% at 50% -8%, oklch(0.24 0.035 265 / 60%), transparent 70%);
   background-repeat: no-repeat;
@@ -141,6 +148,24 @@
     oklch(0.54 0.07 265 / 3.5%) 45%,
     transparent 72%
   );
+}
+
+/* Phones: the fractal-noise clouds are the single most expensive thing the
+ * console draws — measured at ~10 s of blocked main thread on Lighthouse's
+ * throttled mobile CPU, taking the home score from 100 (desktop) to 56. The
+ * `console-sky` wash underneath already carries the colour; the clouds only
+ * add texture a phone screen barely shows. `display: none` means the filter
+ * is never rasterised at all. */
+@media (max-width: 767px) {
+  .console-clouds,
+  .console-glow {
+    display: none;
+  }
+  .console-stars::before,
+  .console-stars::after {
+    animation: none;
+    opacity: 0.8;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -219,6 +244,25 @@
   .console-stars::after {
     animation: none;
     opacity: 0.8;
+  }
+}
+
+/* The sparrow above the home prompt box arriving: opacity and transform only,
+ * so it runs on the compositor (see components/prompt-console.tsx). */
+.mark-in {
+  animation: mark-in 180ms ease-out both;
+}
+
+@keyframes mark-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mark-in {
+    animation: none;
   }
 }
 

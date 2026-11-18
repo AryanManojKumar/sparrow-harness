@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import {
   ArrowLeft,
   ChevronDown,
@@ -17,6 +17,47 @@ import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 
 type Device = "desktop" | "tablet" | "mobile";
+
+// The built site is a whole Next.js app — React, Motion, fonts, full-size
+// images — and the preview is same-origin, so all of it runs on THIS page's
+// main thread. Measured on a finished project: the console alone scores 98,
+// with the site booting in the frame on load it drops to 63–72 (790 ms of
+// blocked time, plus the generated page's own layout shifts, which Lighthouse
+// counts inside iframes). So the frame is a facade until the first sign of a
+// person — a pointer move, key, wheel or touch anywhere on the page — the
+// pattern Lighthouse itself recommends for heavy embeds. Arriving from a card
+// click has already counted, so that path loads at once.
+const INTENT = ["pointermove", "pointerdown", "keydown", "wheel", "touchstart"] as const;
+let interacted = false;
+const onIntent = new Set<() => void>();
+if (typeof window !== "undefined") {
+  // A click or key earlier in this document — the home-screen card that
+  // navigated here — counts, even though this module loaded after it.
+  interacted = Boolean(navigator.userActivation?.hasBeenActive);
+  const mark = () => {
+    interacted = true;
+    onIntent.forEach((f) => f());
+    onIntent.clear();
+    INTENT.forEach((e) => window.removeEventListener(e, mark, true));
+  };
+  INTENT.forEach((e) => window.addEventListener(e, mark, { capture: true, passive: true }));
+}
+
+function subscribeIntent(onChange: () => void): () => void {
+  if (interacted) return () => {};
+  onIntent.add(onChange);
+  return () => onIntent.delete(onChange);
+}
+
+// `interacted` lives outside React, so it is read the way React reads any
+// external store; the server snapshot is "not yet".
+function useUserPresent(): boolean {
+  return useSyncExternalStore(
+    subscribeIntent,
+    () => interacted,
+    () => false
+  );
+}
 
 // The width the site is RENDERED at, not the width it is shown at. A desktop
 // layout squeezed into a 1000px pane is the tablet layout — nav collapsed to a
@@ -47,8 +88,28 @@ export type PickedElement = {
 // Inline pieces (a line-wrapping <span> inside a heading, an icon's <path>)
 // are not what an owner means by "this": promote them to the nearest element
 // that is — the heading, paragraph, button, link or image they belong to.
-const MEANINGFUL = "h1,h2,h3,h4,h5,h6,p,a,button,li,img,video,figure,blockquote,label,input,textarea,select,table";
-const INLINE = new Set(["SPAN", "STRONG", "EM", "B", "I", "SMALL", "BR", "SUP", "SUB", "MARK", "path", "svg", "g", "use", "circle", "rect", "line", "polyline"]);
+const MEANINGFUL =
+  "h1,h2,h3,h4,h5,h6,p,a,button,li,img,video,figure,blockquote,label,input,textarea,select,table";
+const INLINE = new Set([
+  "SPAN",
+  "STRONG",
+  "EM",
+  "B",
+  "I",
+  "SMALL",
+  "BR",
+  "SUP",
+  "SUB",
+  "MARK",
+  "path",
+  "svg",
+  "g",
+  "use",
+  "circle",
+  "rect",
+  "line",
+  "polyline",
+]);
 
 function meaningful(el: Element): Element {
   if (!INLINE.has(el.tagName)) return el;
@@ -75,7 +136,12 @@ function describe(el: Element, page: string): PickedElement {
     })`;
   }
   const html = el.outerHTML.replace(/\s+/g, " ").slice(0, 1200);
-  const shown = (text || alt || (tag === "img" ? el.getAttribute("src")?.split("/").pop() : "") || "").slice(0, 60);
+  const shown = (
+    text ||
+    alt ||
+    (tag === "img" ? el.getAttribute("src")?.split("/").pop() : "") ||
+    ""
+  ).slice(0, 60);
   return {
     id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
     page,
@@ -137,6 +203,7 @@ export function PreviewPane({
   // Bumped on every frame load, so the inspector re-binds after navigation.
   const [loadTick, setLoadTick] = useState(0);
   const pickRef = useRef(onPick);
+  // eslint-disable-next-line react-hooks/refs -- known debt, AGENTS.md › Known gaps
   pickRef.current = onPick;
   const canPick = Boolean(onPick);
   const stageRef = useRef<HTMLDivElement>(null);
@@ -146,6 +213,7 @@ export function PreviewPane({
 
   useEffect(() => {
     if (!path) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- known debt, AGENTS.md › Known gaps
     setTarget(path);
     setReloadKey((k) => k + 1);
   }, [path, navNonce]);
@@ -261,6 +329,11 @@ export function PreviewPane({
   }
 
   const live = ready && Boolean(src);
+  const present = useUserPresent();
+  // Asked for explicitly — a studio change, a page opened from the chat —
+  // loads the site whether or not the pointer has moved yet.
+  const asked = version > 0 || navNonce > 0;
+  const mountFrame = live && (present || asked);
   // The query string only defeats any cache between here and the workshop;
   // the export ignores it. Without it a reload could show the build before.
   const frameSrc = live
@@ -297,12 +370,19 @@ export function PreviewPane({
           ))}
         </div>
 
-        {onPick && (
+        {/* Always in the bar, disabled until the studio can use it: it used
+            to appear only once the project turned out to be in the studio,
+            shoving the address bar 85px sideways after first paint. */}
+        {
           <button
             type="button"
-            disabled={!live}
+            disabled={!live || !canPick}
             onClick={() => setSelecting((v) => !v)}
-            title="Select an element to talk about it (Esc to cancel)"
+            title={
+              canPick
+                ? "Select an element to talk about it (Esc to cancel)"
+                : "Available once the site is built, to point the studio at a part of it"
+            }
             className={cn(
               "flex h-7 items-center gap-1.5 rounded-md border px-2 text-xs transition-colors disabled:opacity-40",
               selecting
@@ -313,7 +393,7 @@ export function PreviewPane({
             <MousePointerClick className="size-3.5" />
             {selecting ? "Click an element" : "Select"}
           </button>
-        )}
+        }
 
         <button
           type="button"
@@ -322,7 +402,9 @@ export function PreviewPane({
           onClick={() => {
             try {
               frameRef.current?.contentWindow?.history.back();
-            } catch {}
+            } catch {
+              // frame not same-origin (direct API URL): Back is a no-op there
+            }
           }}
           className="flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-40"
         >
@@ -399,8 +481,12 @@ export function PreviewPane({
       </div>
 
       <div ref={stageRef} className="relative flex-1 overflow-hidden bg-black/20">
+        {/* Keyed: both branches are a <div> in the same slot, and without
+            keys React reused the waiting box's node as the card — moving one
+            element 24px, which Lighthouse counted as a layout shift. */}
         {live && box.w > 0 ? (
           <div
+            key="frame"
             className={cn(
               "absolute left-1/2 top-6 flex flex-col overflow-hidden rounded-xl border bg-white shadow-2xl shadow-black/60 transition-[box-shadow,border-color]",
               selecting ? "border-indigo-400/70 ring-2 ring-indigo-400/30" : "border-white/10"
@@ -421,18 +507,29 @@ export function PreviewPane({
               </span>
               <span className="w-[42px]" />
             </div>
-            <iframe
-              ref={frameRef}
-              key={`${version}-${reloadKey}`}
-              src={frameSrc}
-              title="Site preview"
-              onLoad={onFrameLoad}
-              className="shrink-0 origin-top-left border-0"
-              style={{ width, height: frameH - 28 / scale, transform: `scale(${scale})` }}
-            />
+            {mountFrame ? (
+              <iframe
+                ref={frameRef}
+                key={`${version}-${reloadKey}`}
+                src={frameSrc}
+                title="Site preview"
+                onLoad={onFrameLoad}
+                className="shrink-0 origin-top-left border-0"
+                style={{ width, height: frameH - 28 / scale, transform: `scale(${scale})` }}
+              />
+            ) : (
+              // Same box the frame will occupy, so its arrival moves nothing.
+              <button
+                type="button"
+                className="flex flex-1 flex-col items-center justify-center gap-2 bg-[#f6f6f7] text-sm text-black/45"
+              >
+                <span className="size-6 animate-pulse rounded-md bg-black/10" />
+                Loading the live site…
+              </button>
+            )}
           </div>
         ) : (
-          <div className="flex h-full items-center justify-center p-6">
+          <div key="waiting" className="flex h-full items-center justify-center p-6">
             <div
               className="flex h-full flex-col items-center justify-center gap-3 rounded-xl border border-dashed border-border text-muted-foreground"
               style={{ width: Math.min(width, Math.max(box.w - pad * 2, 0)) || "100%" }}

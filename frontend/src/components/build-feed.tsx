@@ -2,14 +2,21 @@
 
 import { useEffect, useMemo, useRef } from "react";
 import Link from "next/link";
-import { AlertTriangle, Check, CircleDashed, Loader2, Play } from "lucide-react";
+import { AlertTriangle, Check, CircleDashed, Loader2, Play, Square } from "lucide-react";
 
 import { cn } from "@/lib/utils";
-import type { AssetPlanEntry, BlackboardAsset, Direction, GateAnswer, GateInfo, RunEvent } from "@/lib/api";
+import type {
+  AssetPlanEntry,
+  BlackboardAsset,
+  Direction,
+  GateAnswer,
+  GateInfo,
+  RunEvent,
+} from "@/lib/api";
 import { AssetTray } from "@/components/asset-tray";
 import { SparrowMark } from "@/components/sparrow-mark";
 import { SourceCard } from "@/components/source-card";
-import { GatePanel } from "@/components/gate-panel";
+import { GatePanel } from "@/components/lazy-panels";
 import { Button } from "@/components/ui/button";
 
 // Matches backend/src/sparrow/orchestrator.py's Stage enum, in order —
@@ -17,8 +24,19 @@ import { Button } from "@/components/ui/button";
 // their own kind="done" event (design and verify never emit one; they stop
 // at gate:design / gate:preview instead).
 const FULL_ORDER = [
-  "brief", "gate:brief", "sources", "design", "gate:design", "compose",
-  "content", "gate:assets", "assets", "build", "verify", "gate:preview", "done",
+  "brief",
+  "gate:brief",
+  "sources",
+  "design",
+  "gate:design",
+  "compose",
+  "content",
+  "gate:assets",
+  "assets",
+  "build",
+  "verify",
+  "gate:preview",
+  "done",
 ];
 
 const DISPLAY_STAGES: { key: string; label: string }[] = [
@@ -113,20 +131,14 @@ export function BuildFeed({
   assetPlan = [],
   madeAssets = [],
   previewReady = false,
+  liveMessage = "",
+  onStop,
   onResume,
   onAnswerGate,
 }: {
   prompt: string;
   urls: string[];
-  phase:
-    | "loading"
-    | "interview"
-    | "create"
-    | "run"
-    | "gate"
-    | "paused"
-    | "done"
-    | "error";
+  phase: "loading" | "interview" | "create" | "run" | "gate" | "paused" | "done" | "error";
   events: RunEvent[];
   spent: number;
   gate: GateInfo | null;
@@ -139,14 +151,15 @@ export function BuildFeed({
   assetPlan?: AssetPlanEntry[];
   madeAssets?: BlackboardAsset[];
   previewReady?: boolean;
+  /** The run's latest event, shown in the footer while it is moving. */
+  liveMessage?: string;
+  /** Stops the run at its next step. Shown only while it runs. */
+  onStop?: () => void;
   onResume: () => void;
   onAnswerGate: (payload: GateAnswer) => void;
 }) {
   const logRef = useRef<HTMLDivElement>(null);
-  const statuses = useMemo(
-    () => stageStatuses(events, stoppedStage),
-    [events, stoppedStage]
-  );
+  const statuses = useMemo(() => stageStatuses(events, stoppedStage), [events, stoppedStage]);
 
   useEffect(() => {
     logRef.current?.scrollTo({ top: logRef.current.scrollHeight });
@@ -154,17 +167,9 @@ export function BuildFeed({
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex items-center justify-between border-b border-border px-4 py-3">
-        <div className="flex items-center gap-2">
-          <SparrowMark className="size-4" />
-          <span className="text-sm font-medium text-foreground">sparrow</span>
-        </div>
-        {spent > 0 && (
-          <span className="text-xs text-muted-foreground">${spent.toFixed(4)} spent</span>
-        )}
-      </div>
-
-      <div className="flex-1 overflow-y-auto px-4 py-4">
+      {/* No header of its own: the workspace tab bar carries the brand and
+          the running spend, the way the chat column reads in the studio. */}
+      <div className="flex-1 overflow-y-auto px-2 py-3 md:px-3">
         <div className="mb-2 rounded-xl bg-secondary/60 px-3.5 py-2.5 text-sm text-foreground">
           {prompt}
         </div>
@@ -209,9 +214,7 @@ export function BuildFeed({
                   {STATUS_ICON[statuses[key]]}
                   <span
                     className={cn(
-                      statuses[key] === "pending"
-                        ? "text-muted-foreground"
-                        : "text-foreground"
+                      statuses[key] === "pending" ? "text-muted-foreground" : "text-foreground"
                     )}
                   >
                     {label}
@@ -230,7 +233,9 @@ export function BuildFeed({
             {events.map((e, i) => (
               <div key={i} className="truncate">
                 <span className="text-foreground/70">{e.stage}</span> · {e.message}
-                {e.cost > 0 && <span className="text-muted-foreground"> · ${e.cost.toFixed(4)}</span>}
+                {e.cost > 0 && (
+                  <span className="text-muted-foreground"> · ${e.cost.toFixed(4)}</span>
+                )}
               </div>
             ))}
           </div>
@@ -275,8 +280,8 @@ export function BuildFeed({
               Stopped at {(stoppedStage ?? "an earlier stage").replace(/^gate:/, "")}
             </p>
             <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-              Nothing is running. Continuing runs the next stage and spends on
-              model calls{spent > 0 ? ` — $${spent.toFixed(4)} so far` : ""}.
+              Nothing is running. Continuing runs the next stage and spends on model calls
+              {spent > 0 ? ` — $${spent.toFixed(4)} so far` : ""}.
             </p>
             <Button type="button" size="sm" className="mt-3" onClick={onResume}>
               <Play className="size-3" /> Resume the run
@@ -291,7 +296,10 @@ export function BuildFeed({
               Run stopped
             </div>
             <p className="mb-3 text-xs text-muted-foreground">{errorMessage}</p>
-            <Link href="/" className="text-xs font-medium text-foreground underline underline-offset-2">
+            <Link
+              href="/"
+              className="text-xs font-medium text-foreground underline underline-offset-2"
+            >
               Start over
             </Link>
           </div>
@@ -303,6 +311,31 @@ export function BuildFeed({
           </div>
         )}
       </div>
+
+      {/* The composer slot. While a run is moving there is nothing to type —
+          the next decision is a gate card above — so it shows what is
+          happening and the one control that applies: stop. */}
+      {phase === "run" && (
+        <div className="shrink-0 p-2 md:p-3">
+          <div className="flex items-center gap-2.5 rounded-xl border border-border bg-card/60 px-3 py-2.5">
+            <SparrowMark className="size-4 shrink-0 animate-pulse" />
+            <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
+              {liveMessage || "Working…"}
+            </span>
+            {onStop && (
+              <button
+                type="button"
+                onClick={onStop}
+                aria-label="Stop the run"
+                title="Stops at the run's next step; Resume continues from the same stage"
+                className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-secondary text-foreground transition-colors hover:bg-muted"
+              >
+                <Square className="size-3 fill-current" />
+              </button>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
